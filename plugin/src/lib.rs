@@ -357,21 +357,26 @@ impl<'a> PluginMainThread<'a> {
         if let Err(e) = self.shared.slot.swap(dest) {
             dlog!("effect_select: explicit slot.swap failed: {}", e);
         }
-        // Refresh REAPER's param info immediately. `INFO|TEXT|VALUES` is the
-        // active-state-safe subset (per CLAP spec — `ALL` while active is
-        // forbidden, REAPER ignores it). Our layout is stable (IS_HIDDEN
-        // slots), so we don't need `ALL` here anyway.
+        // Two-step refresh: INFO rescan (always safe), AND request a
+        // deactivate→reactivate cycle. REAPER won't refresh visible param
+        // names from INFO alone — it keeps the labels it pulled at the
+        // last activate(). request_restart forces it to deactivate the
+        // plugin, re-query the full param layout (count + names + ranges),
+        // and reactivate. There's a sub-100ms audio pause; acceptable for
+        // a manual effect switch and far better than the UI lying about
+        // which knob does what.
         if let Some(host_params) = self.host.shared().get_extension::<HostParams>() {
             host_params.rescan(
                 &mut self.host,
                 ParamRescanFlags::INFO | ParamRescanFlags::TEXT | ParamRescanFlags::VALUES,
             );
-            self.shared
-                .slot
-                .rescan_needed
-                .store(false, Ordering::Release);
-            dlog!("effect_select: requested host params.rescan(INFO|TEXT|VALUES)");
         }
+        self.host.shared().request_restart();
+        self.shared
+            .slot
+            .rescan_needed
+            .store(false, Ordering::Release);
+        dlog!("effect_select: rescan(INFO) + request_restart");
     }
 
     /// If the user toggled the Reload param since last check, force-swap the

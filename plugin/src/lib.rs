@@ -75,7 +75,14 @@ macro_rules! dlog {
     ($($arg:tt)*) => { $crate::dbg_log(format_args!($($arg)*)) };
 }
 
-pub const PLUGIN_ID: &str = "co.superduperai.dsp";
+// Bumping the suffix on this id is how we force every CLAP host to evict
+// its cached param layout for SuperDuper DSP. Hosts (REAPER included)
+// remember per-(plugin_id, FX-slot) which param ids occupy which visible
+// sliders. When we add params (Effect ▼, Reload, IS_HIDDEN slots), the
+// host happily reports the new count + names but keeps routing UI
+// gestures to whatever id sat there at first scan — completely
+// undocumented. New id ⇒ new plugin in the host's eyes ⇒ clean state.
+pub const PLUGIN_ID: &str = "co.superduperai.dsp.v3";
 pub const PLUGIN_NAME: &str = "SuperDuper DSP";
 pub const PLUGIN_VENDOR: &str = "SuperDuperAI";
 pub const PLUGIN_VERSION: &str = "0.1.0";

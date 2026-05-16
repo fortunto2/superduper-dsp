@@ -5,6 +5,7 @@ members = [
     "daemon",
     "protocol",
     "sdk",
+    "sdk-macros",
     "effects/example-passthrough",
 ]
 

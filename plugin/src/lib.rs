@@ -19,8 +19,8 @@ use clack_extensions::audio_ports::{
     PluginAudioPortsImpl,
 };
 use clack_extensions::params::{
-    ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams,
-    PluginMainThreadParams, PluginParams,
+    HostParams, ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, ParamRescanFlags,
+    PluginAudioProcessorParams, PluginMainThreadParams, PluginParams,
 };
 use clack_plugin::events::event_types::ParamValueEvent;
 use clack_plugin::prelude::*;
@@ -81,9 +81,34 @@ pub const PARAM_GAIN_MIN_DB: f64 = -24.0;
 pub const PARAM_GAIN_MAX_DB: f64 = 24.0;
 pub const PARAM_GAIN_DEFAULT_DB: f64 = 0.0;
 
+/// Maximum effect parameters supported. Effect IDs occupy 1..=MAX_EFFECT_PARAMS
+/// (host Gain stays at id 0; Reload occupies MAX_EFFECT_PARAMS + 1).
+pub const MAX_EFFECT_PARAMS: usize = 32;
+
+/// "Reload effect dylib" toggle. Flipping this from 0 → 1 forces the plugin
+/// to re-`slot.swap()` from the current `effect_dylib_path`, even if the file
+/// mtime didn't change (e.g. when the watcher didn't fire). Useful for both
+/// debug and when running without a working file watcher.
+pub const PARAM_RELOAD_ID: u32 = (MAX_EFFECT_PARAMS as u32) + 1;
+
 const fn gain_clap_id() -> ClapId {
     // 0 is a valid ClapId — the type only forbids `u32::MAX`.
     ClapId::new(PARAM_GAIN_ID)
+}
+
+const fn reload_clap_id() -> ClapId {
+    ClapId::new(PARAM_RELOAD_ID)
+}
+
+/// `id == 0` → host Gain, `id 1..=MAX_EFFECT_PARAMS` → effect-defined param.
+/// Returns the effect param index (0-based) for ids in that range.
+fn effect_param_index(id: ClapId) -> Option<usize> {
+    let raw = id.get();
+    if raw == 0 || raw > MAX_EFFECT_PARAMS as u32 {
+        None
+    } else {
+        Some((raw - 1) as usize)
+    }
 }
 
 // ============================================================================
@@ -103,6 +128,13 @@ pub struct PluginShared {
     pub slot: Arc<HotReloadSlot>,
     pub instance_id: Uuid,
     pub effect_dylib_path: PathBuf,
+    /// Per-effect parameter values, indexed by id-1 (id 0 is host Gain).
+    /// Written by the host via `ParamValueEvent`, read by the audio thread
+    /// via snapshot into a stack array each `process()` call.
+    pub effect_params: [AtomicF32; MAX_EFFECT_PARAMS],
+    /// Set when a CLAP Reload event arrives; the main thread observes it and
+    /// re-`slot.swap()`s from `effect_dylib_path`. Clear-on-handle.
+    pub reload_requested: AtomicBool,
     /// Debug counters: number of times the audio thread entered `process()`
     /// and number of ParamValueEvents we observed. Logged periodically so we
     /// can see in REAPER's stderr whether events ever arrive.
@@ -132,17 +164,36 @@ impl PluginShared {
 
         let effect_dylib_path = instance_dir.join("effect.dylib");
 
-        // NOTE: watcher init is deferred to `ensure_watcher()` called from
-        // `activate()` on the audio thread setup. `notify::recommended_watcher`
-        // can block briefly while initialising FSEvents on macOS, and during
-        // CLAP plugin scan that latency made REAPER's main thread unresponsive
-        // to subsequent API calls. By deferring, scan stays cheap.
+        // Eager-load: if a dylib already lives at the per-instance path (left
+        // over from a prior session, or dropped in by `scripts/load_effect.sh`
+        // before REAPER finished loading the plugin), swap it in synchronously
+        // now. `slot.swap` itself is fast (dlopen + a couple of dlsym calls
+        // + a Vec<EffectParam> alloc), so it doesn't trip the scan-timeout
+        // problem that the FSEvents watcher init does.
+        if effect_dylib_path.exists() {
+            match slot.swap(&effect_dylib_path) {
+                Ok(()) => {
+                    dlog!("eager swap loaded {:?}", effect_dylib_path);
+                }
+                Err(e) => {
+                    dlog!("eager swap of {:?} failed: {}", effect_dylib_path, e);
+                }
+            }
+        }
+
+        // NOTE: watcher init is still deferred to `ensure_watcher()` called
+        // from `activate()`. `notify::recommended_watcher` can block briefly
+        // while initialising FSEvents on macOS, and during CLAP plugin scan
+        // that latency made REAPER's main thread unresponsive to subsequent
+        // API calls. By deferring, scan stays cheap.
         Self {
             gain_db: AtomicF32::new(PARAM_GAIN_DEFAULT_DB as f32),
             bypass: AtomicBool::new(false),
             slot,
             instance_id,
             effect_dylib_path,
+            effect_params: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            reload_requested: AtomicBool::new(false),
             process_calls: AtomicU64::new(0),
             events_seen: AtomicU64::new(0),
             _watcher: parking_lot::Mutex::new(None),
@@ -155,22 +206,22 @@ impl PluginShared {
         if guard.is_some() {
             return;
         }
+        dlog!("ensure_watcher: starting notify watcher");
 
-        // If a dylib already exists at startup (e.g. a prior session left one
-        // behind), load it before the watcher starts.
-        if self.effect_dylib_path.exists() {
-            if let Err(e) = self.slot.swap(&self.effect_dylib_path) {
-                tracing::warn!(
-                    "initial swap of {:?} failed: {}",
-                    self.effect_dylib_path,
-                    e
-                );
+        // Catch any dylib that landed between `new_shared` and `activate()`.
+        if self.effect_dylib_path.exists() && !self.slot.is_loaded() {
+            match self.slot.swap(&self.effect_dylib_path) {
+                Ok(()) => dlog!("activate-time swap loaded {:?}", self.effect_dylib_path),
+                Err(e) => dlog!("activate-time swap failed: {}", e),
             }
         }
 
         match watcher::start(self.slot.clone(), self.effect_dylib_path.clone()) {
-            Ok(handle) => *guard = Some(handle),
-            Err(e) => tracing::warn!("file watcher did not start ({}); hot-reload disabled", e),
+            Ok(handle) => {
+                *guard = Some(handle);
+                dlog!("watcher started");
+            }
+            Err(e) => dlog!("file watcher did not start ({}); hot-reload disabled", e),
         }
     }
 
@@ -195,6 +246,49 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 pub struct PluginMainThread<'a> {
     shared: &'a PluginShared,
+    host: HostMainThreadHandle<'a>,
+}
+
+impl<'a> PluginMainThread<'a> {
+    /// If a fresh swap landed since the last call, ask the host to re-enumerate
+    /// our parameters. Cheap no-op when the flag isn't set.
+    fn maybe_rescan(&mut self) {
+        if !self
+            .shared
+            .slot
+            .rescan_needed
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        let Some(host_params) = self.host.shared().get_extension::<HostParams>() else {
+            return;
+        };
+        host_params.rescan(&mut self.host, ParamRescanFlags::ALL);
+        dlog!("requested host params.rescan(ALL)");
+    }
+
+    /// If the user toggled the Reload param since last check, force-swap the
+    /// current effect dylib (mtime change not required). Lets the user
+    /// recover when the file watcher didn't fire.
+    fn maybe_reload(&mut self) {
+        if !self
+            .shared
+            .reload_requested
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        let path = &self.shared.effect_dylib_path;
+        if !path.exists() {
+            dlog!("Reload pressed but {:?} doesn't exist; nothing to do", path);
+            return;
+        }
+        match self.shared.slot.swap(path) {
+            Ok(()) => dlog!("manual reload swap OK from {:?}", path),
+            Err(e) => dlog!("manual reload swap failed: {}", e),
+        }
+    }
 }
 
 impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
@@ -207,23 +301,42 @@ pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
 }
 
-/// Apply param_value events from a CLAP event buffer to `shared`.
+/// Apply param_value events to `shared`. Routes by `param_id`:
+/// - id 0 → host Gain (`gain_db`)
+/// - id 1..=MAX_EFFECT_PARAMS → effect param at index `id - 1`
 ///
 /// Used by both the audio processor (process + flush) and the main thread (flush).
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
-    let target = gain_clap_id();
     for event in events {
         let Some(pv) = event.as_event::<ParamValueEvent>() else {
             continue;
         };
         let Some(id) = pv.param_id() else { continue };
-        if id == target {
-            let db = pv.value() as f32;
-            shared.gain_db.store(db, Ordering::Relaxed);
+        let value = pv.value() as f32;
+        if id == gain_clap_id() {
+            shared.gain_db.store(value, Ordering::Relaxed);
             let count = shared.events_seen.fetch_add(1, Ordering::Relaxed) + 1;
-            // Log every event (audio thread, but rare enough to be OK for debug).
-            dlog!("ParamValueEvent #{}: gain → {:+.2} dB", count, db);
+            dlog!("ParamValueEvent #{}: gain → {:+.2} dB", count, value);
+        } else if id == reload_clap_id() {
+            // Treat any non-zero value as "user pressed the button".
+            // Main thread will pick up the flag and call slot.swap().
+            if value > 0.5 {
+                shared.reload_requested.store(true, Ordering::Release);
+                dlog!("ParamValueEvent: Reload pressed");
+            }
+        } else if let Some(idx) = effect_param_index(id) {
+            shared.effect_params[idx].store(value, Ordering::Relaxed);
+            dlog!("ParamValueEvent: effect[{}] → {:+.4}", idx, value);
         }
+    }
+}
+
+/// Reset every effect param atomic to the loaded effect's declared default.
+/// Called from non-audio threads after a fresh swap; cheap atomic stores.
+fn sync_effect_param_defaults(shared: &PluginShared) {
+    let meta = shared.slot.meta();
+    for (idx, p) in meta.params.iter().enumerate().take(MAX_EFFECT_PARAMS) {
+        shared.effect_params[idx].store(p.default, Ordering::Relaxed);
     }
 }
 
@@ -248,6 +361,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // After a fresh swap, sync defaults from the new metadata before we
+        // read effect_params for this block. Cheap: just N atomic stores.
+        if self.shared.slot.rescan_needed.load(Ordering::Acquire) {
+            sync_effect_param_defaults(self.shared);
+            // We don't clear `rescan_needed` here — that's the main thread's
+            // job once it's done re-querying params. Atomic stores above are
+            // idempotent, so a few redundant syncs are fine.
+        }
+
         let n = self.shared.process_calls.fetch_add(1, Ordering::Relaxed) + 1;
         // Log every 1024 calls (≈22s at 48kHz/512). Cheap atomic increment.
         if n.is_multiple_of(1024) {
@@ -280,6 +402,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let gain = self.shared.gain_linear();
         let slot = &*self.shared.slot;
 
+        // Atomic snapshot of effect params into a stack array. Audio thread
+        // sees a coherent set within this block — no half-old/half-new reads
+        // mid-callback while automation crank-races us.
+        let mut params_snap = [0.0_f32; MAX_EFFECT_PARAMS];
+        for (i, atom) in self.shared.effect_params.iter().enumerate() {
+            params_snap[i] = atom.load(Ordering::Relaxed);
+        }
+        let params_ptr = params_snap.as_ptr();
+
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
                 continue;
@@ -297,7 +428,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 output.as_mut_ptr(),
                                 1,
                                 input.len() as u32,
-                                std::ptr::null(),
+                                params_ptr,
                             )
                         }
                         .is_ok();
@@ -365,10 +496,10 @@ impl DefaultPluginFactory for SuperDuperDsp {
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        Ok(PluginMainThread { shared })
+        Ok(PluginMainThread { shared, host })
     }
 }
 
@@ -378,7 +509,15 @@ impl DefaultPluginFactory for SuperDuperDsp {
 
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 {
-        1
+        // Trigger rescan request on first main-thread interaction after a swap.
+        self.maybe_rescan();
+        // Manual Reload toggle handler (force re-swap from effect_dylib_path).
+        self.maybe_reload();
+        let effect_count = self.shared.slot.meta().params.len() as u32;
+        // Cap at MAX_EFFECT_PARAMS — anything past that is a bug in the effect.
+        let effect_count = effect_count.min(MAX_EFFECT_PARAMS as u32);
+        // 1 (Gain) + N (effect) + 1 (Reload toggle)
+        1 + effect_count + 1
     }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
@@ -393,15 +532,52 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 max_value: PARAM_GAIN_MAX_DB,
                 default_value: PARAM_GAIN_DEFAULT_DB,
             });
+            return;
+        }
+        let meta = self.shared.slot.meta();
+        let effect_count = meta.params.len().min(MAX_EFFECT_PARAMS) as u32;
+        if param_index <= effect_count {
+            // Effect params: ids 1..=N. param_index is 1-based here.
+            let idx = (param_index - 1) as usize;
+            if let Some(p) = meta.params.get(idx) {
+                info.set(&ParamInfo {
+                    id: ClapId::new(param_index),
+                    flags: ParamInfoFlags::IS_AUTOMATABLE,
+                    cookie: Default::default(),
+                    name: p.name.as_bytes(),
+                    module: b"Effect",
+                    min_value: p.min as f64,
+                    max_value: p.max as f64,
+                    default_value: p.default as f64,
+                });
+            }
+            return;
+        }
+        // Last slot is the Reload toggle.
+        if param_index == effect_count + 1 {
+            info.set(&ParamInfo {
+                id: reload_clap_id(),
+                flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_STEPPED,
+                cookie: Default::default(),
+                name: b"Reload",
+                module: b"",
+                min_value: 0.0,
+                max_value: 1.0,
+                default_value: 0.0,
+            });
         }
     }
 
     fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
         if param_id == gain_clap_id() {
-            Some(self.shared.gain_db.load(Ordering::Relaxed) as f64)
-        } else {
-            None
+            return Some(self.shared.gain_db.load(Ordering::Relaxed) as f64);
         }
+        if param_id == reload_clap_id() {
+            // Always reports 0 — the param is a momentary trigger, not state.
+            return Some(0.0);
+        }
+        let idx = effect_param_index(param_id)?;
+        Some(self.shared.effect_params[idx].load(Ordering::Relaxed) as f64)
     }
 
     fn value_to_text(
@@ -410,22 +586,46 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> core::fmt::Result {
+        use core::fmt::Write;
         if param_id == gain_clap_id() {
-            use core::fmt::Write;
-            write!(writer, "{:+.1} dB", value)?;
+            return write!(writer, "{:+.1} dB", value);
         }
-        Ok(())
+        if param_id == reload_clap_id() {
+            return write!(writer, "{}", if value > 0.5 { "RELOAD" } else { "idle" });
+        }
+        let Some(idx) = effect_param_index(param_id) else {
+            return Ok(());
+        };
+        let meta = self.shared.slot.meta();
+        let unit = meta.params.get(idx).map(|p| p.unit.as_str()).unwrap_or("");
+        if unit.is_empty() {
+            write!(writer, "{:.3}", value)
+        } else {
+            write!(writer, "{:.3} {}", value, unit)
+        }
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
-        if param_id != gain_clap_id() {
-            return None;
-        }
         let s = text.to_str().ok()?.trim();
-        let s = s.strip_suffix("dB").unwrap_or(s).trim();
+        if param_id == gain_clap_id() {
+            let s = s.strip_suffix("dB").unwrap_or(s).trim();
+            return s
+                .parse::<f64>()
+                .ok()
+                .map(|v| v.clamp(PARAM_GAIN_MIN_DB, PARAM_GAIN_MAX_DB));
+        }
+        let idx = effect_param_index(param_id)?;
+        let meta = self.shared.slot.meta();
+        let p = meta.params.get(idx)?;
+        // Strip the unit suffix if present.
+        let s = if !p.unit.is_empty() {
+            s.strip_suffix(&p.unit).unwrap_or(s).trim()
+        } else {
+            s
+        };
         s.parse::<f64>()
             .ok()
-            .map(|v| v.clamp(PARAM_GAIN_MIN_DB, PARAM_GAIN_MAX_DB))
+            .map(|v| v.clamp(p.min as f64, p.max as f64))
     }
 
     fn flush(&mut self, input_events: &InputEvents, _output_events: &mut OutputEvents) {

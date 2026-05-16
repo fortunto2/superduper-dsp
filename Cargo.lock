@@ -18,6 +18,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -980,6 +989,7 @@ name = "superduper-dsp-plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "atomic_float",
  "clack-common",
  "clack-extensions",
@@ -1013,6 +1023,18 @@ dependencies = [
 [[package]]
 name = "superduper-dsp-sdk"
 version = "0.1.0"
+dependencies = [
+ "superduper-dsp-sdk-macros",
+]
+
+[[package]]
+name = "superduper-dsp-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "syn"

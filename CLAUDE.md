@@ -143,6 +143,24 @@ cargo test -p superduper-dsp-plugin
 tail -F ~/.superduper-dsp/plugin.log
 ```
 
+## Distribution model — A+C hybrid (decided 2026-05)
+
+Future stages will let users ship AI-generated effects to others without Claude:
+
+**Stage A (M2–M3): shell + effects folder.** One `SuperDuper DSP.clap` scans
+`~/Library/Audio/Plug-Ins/SuperDuper Effects/*.dylib` and exposes the list as
+a CLAP enum-stepped parameter. Switching the effect triggers `slot.swap()`.
+Sharing = passing a `.dylib` file. Watcher migrates from per-instance dir to
+this shared folder.
+
+**Stage C (M5+): freeze to standalone `.clap`.** MCP tool `freeze(name, vendor)`
+generates a Cargo template instance with `include_bytes!`-embedded dylib + a
+unique plugin ID, builds it, produces `<name>.clap` — a self-contained plugin
+that shows up natively in FX browsers. Sharing = passing one `.clap`.
+
+**NOT doing:** B (one .clap containing N plugins via factory) — runtime
+complexity without distribution win over C.
+
 ## Future MCP tools (M3)
 
 Once the in-plugin MCP server lands, these will be exposed under `superduper-dsp`:

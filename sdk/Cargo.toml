@@ -7,3 +7,6 @@ description = "SDK for writing SuperDuper DSP effects"
 
 [lib]
 crate-type = ["rlib"]
+
+[dependencies]
+superduper-dsp-sdk-macros = { path = "../sdk-macros" }

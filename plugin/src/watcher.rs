@@ -6,8 +6,10 @@
 //!
 //! Lives for the lifetime of [`crate::PluginShared`] via a RAII handle.
 
-use crate::HotReloadSlot;
+use crate::{HotReloadSlot, dbg_log};
 use notify::{EventKind, RecursiveMode, Watcher};
+
+macro_rules! dlog { ($($arg:tt)*) => { dbg_log(format_args!($($arg)*)) } }
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -84,16 +86,35 @@ fn watcher_loop<W: Watcher + Send + 'static>(
         slot.gc();
 
         // Drain notify events, look for ones that touch our dylib.
+        // We match on filename (not full Path equality) because macOS FSEvents
+        // sometimes returns `/private/Users/...` while we hold `/Users/...` —
+        // a symlink difference that breaks PathBuf equality.
+        let target_name = dylib_path.file_name();
         let mut should_swap = false;
         while let Ok(event) = notify_rx.try_recv() {
-            if !event.paths.iter().any(|p| p == &dylib_path) {
+            let touches = event
+                .paths
+                .iter()
+                .any(|p| p.file_name() == target_name);
+            if !touches {
                 continue;
             }
+            dlog!(
+                "watcher event {:?} paths={:?}",
+                event.kind,
+                event
+                    .paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+            );
+            // Accept anything that isn't pure Access (file open/close noise).
+            // Modify(_), Create(_), Other, Any — all should provoke a swap.
             match event.kind {
-                EventKind::Modify(_) | EventKind::Create(_) => {
+                EventKind::Access(_) => {}
+                _ => {
                     should_swap = true;
                 }
-                _ => {}
             }
         }
 

@@ -44,22 +44,26 @@ fn swap_and_call_passthrough() {
     assert!(slot.is_loaded(), "loaded after swap");
     assert!(!slot.is_poisoned(), "fresh load not poisoned");
 
-    // Pass a known buffer through. Passthrough: output == input.
+    // Pass a known buffer through. Effect: gain_db = 0 (unity), drive = 0 (off)
+    // → output == input.
     let input: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
     let mut output = vec![0.0_f32; 512];
+    // Params layout matches `params!` order in example-passthrough/src/lib.rs:
+    //   index 0 = GAIN (dB), index 1 = DRIVE
+    let params = [0.0_f32, 0.0_f32];
     let result = unsafe {
         slot.call(
             input.as_ptr(),
             output.as_mut_ptr(),
             1,
             512,
-            std::ptr::null(),
+            params.as_ptr(),
         )
     };
     assert!(result.is_ok(), "call succeeded");
     for (i, (inp, out)) in input.iter().zip(output.iter()).enumerate() {
         assert!(
-            (inp - out).abs() < 1e-9,
+            (inp - out).abs() < 1e-6,
             "sample {i}: in={inp}, out={out}"
         );
     }

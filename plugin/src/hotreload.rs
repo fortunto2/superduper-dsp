@@ -30,11 +30,43 @@
 //! 48kHz/512) ensures the audio thread has long since returned before the
 //! library is unmapped.
 
+use arc_swap::ArcSwap;
 use libloading::{Library, Symbol};
 use parking_lot::Mutex;
+use std::ffi::CStr;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
+
+/// ABI-stable param descriptor, mirrors `superduper_dsp_sdk::ParamMeta`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ParamMetaAbi {
+    pub name: *const u8,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    pub unit: *const u8,
+}
+
+/// One parameter exposed by the loaded effect, in Rust-owned form (so it
+/// survives dylib swaps).
+#[derive(Debug, Clone)]
+pub struct EffectParam {
+    pub name: String,
+    pub unit: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+/// Full metadata snapshot for the currently loaded effect. Replaced atomically
+/// via `ArcSwap<EffectMeta>` on every `swap()`.
+#[derive(Debug, Clone, Default)]
+pub struct EffectMeta {
+    pub params: Vec<EffectParam>,
+}
 
 /// ABI signature exported by every effect dylib.
 pub type ProcessFn = unsafe extern "C" fn(
@@ -51,9 +83,12 @@ pub const SDSP_PROTOCOL_VERSION: u32 = 1;
 
 /// How long an old `Library` is kept alive after being swapped out.
 ///
-/// 200ms ≈ 19 buffers at 48kHz/512. Audio thread can't hold a stale pointer
-/// across that many process calls — REAPER would have stalled the project.
-const GRACE_PERIOD: Duration = Duration::from_millis(200);
+/// 500ms covers the worst-case buffer durations we'll realistically see:
+/// - 48kHz / 64 frames → 1.3ms/cb → 380+ callbacks
+/// - 44.1kHz / 1024 → 23ms/cb → 21 callbacks
+/// - 96kHz / 2048 → 21ms/cb → 23 callbacks
+/// Plenty of margin even on slow buffers. Memory cost: a few KB per held lib.
+const GRACE_PERIOD: Duration = Duration::from_millis(500);
 
 #[derive(thiserror::Error, Debug)]
 pub enum SwapError {
@@ -69,15 +104,28 @@ pub struct HotReloadSlot {
     current_fn: AtomicPtr<()>,
     poisoned: AtomicBool,
     libs: Mutex<Vec<(Instant, Library)>>,
+    /// Latest known effect metadata. Read by main thread (CLAP params extension),
+    /// written by worker threads on `swap()`. `ArcSwap` is lock-free on read.
+    meta: ArcSwap<EffectMeta>,
+    /// Flips to true after each successful `swap()`. Main thread observes it,
+    /// triggers `host.params.rescan(ALL)` on the next callback, clears the flag.
+    pub rescan_needed: AtomicBool,
 }
 
 impl HotReloadSlot {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             current_fn: AtomicPtr::new(std::ptr::null_mut()),
             poisoned: AtomicBool::new(false),
             libs: Mutex::new(Vec::new()),
+            meta: ArcSwap::from_pointee(EffectMeta::default()),
+            rescan_needed: AtomicBool::new(false),
         }
+    }
+
+    /// Lock-free read of the current effect metadata snapshot.
+    pub fn meta(&self) -> Arc<EffectMeta> {
+        self.meta.load_full()
     }
 
     /// Load a fresh dylib, verify the ABI handshake, and atomically replace the
@@ -115,9 +163,16 @@ impl HotReloadSlot {
             *sym as *mut ()
         };
 
+        // Read parameter metadata. `sdsp_param_count` / `sdsp_param_meta` are
+        // exported by the SDK's `setup!()` macro. We copy strings out via
+        // `CStr` so the resulting Vec survives dylib drop.
+        let meta = unsafe { read_effect_meta(&lib) };
+
         // Atomic publish to audio thread.
         let _old_raw = self.current_fn.swap(raw_fn, Ordering::Release);
+        self.meta.store(Arc::new(meta));
         self.poisoned.store(false, Ordering::Release);
+        self.rescan_needed.store(true, Ordering::Release);
 
         // Keep the dylib alive past the grace period. GC sweeper drops it later.
         let mut guard = self.libs.lock();
@@ -202,6 +257,52 @@ impl Default for HotReloadSlot {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read `sdsp_param_count` + `sdsp_param_meta(i)` from the dylib, copy out
+/// names/units into owned `String`s, return an `EffectMeta`.
+///
+/// # Safety
+///
+/// Caller holds `lib` alive during the call. The dylib's ABI exports must
+/// match the contract described in `superduper-dsp-sdk`. If the symbols are
+/// missing we silently return an empty `EffectMeta` — that's the M1 case
+/// (effect built without `setup!()`).
+unsafe fn read_effect_meta(lib: &Library) -> EffectMeta {
+    let count: Symbol<unsafe extern "C" fn() -> u32> = match lib.get(b"sdsp_param_count\0") {
+        Ok(s) => s,
+        Err(_) => return EffectMeta::default(),
+    };
+    let meta_fn: Symbol<unsafe extern "C" fn(u32) -> ParamMetaAbi> =
+        match lib.get(b"sdsp_param_meta\0") {
+            Ok(s) => s,
+            Err(_) => return EffectMeta::default(),
+        };
+
+    let n = count();
+    let mut params = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let m = meta_fn(i);
+        let name = c_str_to_string(m.name);
+        let unit = c_str_to_string(m.unit);
+        params.push(EffectParam {
+            name,
+            unit,
+            min: m.min,
+            max: m.max,
+            default: m.default,
+        });
+    }
+    EffectMeta { params }
+}
+
+unsafe fn c_str_to_string(p: *const u8) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    CStr::from_ptr(p as *const i8)
+        .to_string_lossy()
+        .into_owned()
 }
 
 // SAFETY: All mutation happens via atomics or a Mutex. `Library` is Send+Sync

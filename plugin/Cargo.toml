@@ -30,4 +30,5 @@ interprocess.workspace = true
 thiserror.workspace = true
 notify.workspace = true
 dirs = "5"
+arc-swap = "1"
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }

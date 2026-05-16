@@ -136,33 +136,18 @@ macro_rules! setup {
 
 /// Declare effect parameters with metadata.
 ///
-/// Generates:
-/// - `pub const <NAME>: usize = <index>` for each param (use to index into params array)
-/// - `static __PARAM_METAS: [ParamMeta; N]` consumed by `setup!()`
-#[macro_export]
-macro_rules! params {
-    ( $( $name:ident = $builder:expr ),* $(,)? ) => {
-        $crate::__params_internal!(@count 0usize; $( $name = $builder, )*);
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __params_internal {
-    // Final state — emit constants and the static array.
-    (@count $n:expr; ) => {
-        const __PARAM_COUNT: usize = $n;
-
-        #[doc(hidden)]
-        static __PARAM_METAS: [$crate::ParamMeta; __PARAM_COUNT] = [];
-    };
-
-    // Step through params, accumulating index.
-    (@count $n:expr; $name:ident = $builder:expr, $( $rest_name:ident = $rest_builder:expr, )*) => {
-        pub const $name: usize = $n;
-        $crate::__params_internal!(@count $n + 1usize; $( $rest_name = $rest_builder, )*);
-    };
-}
-// NOTE: The macro above is a simplified scaffolding. M4 will replace it with a
-// full proc-macro that emits a properly populated __PARAM_METAS array with
-// null-terminated names and units. For now, the API surface is here.
+/// Proc-macro form (M2) — emits:
+/// - `pub const <NAME>: usize = <index>` for each param
+/// - `pub const __PARAM_COUNT: usize = N`
+/// - `static __PARAM_NAME_i: &[u8]` (null-terminated)
+/// - `static __PARAM_UNIT_i: &[u8]` (null-terminated, empty if no unit)
+/// - `static __PARAM_METAS: [ParamMeta; N]` (consumed by `setup!()`)
+///
+/// Usage:
+/// ```ignore
+/// params! {
+///     GAIN  = param(-24.0, 24.0).default(0.0).unit("dB"),
+///     DRIVE = param(0.0, 1.0).default(0.5),
+/// }
+/// ```
+pub use superduper_dsp_sdk_macros::params;

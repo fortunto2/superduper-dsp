@@ -279,11 +279,45 @@ superduper-dsp/
 - VST3/AU обёртки (всегда CLAP-only)
 - Code editor в GUI (никогда — by design)
 
+## Distribution model (decided 2026-05): A+C hybrid
+
+End goal: AI-generated effects ship as real plugins users can drop into REAPER
+without Claude or cargo. Two-stage rollout:
+
+**Stage A — shell + dropdown (M2–M3)**
+- One `SuperDuper DSP.clap` plugin acts as a container.
+- Effects live as standalone `.dylib` files in
+  `~/Library/Audio/Plug-Ins/SuperDuper Effects/<name>.dylib` (one per effect,
+  optionally accompanied by `<name>.json` for params metadata).
+- The shell plugin scans that folder on activate, exposes the list via a CLAP
+  enum/stepped parameter ("Effect: ▼ Tape Saturator / Sub Reverb / …"). Changing
+  the param triggers `slot.swap()` to the chosen dylib.
+- Sharing an effect = sending a `.dylib` file; recipient drops it into the
+  folder, dropdown updates next time the plugin scans.
+- The existing per-instance `~/.superduper-dsp/instances/<uuid>/effect.dylib`
+  remains as a development sandbox for MCP `load_effect` iterations.
+
+**Stage C — freeze to standalone `.clap` (M5+)**
+- MCP tool `freeze(effect, name, vendor)` takes a working effect and produces
+  `<name>.clap` — a self-contained CLAP plugin with the dylib embedded via
+  `include_bytes!` and unique `clap_plugin_id`.
+- Implemented as a Cargo template (`clap-shell-template/`) with placeholders
+  for id / name / vendor / dylib bytes / params descriptor. Build pipeline:
+  template → cargo build → bundle assembly.
+- Each frozen plugin shows up in REAPER FX browser as a distinct entry
+  (`SuperDuper: Tape Saturator`, etc.), no shell needed, no Claude needed.
+- Sharing = sending one `.clap` file.
+
+**What we are NOT doing:** B (multi-plugin factory in one .clap) — adds factory
+complexity to the runtime shell without distribution wins over C.
+
 ## Открытые вопросы
 
 1. **Conduit-SDK ABI совместимость с ConjureDSP** — взять их sig или сделать свой?
 2. **Дефолтный effect template** — какой код встроить?
 3. **Параметры через CLAP rescan на каждый load_effect** — может ли это вызвать audio glitches в некоторых хостах?
+4. **Effect dylib filename → display name mapping** — берём из `<name>.json` sidecar
+   или экспортируем дополнительный ABI symbol `sdsp_effect_display_name()`?
 
 ## Связь с экосистемой SuperDuperAI
 

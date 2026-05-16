@@ -1424,6 +1424,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-reverb"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "clack-common",
+ "clack-extensions",
+ "clack-plugin",
+ "parking_lot",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,17 @@
+[package]
+name = "superduper-reverb"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Stereo plate reverb — standalone CLAP plugin"
+
+[lib]
+name = "superduper_reverb"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clack-plugin = "0.1"
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "clack-plugin"] }
+clack-common = "0.1"
+atomic_float = "1"
+parking_lot = "0.12"

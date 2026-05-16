@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "plugin",
+    "daemon",
+    "protocol",
+    "sdk",
+    "effects/example-passthrough",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Rust <rust@superduperai.co>"]
+license = "MIT"
+repository = "https://github.com/superduperai/superduper-dsp"
+
+[workspace.dependencies]
+# Shared utility deps
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+parking_lot = "0.12"
+once_cell = "1"
+
+# IPC
+interprocess = { version = "2", features = ["tokio"] }
+
+# Plugin-specific
+clack-plugin = "0.1"
+clack-extensions = "0.1"
+libloading = "0.8"
+ringbuf = "0.4"
+atomic_float = "1"
+
+# Daemon-specific (also reused in plugin for file-watching)
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+notify = "6"
+toml = "0.8"
+dirs = "5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false

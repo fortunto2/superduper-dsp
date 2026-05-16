@@ -1,0 +1,33 @@
+[package]
+name = "superduper-dsp-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "superduper_dsp"
+# `rlib` is needed so integration tests can `use superduper_dsp::*`.
+# `cdylib` is what gets bundled into the .clap.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+superduper-dsp-protocol = { path = "../protocol" }
+clack-plugin.workspace = true
+clack-extensions = { workspace = true, features = ["params", "audio-ports", "clack-plugin"] }
+clack-common = "0.1"
+libloading.workspace = true
+ringbuf.workspace = true
+atomic_float.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+once_cell.workspace = true
+interprocess.workspace = true
+thiserror.workspace = true
+notify.workspace = true
+dirs = "5"
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }

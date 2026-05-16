@@ -1,0 +1,17 @@
+# Build artifacts
+/target
+/dist
+**/*.rs.bk
+
+# Cargo.lock IS committed for binary/cdylib crates — uncomment to exclude only
+# if this becomes a published library.
+# Cargo.lock
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Daemon runtime socket
+/tmp/superduper-dsp.sock

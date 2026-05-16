@@ -1,0 +1,9 @@
+[package]
+name = "superduper-dsp-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SDK for writing SuperDuper DSP effects"
+
+[lib]
+crate-type = ["rlib"]

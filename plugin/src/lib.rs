@@ -291,7 +291,14 @@ impl<'a> PluginMainThread<'a> {
     }
 }
 
-impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
+    fn on_main_thread(&mut self) {
+        // Audio thread asked us (via host.request_callback) to do main-thread
+        // work — namely: pending reload swap or param rescan.
+        self.maybe_reload();
+        self.maybe_rescan();
+    }
+}
 
 // ============================================================================
 // Audio processor state
@@ -299,6 +306,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    host: HostAudioProcessorHandle<'a>,
 }
 
 /// Apply param_value events to `shared`. Routes by `param_id`:
@@ -344,7 +352,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     for PluginAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut PluginMainThread<'a>,
         shared: &'a PluginShared,
         _audio_config: PluginAudioConfiguration,
@@ -352,7 +360,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // Lazy-start the file watcher now that the plugin is actually being
         // used (not just scanned). Idempotent.
         shared.ensure_watcher();
-        Ok(Self { shared })
+        Ok(Self { shared, host })
     }
 
     fn process(
@@ -383,6 +391,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             );
         }
         apply_param_events(self.shared, events.input);
+
+        // If a Reload event just landed (or a watcher swap set rescan_needed),
+        // poke the host to schedule on_main_thread() ASAP. We can't do dlopen
+        // on the audio thread.
+        if self.shared.reload_requested.load(Ordering::Acquire)
+            || self.shared.slot.rescan_needed.load(Ordering::Acquire)
+        {
+            self.host.shared().request_callback();
+        }
 
         if self.shared.bypass.load(Ordering::Relaxed) {
             for mut port_pair in &mut audio {

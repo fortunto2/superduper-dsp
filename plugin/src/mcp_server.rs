@@ -314,12 +314,18 @@ fn run_server(
     };
 
     rt.block_on(async move {
-        let bind = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        // Prefer fixed port 7891 (matches SPEC.md + .mcp.json) so the URL is
+        // stable across plugin restarts. Fall back to a kernel-assigned port
+        // if 7891 is in use (e.g. another DAW already hosting the plugin).
+        let bind = match tokio::net::TcpListener::bind("127.0.0.1:7891").await {
             Ok(l) => l,
-            Err(e) => {
-                let _ = tx.send(Err(e));
-                return;
-            }
+            Err(_) => match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            },
         };
         let addr = match bind.local_addr() {
             Ok(a) => a,

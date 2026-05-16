@@ -337,6 +337,10 @@ fn run_server(
         let url = format!("http://{}/mcp", addr);
         let _ = tx.send(Ok(url));
 
+        // Stateful streamable HTTP (the rmcp default). Stateless mode
+        // (json_response: true + stateful_mode: false) caused Empty replies
+        // on tool/call in our env — fall back to a session-per-init flow.
+        // Claude Code reconnects cleanly on the next session start.
         let service = StreamableHttpService::new(
             || Ok(McpServer::new()),
             std::sync::Arc::new(LocalSessionManager::default()),

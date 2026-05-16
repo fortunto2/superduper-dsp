@@ -348,10 +348,20 @@ impl<'a> PluginMainThread<'a> {
             entry.name,
             entry.dylib
         );
-        // Watcher will swap as usual when notify fires. Force the slot to
-        // pull metadata immediately so rescan happens this main-thread tick.
         if let Err(e) = self.shared.slot.swap(dest) {
             dlog!("effect_select: explicit slot.swap failed: {}", e);
+        }
+        // Force REAPER to re-query our param layout RIGHT NOW (not lazily on
+        // the next count() call) — otherwise the UI keeps showing the
+        // previous effect's params even though audio is already on the new one.
+        if let Some(host_params) = self.host.shared().get_extension::<HostParams>() {
+            host_params.rescan(&mut self.host, ParamRescanFlags::ALL);
+            // Clear the flag the rescan logic uses — no need to re-trigger.
+            self.shared
+                .slot
+                .rescan_needed
+                .store(false, Ordering::Release);
+            dlog!("effect_select: requested host params.rescan(ALL)");
         }
     }
 

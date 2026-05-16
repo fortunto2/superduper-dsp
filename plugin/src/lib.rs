@@ -293,8 +293,11 @@ pub struct PluginMainThread<'a> {
 }
 
 impl<'a> PluginMainThread<'a> {
-    /// If a fresh swap landed since the last call, ask the host to re-enumerate
-    /// our parameters. Cheap no-op when the flag isn't set.
+    /// If a fresh swap landed since the last call, ask the host to refresh
+    /// param info. We use `INFO` (not `ALL`) because the spec forbids `ALL`
+    /// while the plugin is active — REAPER silently ignores active-state
+    /// `ALL`. `INFO` covers name/module/range changes, which is what we
+    /// actually need (count stays stable thanks to the IS_HIDDEN layout).
     fn maybe_rescan(&mut self) {
         if !self
             .shared
@@ -307,8 +310,11 @@ impl<'a> PluginMainThread<'a> {
         let Some(host_params) = self.host.shared().get_extension::<HostParams>() else {
             return;
         };
-        host_params.rescan(&mut self.host, ParamRescanFlags::ALL);
-        dlog!("requested host params.rescan(ALL)");
+        host_params.rescan(
+            &mut self.host,
+            ParamRescanFlags::INFO | ParamRescanFlags::TEXT | ParamRescanFlags::VALUES,
+        );
+        dlog!("requested host params.rescan(INFO|TEXT|VALUES)");
     }
 
     /// If the user changed the `Effect ▼` selector, install the matching
@@ -351,17 +357,20 @@ impl<'a> PluginMainThread<'a> {
         if let Err(e) = self.shared.slot.swap(dest) {
             dlog!("effect_select: explicit slot.swap failed: {}", e);
         }
-        // Force REAPER to re-query our param layout RIGHT NOW (not lazily on
-        // the next count() call) — otherwise the UI keeps showing the
-        // previous effect's params even though audio is already on the new one.
+        // Refresh REAPER's param info immediately. `INFO|TEXT|VALUES` is the
+        // active-state-safe subset (per CLAP spec — `ALL` while active is
+        // forbidden, REAPER ignores it). Our layout is stable (IS_HIDDEN
+        // slots), so we don't need `ALL` here anyway.
         if let Some(host_params) = self.host.shared().get_extension::<HostParams>() {
-            host_params.rescan(&mut self.host, ParamRescanFlags::ALL);
-            // Clear the flag the rescan logic uses — no need to re-trigger.
+            host_params.rescan(
+                &mut self.host,
+                ParamRescanFlags::INFO | ParamRescanFlags::TEXT | ParamRescanFlags::VALUES,
+            );
             self.shared
                 .slot
                 .rescan_needed
                 .store(false, Ordering::Release);
-            dlog!("effect_select: requested host params.rescan(ALL)");
+            dlog!("effect_select: requested host params.rescan(INFO|TEXT|VALUES)");
         }
     }
 
@@ -639,11 +648,17 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.maybe_load_selected_effect();
         self.maybe_rescan();
         self.maybe_reload();
-        let effect_count = self.shared.slot.meta().params.len() as u32;
-        // Cap at MAX_EFFECT_PARAMS — anything past that is a bug in the effect.
-        let effect_count = effect_count.min(MAX_EFFECT_PARAMS as u32);
-        // 1 (Gain) + N (effect) + 1 (Reload) + 1 (Effect ▼)
-        1 + effect_count + 1 + 1
+        // STABLE layout: always advertise the same number of param slots so
+        // CLAP IDs never shift. CLAP `rescan(INFO)` (allowed while the plugin
+        // is active) lets us rename slots into hidden/unused safely; in
+        // contrast, count changes require `rescan(ALL)` which the spec forbids
+        // while processing — REAPER will simply ignore it and keep its old
+        // UI labels. So: hide unused slots, keep count rock solid.
+        //   0          → Gain
+        //   1..=N      → effect params (IS_HIDDEN when current meta has fewer)
+        //   N+1        → Reload
+        //   N+2        → Effect ▼
+        1 + MAX_EFFECT_PARAMS as u32 + 1 + 1
     }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
@@ -661,13 +676,17 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             return;
         }
         let meta = self.shared.slot.meta();
-        let effect_count = meta.params.len().min(MAX_EFFECT_PARAMS) as u32;
-        if param_index <= effect_count {
-            // Effect params: ids 1..=N. param_index is 1-based here.
+        let effect_slots = MAX_EFFECT_PARAMS as u32; // stable layout — see count()
+        if param_index <= effect_slots {
+            // Effect params: ids 1..=MAX_EFFECT_PARAMS, always advertised so
+            // the layout is stable across swaps. Slots beyond the current
+            // effect's declared count are marked `IS_HIDDEN` so REAPER tucks
+            // them away in the FX panel.
             let idx = (param_index - 1) as usize;
+            let id = ClapId::new(param_index);
             if let Some(p) = meta.params.get(idx) {
                 info.set(&ParamInfo {
-                    id: ClapId::new(param_index),
+                    id,
                     flags: ParamInfoFlags::IS_AUTOMATABLE,
                     cookie: Default::default(),
                     name: p.name.as_bytes(),
@@ -676,11 +695,23 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                     max_value: p.max as f64,
                     default_value: p.default as f64,
                 });
+            } else {
+                // Empty slot — make it invisible and ignored.
+                info.set(&ParamInfo {
+                    id,
+                    flags: ParamInfoFlags::IS_HIDDEN | ParamInfoFlags::IS_READONLY,
+                    cookie: Default::default(),
+                    name: b"",
+                    module: b"",
+                    min_value: 0.0,
+                    max_value: 1.0,
+                    default_value: 0.0,
+                });
             }
             return;
         }
-        // Reload toggle.
-        if param_index == effect_count + 1 {
+        // Reload toggle — always at param_index = MAX_EFFECT_PARAMS + 1.
+        if param_index == effect_slots + 1 {
             info.set(&ParamInfo {
                 id: reload_clap_id(),
                 flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_STEPPED,
@@ -693,9 +724,8 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             });
             return;
         }
-        // Effect ▼ selector (always present, even when the catalog is empty —
-        // REAPER expects a stable param layout for caching/automation).
-        if param_index == effect_count + 2 {
+        // Effect ▼ selector — fixed last slot, never moves.
+        if param_index == effect_slots + 2 {
             let catalog = self.shared.catalog.load();
             let max = catalog.len().saturating_sub(1).max(0) as f64;
             info.set(&ParamInfo {

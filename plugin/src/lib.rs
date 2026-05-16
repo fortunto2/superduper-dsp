@@ -206,7 +206,7 @@ impl PluginShared {
         // while initialising FSEvents on macOS, and during CLAP plugin scan
         // that latency made REAPER's main thread unresponsive to subsequent
         // API calls. By deferring, scan stays cheap.
-        Self {
+        let s = Self {
             gain_db: AtomicF32::new(PARAM_GAIN_DEFAULT_DB as f32),
             bypass: AtomicBool::new(false),
             slot,
@@ -220,7 +220,17 @@ impl PluginShared {
             process_calls: AtomicU64::new(0),
             events_seen: AtomicU64::new(0),
             _watcher: parking_lot::Mutex::new(None),
-        }
+        };
+
+        // Force a CLAP param rescan on the first main-thread tick so the host
+        // re-asks count()/get_info() with the new layout (including the new
+        // `Effect ▼` param at id 34). Without this, REAPER keeps the layout
+        // it cached at the previous plugin version's first scan and sends UI
+        // gestures to whatever param happened to be at that visual index —
+        // which is why cranking `Effect ▼` was writing to the previously-
+        // loaded effect's DRIVE knob.
+        s.slot.rescan_needed.store(true, Ordering::Release);
+        s
     }
 
     /// Lazy-init watcher on first audio activation. Idempotent.

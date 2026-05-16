@@ -1,0 +1,9 @@
+[package]
+name = "superduper-dsp-sdk-build"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared build.rs helpers for SuperDuper DSP effect plugins"
+
+[lib]
+name = "superduper_dsp_sdk_build"

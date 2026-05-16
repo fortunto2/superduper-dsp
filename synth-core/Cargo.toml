@@ -1,0 +1,13 @@
+[package]
+name = "superduper-synth-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared DSP code for SuperDuper synth/effect plugins (ported from rust-synth)"
+
+[lib]
+name = "superduper_synth_core"
+
+[dependencies]
+fundsp = "0.23"
+realfft = "3.5"

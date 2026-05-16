@@ -43,6 +43,8 @@
 // already links std, so #![no_std] would buy us nothing.
 
 pub mod dsp;
+pub mod build_meta;
+pub mod clap_helpers;
 
 // ============================================================================
 // ABI types for daemon ↔ dylib metadata exchange

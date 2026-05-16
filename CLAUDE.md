@@ -1,180 +1,353 @@
-# Claude Code instructions for SuperDuper DSP
+# Claude Code instructions — SuperDuper DSP
 
-Plugin platform: CLAP plugin (Rust, `clack-plugin 0.1` + `clack-extensions 0.1`) that
-loads user-written DSP effects as native `.dylib` files with hot-reload via
-`libloading`. AI authors `process.rs` files; the watcher picks up rebuilt dylibs
-and atomically swaps the function pointer.
+CLAP plugin platform in Rust. We ship **standalone effect plugins** (one .clap
+per effect: SuperDuper Reverb, SuperDuper Supermass, …) built on a shared
+infrastructure of DSP blocks, CLAP helpers, build versioning, and spectrum
+analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
+caches param layouts per (plugin_id, slot) which makes dynamic layouts
+unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
 ## Current state
 
-- **M0**: Hello CLAP with one `Gain` parameter (−24..+24 dB). DONE.
-- **M1**: native dylib hot-reload via `HotReloadSlot` + `notify` file watcher,
-  `catch_unwind` safety net, ABI handshake (`sdsp_protocol_version`). DONE.
-- **M2** (next): proc-macro `params!` / `effect!` to cut effect boilerplate to ~10 LOC.
-- **M3** (later): in-plugin MCP server (axum+SSE) — Claude Code drives `load_effect`.
+- **superduper-reverb** — Dattorro figure-of-eight plate. 10 params (Size,
+  Decay, Damping, Pre-Delay, Modulation, Width, Mix, Duck Amount/Attack/Release).
+  Sidechain input port. DC blocker on input. Smoothed Mix/Width/Duck.
+- **superduper-supermass** — Valhalla-style cascade (reverb 35m/15s →
+  stereo chorus → reverb 50m/28s) built on fundsp 0.23 + synth-core helpers.
+  7 params (Mix, Width, Drive, Tilt, Duck Amount/Attack/Release). Sidechain.
+  DC blocker per channel. Smoothed knobs.
+- **Both** ship as `.clap` bundles, show up in REAPER as
+  `SuperDuper Reverb [bNNNNN]` / `SuperDuper Supermass [bNNNNN]` where
+  the build number rolls forward on every rebuild.
 
-## Hard-won architectural lessons
+Planned: SuperDuper Ambient (multi-track autonomous generator from rust-synth),
+SuperDuper Pad (note-driven synth via MIDI input port). Both will reuse the
+same shared infrastructure.
 
-Read these before editing anything CLAP-related:
+## Workspace layout
 
-1. **`audio-ports` extension is mandatory** even for a stereo-in/stereo-out
-   effect. Without `builder.register::<PluginAudioPorts>()` in `declare_extensions`,
-   REAPER calls `process()` but routes no audio through it — the plugin appears
-   to load, parameters work, but the signal bypasses you. Symptom: `Gain` slider
-   moves in the UI but volume doesn't change. We hit this hard. The audio-ports
-   impl must declare a stereo port with `AudioPortFlags::IS_MAIN` and ideally
-   `in_place_pair: Some(ClapId::new(0))` to let the host pick in-place processing.
+```
+superduper-dsp/
+  sdk/                       lib utilities used by every plugin
+    src/
+      clap_helpers.rs        ParamDef, apply_param_events, split_io
+      build_meta.rs          plugin_display_name!, version_string!, build_num!, build_date!
+      dsp.rs                 OnePole, EnvelopeFollower, DcBlocker, soft_clip etc.
+  sdk-build/                 build.rs helpers (one-line per-plugin build.rs)
+    src/lib.rs               emit_build_meta()
+  sdk-macros/                proc-macro params!{} (M2 planned)
+  synth-core/                shared DSP — anything reusable across effects
+    src/
+      dsp_blocks.rs          Ducker, Tilt, DcBlocker, SmoothedParam
+      analysis.rs            FFT, magnitude_spectrum_db, ascii_spectrum, sine sweep
+      supermass.rs           Valhalla-style cascade reverb (Net builder)
+    tests/dsp_blocks.rs      9 unit tests on shared blocks
+  effects/
+    superduper-reverb/       Dattorro plate effect plugin
+    superduper-supermass/    Cascade reverb effect plugin
+    example-passthrough/     toy effect for the hot-reload path
+  plugin/                    old shell-plugin code (deprecated, kept for reference)
+  daemon/, protocol/         IPC infrastructure (deprecated for now)
+  scripts/
+    build_reverb_bundle.sh
+    build_supermass_bundle.sh
+    restart_reaper.sh
+```
 
-2. **`ParamValueEvent::param_id()` returns `Option<ClapId>`, not `ClapId`.** Do
-   not write `if pv.param_id() == target_id { ... }` — that silently always
-   evaluates to false (it compiles via a blanket PartialEq). Always destructure:
-   `let Some(id) = pv.param_id() else { continue }; if id == target_id { ... }`.
+## How to add a new effect plugin
 
-3. **CLAP versions in the registry are 0.1.x, not 0.4.x.** The original Cargo.toml
-   from the project skeleton pinned `clack-plugin = "0.4"` which doesn't exist
-   on crates.io. The actual current release is 0.1.0. If you regenerate from
-   scaffolding, double-check what `cargo search clack-plugin` returns.
+Step-by-step. Copy SuperDuper Reverb or Supermass as a starting point.
 
-4. **`#![no_std]` in SDK breaks `f32::exp()` and `.tanh()`.** They come from
-   `std::f32`. Either drop `no_std` (current choice) or pull in `libm` and call
-   `libm::expf` / `libm::tanhf`. Real effects almost always link std anyway,
-   so `no_std` buys nothing right now.
+### 1. Create the crate
 
-5. **`~/.local/bin/python3.*` on this Mac is Pyodide (WASM), not native CPython.**
-   For Rust builds you don't care about this, but if you ever wire in Python
-   tooling (e.g. for codegen scripts), use `/opt/homebrew/bin/python3.*` instead.
+```bash
+mkdir -p effects/superduper-<name>/{src,tests}
+```
 
-6. **`notify::recommended_watcher()` must NOT be called during plugin scan.**
-   It blocks briefly while FSEvents initialises on macOS, and REAPER's CLAP
-   scan path serialises everything — calling it from `new_shared()` made the
-   whole REAPER main thread time out for ~5 seconds per call. Defer to
-   `activate()` (audio thread setup) via a `parking_lot::Mutex<Option<...>>`
-   + `ensure_watcher()` idempotent init. Already done; don't undo it.
+Add to workspace `Cargo.toml`:
+```toml
+members = [..., "effects/superduper-<name>"]
+```
 
-7. **stderr from a Dock-launched plugin host is dropped.** `tracing_subscriber`
-   writing to stderr won't show up in `log stream --process REAPER`. For debug
-   logs, write to `~/.superduper-dsp/plugin.log` directly (we have a `dlog!`
-   macro for this). Not RT-safe, but acceptable during development. Tail with
-   `tail -F ~/.superduper-dsp/plugin.log`.
+### 2. `effects/superduper-<name>/Cargo.toml`
 
-8. **CARGO_TARGET_DIR is set globally on this machine to `/Users/rustam/.cargo-target`.**
-   `scripts/build_bundle.sh` respects `${CARGO_TARGET_DIR:-./target}` for that
-   reason. Don't hardcode `./target`.
+```toml
+[package]
+name = "superduper-<name>"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "..."
 
-## DSP code contract (for effects in `effects/*/`)
+[lib]
+name = "superduper_<name>"
+crate-type = ["cdylib", "rlib"]
 
-When generating a `process.rs` for an effect, follow this exact contract.
+[dependencies]
+clack-plugin = "0.1"
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "clack-plugin"] }
+clack-common = "0.1"
+atomic_float = "1"
+parking_lot = "0.12"
+superduper-dsp-sdk = { path = "../../sdk" }
+superduper-synth-core = { path = "../../synth-core" }
+
+[build-dependencies]
+superduper-dsp-sdk-build = { path = "../../sdk-build" }
+
+[dev-dependencies]
+clack-host = { version = "0.1", features = ["clack-plugin"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "clack-host"] }
+superduper-synth-core = { path = "../../synth-core" }
+```
+
+### 3. `build.rs` (one line)
 
 ```rust
-//! Effect: short description.
-#![allow(clippy::missing_safety_doc)]
+fn main() { superduper_dsp_sdk_build::emit_build_meta(); }
+```
 
-/// Audio block process — called from RT thread. NO ALLOC, NO PANIC, NO IO.
-#[no_mangle]
-pub unsafe extern "C" fn process(
-    input: *const f32,
-    output: *mut f32,
-    channel_count: u32,
-    frame_count: u32,
-    _params: *const f32,   // unused until M2 ships params!
-) {
-    let total = (channel_count as usize) * (frame_count as usize);
-    for i in 0..total {
-        *output.add(i) = *input.add(i); // your DSP here
+This puts `SDSP_BUILD_NUM` / `SDSP_BUILD_DATE` env vars into the compile so
+the plugin's display name shows `[bNNNNN]`.
+
+### 4. `src/lib.rs` skeleton
+
+Crib from `effects/superduper-reverb/src/lib.rs`. Key pieces:
+
+```rust
+use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::{build_num, build_date, plugin_display_name, version_string};
+use superduper_synth_core::dsp_blocks::{Ducker, SmoothedParam, DcBlocker, Tilt};
+
+const PARAMS: &[ParamDef] = &[
+    ParamDef { id: 0, name: b"Param1", min: 0.0, max: 1.0, default: 0.5, unit: "" },
+    // ... fixed layout — never add/remove at runtime
+];
+const P_PARAM1: usize = 0;
+
+pub struct PluginShared { pub params: [AtomicF32; PARAMS.len()], pub bypass: AtomicBool }
+// ... use ParamDef::init_atomics in new()
+
+impl PluginAudioPortsImpl for PluginMainThread<'_> {
+    fn count(&mut self, is_input: bool) -> u32 { if is_input { 2 } else { 1 } }
+    fn get(&mut self, index: u32, is_input: bool, w: &mut AudioPortInfoWriter) {
+        match (index, is_input) {
+            (0, _) => /* main I/O, IS_MAIN, in_place_pair: Some(ClapId::new(0)) */,
+            (1, true) => /* Sidechain, no IS_MAIN, in_place_pair: None */,
+            _ => {}
+        }
     }
 }
 
-/// ABI handshake. Plugin refuses to load if this doesn't match.
-#[no_mangle]
-pub extern "C" fn sdsp_protocol_version() -> u32 { 1 }
-
-/// Param metadata as a null-terminated JSON byte slice. Empty until M2.
-#[no_mangle]
-pub extern "C" fn sdsp_param_descriptor_json() -> *const u8 {
-    static JSON: &[u8] = b"[]\0";
-    JSON.as_ptr()
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
+        ParamDef::write_info(PARAMS, idx, info);
+    }
+    fn value_to_text(&mut self, id, value, w) -> _ { ParamDef::write_display(PARAMS, id, value, w) }
+    fn text_to_value(&mut self, id, text) -> _ { ParamDef::parse_text(PARAMS, id, text) }
+    fn flush(&mut self, ev, _) { superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev); }
 }
+
+impl DefaultPluginFactory for ... {
+    fn get_descriptor() -> PluginDescriptor {
+        PluginDescriptor::new(
+            "co.superduperai.<name>",                      // stable CLAP id
+            plugin_display_name!("SuperDuper <Name>"),    // → "SuperDuper <Name> [bNNNNN]"
+        )
+        .with_version(version_string!("0.1"))             // → "0.1.NNNNN (YYYY-MM-DD)"
+        // ...
+    }
+}
+
+clack_export_entry!(SinglePluginEntry<...>);
 ```
 
-### Hard rules — never violate
+### 5. Tests
 
-- No `std::alloc` — no `Vec`, `String`, `Box`, `HashMap` allocations in `process()`.
-  Stack arrays or module-level `static mut` only.
+Every effect crate ships at least 3 test files:
+- `tests/dsp_smoke.rs` — drives the DSP block directly, validates RMS / peak /
+  stability / mono-to-stereo behavior. No CLAP, no fundsp Net wrapping. Fast.
+- `tests/clap_e2e.rs` — uses `clack-host` to load the plugin in-process,
+  activates, runs a buffer through `process()`, asserts output ≠ input.
+  Catches CLAP plumbing bugs (audio-ports, param routing) without REAPER.
+- `tests/spectrum.rs` — runs an impulse / noise burst / sine sweep through
+  the DSP, FFTs the tail, prints ASCII spectrogram via `analysis::ascii_spectrum`.
+  Read with `cargo test --test spectrum -- --nocapture` — the ASCII art
+  is the assertion target (a human or AI sees the shape and decides if it's right).
+
+### 6. Bundle script `scripts/build_<name>_bundle.sh`
+
+Copy `scripts/build_reverb_bundle.sh`, change two strings: the package name
+and the CFBundleIdentifier. The script also installs to
+`~/Library/Audio/Plug-Ins/CLAP/<Name>.clap`.
+
+## Shared building blocks — use these instead of rolling your own
+
+**`superduper_synth_core::dsp_blocks`:**
+- `Ducker` — peak-envelope-driven sidechain gain reducer with asymmetric
+  attack/release. Same primitive both reverbs use.
+- `Tilt` — single-shelf brightness control (±6 dB).
+- `DcBlocker` — first-order HPF at ~38 Hz. **Put it before any feedback
+  loop** (reverbs, delays, comb filters). DC drift accumulates and otherwise
+  drowns the tail.
+- `SmoothedParam` — one-pole interpolator for CLAP slew. Without it, dragging
+  Mix or Width sends a step function into the audio and you hear zipper noise.
+  Snap to host-loaded value at `activate()` time so the first block isn't a
+  fade-in.
+
+**`superduper_synth_core::analysis`:**
+- `magnitude_spectrum_db(samples)` — Hann window + real-FFT → dB per bin.
+- `spectrum_with_freq(samples, sr)` — same but pairs each bin with its Hz.
+- `ascii_spectrum(spec, opts)` — render as ASCII bar chart. Use in tests
+  with `-- --nocapture` so the chart prints.
+- `frequency_response_sine_sweep(process_one, sr, freqs, secs)` — log-spaced
+  sine sweep through a closure-shaped DSP block → measured gain curve.
+- `log_freq_grid()` — standard 1/3-octave grid 20 Hz–20 kHz.
+
+**`superduper_synth_core::supermass`:**
+- `build_wet() -> fundsp::Net` — cascade reverb graph. Call
+  `net.set_sample_rate(...)` in `activate()`. Net mutation is RT-unsafe so
+  geometry stays fixed; expose Mix/Width/etc. as post-process knobs.
+
+**`superduper_dsp_sdk::clap_helpers`:**
+- `ParamDef` struct — declare your `const PARAMS: &[ParamDef]`. Methods
+  `write_info`/`write_display`/`parse_text` plug directly into the CLAP
+  param extension trait.
+- `apply_param_events(params, events)` — reads `ParamValueEvent`s and stores
+  into atomics. Critical: `pv.param_id()` returns `Option<ClapId>`, NOT
+  `ClapId` — destructure or you silently lose all events.
+- `split_io(ChannelPair)` — unifies InputOutput / InPlace / OutputOnly /
+  InputOnly into `(read_slice, write_slice)`.
+
+**`superduper_dsp_sdk` build-meta macros** (require `sdk-build` in build-deps):
+- `plugin_display_name!("Base Name")` → `"Base Name [bNNNNN]"`
+- `version_string!("0.X")` → `"0.X.NNNNN (YYYY-MM-DD)"`
+- `build_num!()` / `build_date!()` for log lines
+
+## Hard-won lessons — read before editing
+
+1. **`audio-ports` extension is mandatory** in REAPER, even for plain
+   stereo-in/stereo-out. Without it `process()` is called but no audio is
+   routed through. Always register with `IS_MAIN` flag and
+   `in_place_pair: Some(ClapId::new(0))`.
+
+2. **`ParamValueEvent::param_id()` returns `Option<ClapId>`.** Compare via
+   `let Some(id) = pv.param_id() else { continue }` — never directly to a
+   `ClapId` (compiles, silently always false).
+
+3. **CLAP crate versions are 0.1.x**, not 0.4.x. Don't trust the original
+   scaffolding's pinned versions.
+
+4. **`#![no_std]` breaks `f32::exp/tanh/powf`.** Keep std on.
+
+5. **`~/.local/bin/python3.*` is Pyodide WASM**, not native CPython.
+   Use `/opt/homebrew/bin/python3.13` for any native Python tooling.
+
+6. **`notify::recommended_watcher()` blocks for FSEvents init on macOS.**
+   Don't call it during plugin scan (`new_shared()`) — REAPER's scan path
+   serialises everything and you'll get 5-second per-plugin timeouts.
+
+7. **stderr from Dock-launched plugin hosts is dropped.** Write logs to
+   `~/.superduper-dsp/<plugin>.log` directly (each plugin has its own
+   `OnceLock<Mutex<File>>` + `slog!`/`rlog!` macro). Not RT-safe — gate
+   behind a build flag for shipping.
+
+8. **`CARGO_TARGET_DIR=/Users/rustam/.cargo-target`** is set globally on
+   this machine. Bundle scripts respect `${CARGO_TARGET_DIR:-./target}`.
+
+9. **fundsp Net is RT-unsafe to rebuild.** Build once in `activate()`,
+   call `set_sample_rate()`, never rebuild. Use `AudioUnit::tick(in, out)`
+   per sample (or `process()` per block).
+
+10. **REAPER caches param layouts per (plugin_id, FX-slot)** in the project
+    file. Changing param count or order breaks track-level settings. Standalone
+    plugins with fixed layouts sidestep this; the original shell-plugin
+    approach kept hitting it. Don't change `PARAMS` after shipping unless
+    you bump the CLAP id (which forfeits user automation).
+
+11. **`Vec` / `Box::new` / any heap alloc in `process()` = crash potential.**
+    Pre-allocate scratch buffers at `activate(max_frames_count)` into
+    `Box<[f32]>`. The sidechain snapshot pattern in reverb/supermass shows
+    the right shape.
+
+12. **DC blocker before any feedback loop.** Without it, accumulating DC
+    eventually drowns the reverb tail in static hum. One-line cost, big win.
+
+13. **Smooth user-facing params (Mix, Width, Drive).** Atomic-read per sample
+    is fine, but the *target* changes in steps. Slew through SmoothedParam
+    to kill zipper noise on knob drags.
+
+## DSP code style rules — never violate inside `process()`
+
+- No heap allocation (no `Vec`, `Box::new`, `String`, `HashMap`).
 - No `Mutex` / `RwLock` — atomics only.
-- No syscalls — no file I/O, no `println!`, no networking.
-- No `panic!`, no `unwrap()`, no `expect()`, no array `[i]` indexing that can
-  fail. Use `.get()` with `Option` or `unsafe { *ptr.add(i) }` after manually
-  bounds-checking against `frame_count`.
-- Panics are caught by `catch_unwind` on the plugin side and poison the slot,
-  but that's a safety net, not a coding style.
-
-### What you CAN do
-
-- Everything in `superduper_dsp_sdk::dsp::` (`OnePole`, `EnvelopeFollower`,
-  `DcBlocker`, `soft_clip`, `hard_clip`, `time_to_coeff`).
-- `core::f32::*` math (`.sin()`, `.tanh()`, `.powf()`, etc.) — we link std.
-- Small stack arrays: `let mut state = [0.0_f32; 64];`.
-- `static mut` for per-effect persistent state. Wrap accesses in `unsafe`.
+- No syscalls (no `println!`, no file I/O, no networking).
+- No `panic!`, no `unwrap()`, no `expect()`, no `arr[i]` indexing that can
+  out-of-bounds. Use `.get()` + `Option` or bound-checked `unsafe { *ptr.add(i) }`.
+- `core::f32::*` math (`.sin()`, `.tanh()`, `.powf()`) is fine — we link std.
+- `static mut` for module-level state is OK if wrapped in `unsafe` and
+  documented as audio-thread-only.
 
 ## Workflow
 
-### Build the plugin
+### Build a specific plugin + install
 ```bash
-cargo build --release
-./scripts/build_bundle.sh        # produces dist/SuperDuperDSP.clap
-./scripts/install_local.sh       # symlinks/copies to ~/Library/Audio/Plug-Ins/CLAP/
+./scripts/build_reverb_bundle.sh
+./scripts/build_supermass_bundle.sh
+# new effects: write scripts/build_<name>_bundle.sh
 ```
 
-### Hot-reload an effect (M1 manual workflow)
+### Run all tests
 ```bash
-cargo build --release -p example-passthrough
-./scripts/load_effect.sh         # copies into latest ~/.superduper-dsp/instances/*/effect.dylib
-```
-Watcher picks it up in ~250ms; REAPER keeps playing through the new effect.
-
-### Run tests
-```bash
-cargo test -p superduper-dsp-plugin
-# 9 tests: 4 lib unit + 2 hotreload unit + 3 hotreload integration
+cargo test --release -p superduper-reverb -p superduper-supermass -p superduper-synth-core
 ```
 
-### Watch debug logs
+### See ASCII spectrum output
 ```bash
-tail -F ~/.superduper-dsp/plugin.log
+cargo test --release -p superduper-reverb --test spectrum -- --nocapture
+cargo test --release -p superduper-supermass --test spectrum -- --nocapture
 ```
 
-## Distribution model — A+C hybrid (decided 2026-05)
+### Tail plugin debug logs (during REAPER session)
+```bash
+tail -F ~/.superduper-dsp/reverb.log
+tail -F ~/.superduper-dsp/supermass.log
+```
 
-Future stages will let users ship AI-generated effects to others without Claude:
+### Restart REAPER cleanly
+```bash
+./scripts/restart_reaper.sh        # graceful Cmd+Q + open
+./scripts/restart_reaper.sh --force # SIGKILL + open
+```
 
-**Stage A (M2–M3): shell + effects folder.** One `SuperDuper DSP.clap` scans
-`~/Library/Audio/Plug-Ins/SuperDuper Effects/*.dylib` and exposes the list as
-a CLAP enum-stepped parameter. Switching the effect triggers `slot.swap()`.
-Sharing = passing a `.dylib` file. Watcher migrates from per-instance dir to
-this shared folder.
+### REAPER plugin cache problems
+If a rebuild doesn't take effect: REAPER Preferences → Plug-ins → CLAP →
+**Clear cache and re-scan**. Build numbers in the display name (`[bNNNNN]`)
+let you tell which build is loaded without digging through Plugin Info.
 
-**Stage C (M5+): freeze to standalone `.clap`.** MCP tool `freeze(name, vendor)`
-generates a Cargo template instance with `include_bytes!`-embedded dylib + a
-unique plugin ID, builds it, produces `<name>.clap` — a self-contained plugin
-that shows up natively in FX browsers. Sharing = passing one `.clap`.
+## Sidechain routing in REAPER
 
-**NOT doing:** B (one .clap containing N plugins via factory) — runtime
-complexity without distribution win over C.
+Reverb and Supermass declare `Sidechain` as input port index 1 (no IS_MAIN
+flag, type STEREO). To route something into it:
+1. Right-click the plugin in the FX chain → **Pin Connector**.
+2. The left half lists track channels (1-4 typical), the right half lists
+   the plugin's pins (3-4 are the sidechain L/R).
+3. Drag connections — e.g. track channels 3-4 → plugin pins 3-4. You'll need
+   to enable 4-channel routing on the track first (right-click track →
+   I/O → set output channels to 4).
+4. Send another track's audio to channels 3-4 of the reverb track.
 
-## Future MCP tools (M3)
+If no sidechain is routed, both ducker key signals fall back to dry input
+(works on insert vocals out of the box).
 
-Once the in-plugin MCP server lands, these will be exposed under `superduper-dsp`:
-- `list_instances()` — see all live plugin instances
-- `load_effect(target, code)` — compile and hot-load
-- `get_params(target)` / `set_param(target, name, value)`
-- `bypass(target, enabled)`
-- `save_session(name)` / `load_session(name)`
-- `get_code(target)` / `get_status(target)`
+## Distribution model — Stage C (decided 2026-05)
 
-For now, only `track_fx_*` via the REAPER MCP (`total-reaper-mcp`) can drive the
-plugin externally — and even that has quirks (CLAP `set_param` via REAPER's
-ScriptAPI may not propagate plain values correctly to the plugin; UI-driven
-crank works fine via `ParamValueEvent`s through `process()`).
+Every effect is its own `.clap` bundle with a unique CLAP id. Users get
+plugin-by-plugin distribution: SuperDuperReverb.clap, SuperDuperSupermass.clap,
+… separate files on disk, separate entries in FX browser, separate REAPER
+project state. Old "shell + dynamic effects folder" idea is dead — it
+fought REAPER's param cache and lost.
 
 ## When in doubt
 

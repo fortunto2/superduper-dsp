@@ -6,8 +6,11 @@ members = [
     "protocol",
     "sdk",
     "sdk-macros",
+    "sdk-build",
+    "synth-core",
     "effects/example-passthrough",
     "effects/superduper-reverb",
+    "effects/superduper-supermass",
 ]
 
 [workspace.package]

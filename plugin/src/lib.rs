@@ -82,7 +82,7 @@ macro_rules! dlog {
 // host happily reports the new count + names but keeps routing UI
 // gestures to whatever id sat there at first scan — completely
 // undocumented. New id ⇒ new plugin in the host's eyes ⇒ clean state.
-pub const PLUGIN_ID: &str = "co.superduperai.dsp.v3";
+pub const PLUGIN_ID: &str = "co.superduperai.dsp.v4";
 pub const PLUGIN_NAME: &str = "SuperDuper DSP";
 pub const PLUGIN_VENDOR: &str = "SuperDuperAI";
 pub const PLUGIN_VERSION: &str = "0.1.0";
@@ -191,20 +191,29 @@ impl PluginShared {
 
         let effect_dylib_path = instance_dir.join("effect.dylib");
 
-        // Eager-load: if a dylib already lives at the per-instance path (left
-        // over from a prior session, or dropped in by `scripts/load_effect.sh`
-        // before REAPER finished loading the plugin), swap it in synchronously
-        // now. `slot.swap` itself is fast (dlopen + a couple of dlsym calls
-        // + a Vec<EffectParam> alloc), so it doesn't trip the scan-timeout
-        // problem that the FSEvents watcher init does.
-        if effect_dylib_path.exists() {
-            match slot.swap(&effect_dylib_path) {
-                Ok(()) => {
-                    dlog!("eager swap loaded {:?}", effect_dylib_path);
-                }
-                Err(e) => {
-                    dlog!("eager swap of {:?} failed: {}", effect_dylib_path, e);
-                }
+        // Eager-load logic: by the time REAPER calls our get_info() in the
+        // initial scan, `slot.meta()` MUST be non-empty if we want the host
+        // to cache real param names in slots 1..N. Otherwise REAPER caches
+        // "all slots IS_HIDDEN" forever and switching effects later won't
+        // surface their params in the FX panel. So:
+        //
+        // 1. If there's already a dylib at the per-instance path (session
+        //    restore, manual cp), load it.
+        // 2. Otherwise grab the first effect in the catalog and install it
+        //    as the default. This gives REAPER something real to scan.
+        let initial = if effect_dylib_path.exists() {
+            Some(effect_dylib_path.clone())
+        } else {
+            let catalog = effect_catalog::scan();
+            catalog.first().map(|e| {
+                let _ = std::fs::copy(&e.dylib, &effect_dylib_path);
+                effect_dylib_path.clone()
+            })
+        };
+        if let Some(path) = initial {
+            match slot.swap(&path) {
+                Ok(()) => dlog!("initial swap loaded {:?}", path),
+                Err(e) => dlog!("initial swap of {:?} failed: {}", path, e),
             }
         }
 

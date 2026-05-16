@@ -8,6 +8,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod build_pipeline;
+mod effect_catalog;
 mod hotreload;
 mod mcp_registry;
 mod mcp_server;
@@ -94,6 +95,10 @@ pub const MAX_EFFECT_PARAMS: usize = 32;
 /// debug and when running without a working file watcher.
 pub const PARAM_RELOAD_ID: u32 = (MAX_EFFECT_PARAMS as u32) + 1;
 
+/// `Effect ▼` selector. Stepped CLAP param indexing into the on-disk
+/// effect catalog. Crank it to load a different compiled effect on the fly.
+pub const PARAM_EFFECT_SELECT_ID: u32 = (MAX_EFFECT_PARAMS as u32) + 2;
+
 const fn gain_clap_id() -> ClapId {
     // 0 is a valid ClapId — the type only forbids `u32::MAX`.
     ClapId::new(PARAM_GAIN_ID)
@@ -101,6 +106,10 @@ const fn gain_clap_id() -> ClapId {
 
 const fn reload_clap_id() -> ClapId {
     ClapId::new(PARAM_RELOAD_ID)
+}
+
+const fn effect_select_clap_id() -> ClapId {
+    ClapId::new(PARAM_EFFECT_SELECT_ID)
 }
 
 /// `id == 0` → host Gain, `id 1..=MAX_EFFECT_PARAMS` → effect-defined param.
@@ -138,6 +147,14 @@ pub struct PluginShared {
     /// Set when a CLAP Reload event arrives; the main thread observes it and
     /// re-`slot.swap()`s from `effect_dylib_path`. Clear-on-handle.
     pub reload_requested: AtomicBool,
+    /// On-disk catalog of compiled effects (Effect ▼ dropdown).
+    pub catalog: arc_swap::ArcSwap<Vec<effect_catalog::CatalogEntry>>,
+    /// Current selected index into `catalog`. -1 = "use whatever effect.dylib
+    /// already lives in the instance dir" (the legacy behaviour).
+    pub effect_select_index: std::sync::atomic::AtomicI32,
+    /// Set when a new `Effect ▼` value arrives. Main thread drains it and
+    /// switches to the catalog entry at that index.
+    pub effect_load_pending: std::sync::atomic::AtomicI32,
     /// Debug counters: number of times the audio thread entered `process()`
     /// and number of ParamValueEvents we observed. Logged periodically so we
     /// can see in REAPER's stderr whether events ever arrive.
@@ -197,6 +214,9 @@ impl PluginShared {
             effect_dylib_path,
             effect_params: std::array::from_fn(|_| AtomicF32::new(0.0)),
             reload_requested: AtomicBool::new(false),
+            catalog: arc_swap::ArcSwap::from_pointee(effect_catalog::scan()),
+            effect_select_index: std::sync::atomic::AtomicI32::new(-1),
+            effect_load_pending: std::sync::atomic::AtomicI32::new(-1),
             process_calls: AtomicU64::new(0),
             events_seen: AtomicU64::new(0),
             _watcher: parking_lot::Mutex::new(None),
@@ -281,6 +301,50 @@ impl<'a> PluginMainThread<'a> {
         dlog!("requested host params.rescan(ALL)");
     }
 
+    /// If the user changed the `Effect ▼` selector, install the matching
+    /// dylib from the catalog into the live instance dir and swap.
+    fn maybe_load_selected_effect(&mut self) {
+        let pending = self.shared.effect_load_pending.swap(-1, Ordering::AcqRel);
+        if pending < 0 {
+            return;
+        }
+        // Refresh the catalog every time we honour a switch — picks up newly
+        // compiled effects without requiring a plugin restart.
+        let catalog = std::sync::Arc::new(effect_catalog::scan());
+        self.shared.catalog.store(catalog.clone());
+        let idx = pending as usize;
+        let Some(entry) = catalog.get(idx) else {
+            dlog!(
+                "effect_select: index {} out of range (catalog len = {})",
+                pending,
+                catalog.len()
+            );
+            return;
+        };
+
+        let dest = &self.shared.effect_dylib_path;
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = build_pipeline::install_dylib(&entry.dylib, dest) {
+            dlog!("effect_select: install {:?} failed: {}", entry.dylib, e);
+            return;
+        }
+        self.shared
+            .effect_select_index
+            .store(pending, Ordering::Release);
+        dlog!(
+            "effect_select: switched to {} ({:?})",
+            entry.name,
+            entry.dylib
+        );
+        // Watcher will swap as usual when notify fires. Force the slot to
+        // pull metadata immediately so rescan happens this main-thread tick.
+        if let Err(e) = self.shared.slot.swap(dest) {
+            dlog!("effect_select: explicit slot.swap failed: {}", e);
+        }
+    }
+
     /// If the user toggled the Reload param since last check, force-swap the
     /// current effect dylib (mtime change not required). Lets the user
     /// recover when the file watcher didn't fire.
@@ -308,6 +372,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     fn on_main_thread(&mut self) {
         // Audio thread asked us (via host.request_callback) to do main-thread
         // work — namely: pending reload swap or param rescan.
+        self.maybe_load_selected_effect();
         self.maybe_reload();
         self.maybe_rescan();
     }
@@ -345,6 +410,10 @@ fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
                 shared.reload_requested.store(true, Ordering::Release);
                 dlog!("ParamValueEvent: Reload pressed");
             }
+        } else if id == effect_select_clap_id() {
+            let idx = value.round() as i32;
+            shared.effect_load_pending.store(idx, Ordering::Release);
+            dlog!("ParamValueEvent: Effect select → {}", idx);
         } else if let Some(idx) = effect_param_index(id) {
             shared.effect_params[idx].store(value, Ordering::Relaxed);
             dlog!("ParamValueEvent: effect[{}] → {:+.4}", idx, value);
@@ -407,11 +476,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
         apply_param_events(self.shared, events.input);
 
-        // If a Reload event just landed (or a watcher swap set rescan_needed),
-        // poke the host to schedule on_main_thread() ASAP. We can't do dlopen
-        // on the audio thread.
+        // If a Reload / Effect-select / watcher swap is pending, poke the
+        // host to schedule on_main_thread() ASAP. We can't do dlopen on the
+        // audio thread.
         if self.shared.reload_requested.load(Ordering::Acquire)
             || self.shared.slot.rescan_needed.load(Ordering::Acquire)
+            || self.shared.effect_load_pending.load(Ordering::Acquire) >= 0
         {
             self.host.shared().request_callback();
         }
@@ -545,15 +615,15 @@ impl DefaultPluginFactory for SuperDuperDsp {
 
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 {
-        // Trigger rescan request on first main-thread interaction after a swap.
+        // Drain any pending main-thread work before reporting param count.
+        self.maybe_load_selected_effect();
         self.maybe_rescan();
-        // Manual Reload toggle handler (force re-swap from effect_dylib_path).
         self.maybe_reload();
         let effect_count = self.shared.slot.meta().params.len() as u32;
         // Cap at MAX_EFFECT_PARAMS — anything past that is a bug in the effect.
         let effect_count = effect_count.min(MAX_EFFECT_PARAMS as u32);
-        // 1 (Gain) + N (effect) + 1 (Reload toggle)
-        1 + effect_count + 1
+        // 1 (Gain) + N (effect) + 1 (Reload) + 1 (Effect ▼)
+        1 + effect_count + 1 + 1
     }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
@@ -589,7 +659,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             }
             return;
         }
-        // Last slot is the Reload toggle.
+        // Reload toggle.
         if param_index == effect_count + 1 {
             info.set(&ParamInfo {
                 id: reload_clap_id(),
@@ -599,6 +669,23 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 module: b"",
                 min_value: 0.0,
                 max_value: 1.0,
+                default_value: 0.0,
+            });
+            return;
+        }
+        // Effect ▼ selector (always present, even when the catalog is empty —
+        // REAPER expects a stable param layout for caching/automation).
+        if param_index == effect_count + 2 {
+            let catalog = self.shared.catalog.load();
+            let max = catalog.len().saturating_sub(1).max(0) as f64;
+            info.set(&ParamInfo {
+                id: effect_select_clap_id(),
+                flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_STEPPED,
+                cookie: Default::default(),
+                name: b"Effect",
+                module: b"",
+                min_value: 0.0,
+                max_value: max,
                 default_value: 0.0,
             });
         }
@@ -611,6 +698,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if param_id == reload_clap_id() {
             // Always reports 0 — the param is a momentary trigger, not state.
             return Some(0.0);
+        }
+        if param_id == effect_select_clap_id() {
+            let idx = self.shared.effect_select_index.load(Ordering::Acquire);
+            return Some(idx.max(0) as f64);
         }
         let idx = effect_param_index(param_id)?;
         Some(self.shared.effect_params[idx].load(Ordering::Relaxed) as f64)
@@ -628,6 +719,14 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         }
         if param_id == reload_clap_id() {
             return write!(writer, "{}", if value > 0.5 { "RELOAD" } else { "idle" });
+        }
+        if param_id == effect_select_clap_id() {
+            let catalog = self.shared.catalog.load();
+            let i = (value.round() as usize).min(catalog.len().saturating_sub(1));
+            if let Some(entry) = catalog.get(i) {
+                return write!(writer, "{}", entry.name);
+            }
+            return write!(writer, "(no effects)");
         }
         let Some(idx) = effect_param_index(param_id) else {
             return Ok(());
@@ -649,6 +748,13 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 .parse::<f64>()
                 .ok()
                 .map(|v| v.clamp(PARAM_GAIN_MIN_DB, PARAM_GAIN_MAX_DB));
+        }
+        if param_id == effect_select_clap_id() {
+            let catalog = self.shared.catalog.load();
+            if let Some(pos) = catalog.iter().position(|e| e.name == s) {
+                return Some(pos as f64);
+            }
+            return s.parse::<f64>().ok();
         }
         let idx = effect_param_index(param_id)?;
         let meta = self.shared.slot.meta();

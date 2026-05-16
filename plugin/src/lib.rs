@@ -8,6 +8,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod hotreload;
+mod mcp_registry;
+mod mcp_server;
 mod watcher;
 
 pub use hotreload::{HotReloadSlot, ProcessFn, SDSP_PROTOCOL_VERSION, SwapError};
@@ -225,6 +227,10 @@ impl PluginShared {
         }
     }
 
+    // ensure_mcp moved into the `mcp_registry` module which manages a
+    // process-global server bound to the primary instance — see that module
+    // for the safety rationale.
+
     #[inline]
     pub fn gain_linear(&self) -> f32 {
         let db = self.gain_db.load(Ordering::Relaxed);
@@ -358,7 +364,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         _audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         // Lazy-start the file watcher now that the plugin is actually being
-        // used (not just scanned). Idempotent.
+        // used (not just scanned). Idempotent. We don't do this in
+        // `new_shared` because notify init can block briefly and would stall
+        // REAPER's CLAP scan path.
         shared.ensure_watcher();
         Ok(Self { shared, host })
     }
@@ -509,6 +517,9 @@ impl DefaultPluginFactory for SuperDuperDsp {
         init_logging();
         let s = PluginShared::new();
         dlog!("new_shared: instance {} ready", s.instance_id);
+        // MCP server runs as a process-global singleton bound to the first
+        // instance that comes up — register self there.
+        mcp_registry::register_first(&s);
         Ok(s)
     }
 

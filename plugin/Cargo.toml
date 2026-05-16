@@ -31,4 +31,12 @@ thiserror.workspace = true
 notify.workspace = true
 dirs = "5"
 arc-swap = "1"
+schemars = "0.8"
+tokio-util = "0.7"
+axum.workspace = true
+rmcp = { version = "1.7", features = [
+    "server",
+    "macros",
+    "transport-streamable-http-server",
+] }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }

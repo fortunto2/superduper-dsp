@@ -24,6 +24,91 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
+fn sanitize_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// Best-effort regex-free parse of a `params! { … }` block in an effect's
+/// `src/lib.rs`. Recognises lines that look like
+/// `NAME = param(MIN, MAX).default(D).unit("U")` (each `.default()` /
+/// `.unit()` optional). Unrecognised lines are silently dropped — this is
+/// only for the list_effects display, not for ABI correctness.
+fn parse_params_from_source(src: &str) -> Vec<EffectParamView> {
+    let Some(rest) = src.split_once("params!").map(|(_, r)| r) else {
+        return Vec::new();
+    };
+    let Some(rest) = rest.split_once('{').map(|(_, r)| r) else {
+        return Vec::new();
+    };
+    let Some((block, _)) = rest.split_once('}') else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for raw_line in block.lines() {
+        let line = raw_line.trim().trim_end_matches(',').trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let Some((name, expr)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        // Skip patterns that obviously aren't param decls.
+        if !name.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+            continue;
+        }
+
+        let Some((before_paren, after)) = expr.split_once('(') else {
+            continue;
+        };
+        if !before_paren.trim().ends_with("param") {
+            continue;
+        }
+        let Some((args, tail)) = after.split_once(')') else {
+            continue;
+        };
+        let nums: Vec<&str> = args.split(',').map(str::trim).collect();
+        if nums.len() != 2 {
+            continue;
+        }
+        let (Ok(min), Ok(max)) = (nums[0].parse::<f32>(), nums[1].parse::<f32>()) else {
+            continue;
+        };
+
+        // Pull .default(...) and .unit("...") off the tail if present.
+        let default = extract_call_f32(tail, "default").unwrap_or((min + max) * 0.5);
+        let unit = extract_call_str(tail, "unit").unwrap_or_default();
+
+        out.push(EffectParamView {
+            name: name.into(),
+            min,
+            max,
+            default,
+            unit,
+        });
+    }
+    out
+}
+
+fn extract_call_f32(tail: &str, fn_name: &str) -> Option<f32> {
+    let needle = format!(".{}(", fn_name);
+    let i = tail.find(&needle)? + needle.len();
+    let j = tail[i..].find(')')? + i;
+    tail[i..j].trim().parse().ok()
+}
+
+fn extract_call_str(tail: &str, fn_name: &str) -> Option<String> {
+    let needle = format!(".{}(", fn_name);
+    let i = tail.find(&needle)? + needle.len();
+    let j = tail[i..].find(')')? + i;
+    let arg = tail[i..j].trim();
+    let arg = arg.strip_prefix('"')?.strip_suffix('"')?;
+    Some(arg.into())
+}
+
 /// Convenience: tool handlers all need `&PluginShared`. Return an error if
 /// the primary instance hasn't been registered yet.
 fn shared() -> Result<&'static PluginShared, McpError> {
@@ -114,6 +199,33 @@ pub struct LoadEffectOutput {
     /// Where the freshly built dylib landed (the watcher will already have
     /// swapped it into the audio thread by the time you read this).
     pub installed_at: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct EffectParamView {
+    pub name: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    pub unit: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct EffectListing {
+    pub name: String,
+    pub built: bool,
+    /// Full `src/lib.rs` source the effect was authored from.
+    pub source: String,
+    /// Parameters declared via the `params!` macro. Parsed from source —
+    /// works even when the dylib isn't built.
+    pub params: Vec<EffectParamView>,
+    pub dylib_path: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ListEffectsOutput {
+    pub current_effect_dylib: String,
+    pub effects: Vec<EffectListing>,
 }
 
 // ===========================================================================
@@ -223,6 +335,62 @@ impl McpServer {
         s.bypass.store(enabled, Ordering::Relaxed);
         dlog!("MCP bypass → {}", enabled);
         Ok(rmcp::Json(BypassOutput { bypassed: enabled }))
+    }
+
+    #[rmcp::tool(description = "List every effect that has been compiled in this plugin's local build cache (\
+~/.superduper-dsp/effect-builds/). Each entry has its name, a short preview of its source, and whether \
+the compiled dylib exists on disk. Use this to remember what effects you've already authored, what their \
+contracts looked like, and which ones are ready to hot-load.")]
+    async fn list_effects(&self) -> Result<rmcp::Json<ListEffectsOutput>, McpError> {
+        let s = shared()?;
+        let builds_root = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".superduper-dsp")
+            .join("effect-builds");
+
+        let mut effects = Vec::new();
+        if builds_root.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(&builds_root)
+                .map(|it| it.flatten().collect())
+                .unwrap_or_default();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let src = path.join("src").join("lib.rs");
+                let source = std::fs::read_to_string(&src).unwrap_or_default();
+                let params = parse_params_from_source(&source);
+                // Check both host arches for the built dylib.
+                let dylib_name = format!("libeffect_{}.dylib", sanitize_name(&name));
+                let mut dylib_path = None;
+                for triple in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+                    let candidate = path
+                        .join("target")
+                        .join(triple)
+                        .join("release")
+                        .join(&dylib_name);
+                    if candidate.exists() {
+                        dylib_path = Some(candidate.display().to_string());
+                        break;
+                    }
+                }
+                effects.push(EffectListing {
+                    name,
+                    built: dylib_path.is_some(),
+                    source,
+                    params,
+                    dylib_path,
+                });
+            }
+        }
+
+        Ok(rmcp::Json(ListEffectsOutput {
+            current_effect_dylib: s.effect_dylib_path.display().to_string(),
+            effects,
+        }))
     }
 
     #[rmcp::tool(description = "Compile a Rust DSP effect from source and hot-load it into the plugin. \

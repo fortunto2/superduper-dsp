@@ -8,7 +8,7 @@
 //! to `~/.superduper-dsp/mcp-url.txt` so external tooling can discover it
 //! without us hard-coding a port.
 
-use crate::{PluginShared, dbg_log, mcp_registry};
+use crate::{PluginShared, build_pipeline, dbg_log, mcp_registry};
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -90,6 +90,30 @@ pub struct BypassInput {
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct BypassOutput {
     pub bypassed: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct LoadEffectInput {
+    /// Short ASCII identifier used for the on-disk build cache directory and
+    /// the generated crate name. Re-using the same name keeps the Cargo
+    /// incremental cache warm (subsequent builds ~10x faster). Use something
+    /// like "tape_saturation" or "biquad_lowpass".
+    pub name: String,
+    /// Full source text for the effect crate's `src/lib.rs`. Must use
+    /// `superduper_dsp_sdk::*`, declare params via `params!{}`, call
+    /// `setup!();`, and export a `process` fn matching the SDK contract.
+    pub code: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct LoadEffectOutput {
+    pub success: bool,
+    /// Cargo's stdout + stderr. On failure this is the compile error log
+    /// — pipe it back into your next attempt.
+    pub log: String,
+    /// Where the freshly built dylib landed (the watcher will already have
+    /// swapped it into the audio thread by the time you read this).
+    pub installed_at: Option<String>,
 }
 
 // ===========================================================================
@@ -199,6 +223,78 @@ impl McpServer {
         s.bypass.store(enabled, Ordering::Relaxed);
         dlog!("MCP bypass → {}", enabled);
         Ok(rmcp::Json(BypassOutput { bypassed: enabled }))
+    }
+
+    #[rmcp::tool(description = "Compile a Rust DSP effect from source and hot-load it into the plugin. \
+The crate is generated with the superduper-dsp-sdk dependency, `cargo build --release` is run for the \
+host architecture, and the resulting .dylib is copied into the live instance directory where the file \
+watcher swaps it onto the audio thread. Returns the compile log (always — useful for fix-it iterations) \
+and the install path on success.")]
+    async fn load_effect(
+        &self,
+        Parameters(LoadEffectInput { name, code }): Parameters<LoadEffectInput>,
+    ) -> Result<rmcp::Json<LoadEffectOutput>, McpError> {
+        let s = shared()?;
+        let dest = s.effect_dylib_path.clone();
+        dlog!(
+            "MCP load_effect: name={:?}, code len={}, dest={:?}",
+            name,
+            code.len(),
+            dest
+        );
+
+        // Run the synchronous cargo build off the tokio worker thread so the
+        // MCP server can still service other requests if needed. spawn_blocking
+        // gives us a dedicated OS thread.
+        let name_clone = name.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            build_pipeline::build(&name_clone, &code)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("build task join failed: {}", e), None))?;
+
+        if !result.success {
+            return Ok(rmcp::Json(LoadEffectOutput {
+                success: false,
+                log: result.log,
+                installed_at: None,
+            }));
+        }
+        let built = match result.dylib {
+            Some(p) => p,
+            None => {
+                return Ok(rmcp::Json(LoadEffectOutput {
+                    success: false,
+                    log: format!("{}\nbuild ok but no dylib path reported", result.log),
+                    installed_at: None,
+                }));
+            }
+        };
+
+        // Make sure the target dir exists; the plugin creates it in
+        // PluginShared::new but a manual `rm -rf` between sessions can wipe it.
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        if let Err(e) = build_pipeline::install_dylib(&built, &dest) {
+            return Ok(rmcp::Json(LoadEffectOutput {
+                success: false,
+                log: format!("{}\ninstall failed: {}", result.log, e),
+                installed_at: None,
+            }));
+        }
+
+        // Watcher will pick this up within ~250ms and swap automatically.
+        // We could also force-trigger via `s.slot.swap(&dest)` here to be
+        // instant, but doing it from a tokio worker means we hit the same
+        // codepath external file changes use.
+        dlog!("MCP load_effect: copied {:?} -> {:?}", built, dest);
+        Ok(rmcp::Json(LoadEffectOutput {
+            success: true,
+            log: result.log,
+            installed_at: Some(dest.display().to_string()),
+        }))
     }
 }
 

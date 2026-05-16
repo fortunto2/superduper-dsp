@@ -7,6 +7,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+mod build_pipeline;
 mod hotreload;
 mod mcp_registry;
 mod mcp_server;
@@ -204,6 +205,12 @@ impl PluginShared {
 
     /// Lazy-init watcher on first audio activation. Idempotent.
     pub fn ensure_watcher(&self) {
+        // Register as MCP primary now that we have a stable host-owned address
+        // for this PluginShared. `new_shared` saw a stack-local copy that got
+        // moved on return — registering its address there gave the registry
+        // a dangling pointer.
+        mcp_registry::register_first(self);
+
         let mut guard = self._watcher.lock();
         if guard.is_some() {
             return;
@@ -517,9 +524,10 @@ impl DefaultPluginFactory for SuperDuperDsp {
         init_logging();
         let s = PluginShared::new();
         dlog!("new_shared: instance {} ready", s.instance_id);
-        // MCP server runs as a process-global singleton bound to the first
-        // instance that comes up — register self there.
-        mcp_registry::register_first(&s);
+        // NB: do NOT register the MCP primary here — `s` lives on the stack
+        // and is `Ok(s)`-moved out of this fn, so its address changes.
+        // Deferred to `ensure_watcher()` which sees `&self` at the final
+        // host-owned address.
         Ok(s)
     }
 

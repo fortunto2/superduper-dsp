@@ -188,8 +188,14 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
     detector: EnvelopeDetector,
-    /// HPF on the sidechain signal so low-end doesn't pump the comp.
-    sc_hpf_state: f32,
+    /// HPF on the **raw signed** sidechain audio so low-end (kick / boomy
+    /// fundamentals) doesn't pump the comp. One state per channel; the
+    /// filter has to sit BEFORE rectification — applying it to `|x|`
+    /// only subtracts the DC mean of the rectifier output and crushes
+    /// the detected envelope by 6-10 dB on broadband music (see
+    /// `tests/sc_hpf_repro.rs`).
+    sc_hpf_state_l: f32,
+    sc_hpf_state_r: f32,
     /// Lookahead buffers — main signal is delayed so we can react before
     /// the transient hits the gain stage. 2 ms typical.
     look_l: DelayLine,
@@ -244,7 +250,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         Ok(Self {
             shared,
             detector: EnvelopeDetector::default(),
-            sc_hpf_state: 0.0,
+            sc_hpf_state_l: 0.0,
+            sc_hpf_state_r: 0.0,
             look_l: DelayLine::new(cap),
             look_r: DelayLine::new(cap),
             lookahead_samples: look_samples,
@@ -345,7 +352,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 for i in 0..n {
                     let dry = l_read[i];
                     let (out, gr) = process_sample_mono(
-                        &mut self.detector, &mut self.sc_hpf_state, sc_hpf_freq,
+                        &mut self.detector, &mut self.sc_hpf_state_l, sc_hpf_freq,
                         &mut self.look_l, self.lookahead_samples,
                         &mut self.smooth_threshold, &mut self.smooth_ratio,
                         &mut self.smooth_attack, &mut self.smooth_release,
@@ -412,7 +419,7 @@ fn process_stereo_block(
         }
 
         // Detector source — external sidechain if routed, otherwise dry main.
-        let (key_l, key_r) = if sc_present {
+        let (mut key_l, mut key_r) = if sc_present {
             (
                 p.sc_buf_l.get(i).copied().unwrap_or(0.0),
                 p.sc_buf_r.get(i).copied().unwrap_or(0.0),
@@ -420,12 +427,21 @@ fn process_stereo_block(
         } else {
             (dry_l, dry_r)
         };
-        let mut sc = key_l.abs().max(key_r.abs());
+        // SC HPF — single-pole high-pass on the raw signed key signal,
+        // one independent state per channel. Implemented as
+        // `hp = x - lp(x)` with `lp(x) = x*(1-c) + lp_prev*c`, c =
+        // exp(-2π·fc/sr). Has to run before .abs() — otherwise the
+        // filter sees the rectified signal's DC bias and ends up
+        // subtracting a slow mean from the envelope (see issue tracked
+        // in `tests/sc_hpf_repro.rs`).
         if let Some(hp_hz) = sc_hpf_freq {
             let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
-            p.sc_hpf_state = sc * (1.0 - coef) + p.sc_hpf_state * coef;
-            sc -= p.sc_hpf_state;
+            p.sc_hpf_state_l = key_l * (1.0 - coef) + p.sc_hpf_state_l * coef;
+            key_l -= p.sc_hpf_state_l;
+            p.sc_hpf_state_r = key_r * (1.0 - coef) + p.sc_hpf_state_r * coef;
+            key_r -= p.sc_hpf_state_r;
         }
+        let sc = key_l.abs().max(key_r.abs());
 
         let env = p.detector.process(sc, sr, attack, release);
         let env_db = 20.0 * env.max(1e-9).log10();
@@ -484,21 +500,25 @@ fn process_sample_mono(
     let makeup = sm_makeup.step(makeup_target, sr);
     let mix = sm_mix.step(mix_target, sr);
 
-    let mut sc = dry.abs();
+    // SC HPF runs on signed audio before rectification (mirrors stereo path).
+    let mut key = dry;
     if let Some(hp_hz) = sc_hpf_freq {
         let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
-        *sc_hpf_state = sc * (1.0 - coef) + *sc_hpf_state * coef;
-        sc -= *sc_hpf_state;
+        *sc_hpf_state = key * (1.0 - coef) + *sc_hpf_state * coef;
+        key -= *sc_hpf_state;
     }
-    let env = detector.process(sc, sr, attack, release);
+    let env = detector.process(key.abs(), sr, attack, release);
     let env_db = 20.0 * env.max(1e-9).log10();
     let gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
     let total_db = gr_db + makeup;
     let gain_lin = 10f32.powf(total_db / 20.0);
-    let _ = look;
-    let _ = lookahead_samples;
-    let wet = dry * gain_lin;
-    (dry * (1.0 - mix) + wet * mix, gr_db)
+
+    // Apply lookahead delay so the gain stage reacts a hair before the
+    // peak arrives — mono path matches the stereo path.
+    look.write(dry);
+    let delayed = look.read_lagrange3(lookahead_samples);
+    let wet = delayed * gain_lin;
+    (delayed * (1.0 - mix) + wet * mix, gr_db)
 }
 
 // ---------------------------------------------------------------------------

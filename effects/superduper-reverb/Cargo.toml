@@ -11,12 +11,20 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clack-plugin = "0.1"
-clack-extensions = { version = "0.1", features = ["params", "audio-ports", "clack-plugin"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "gui", "clack-plugin", "raw-window-handle_05"] }
 clack-common = "0.1"
 atomic_float = "1"
 parking_lot = "0.12"
 superduper-dsp-sdk = { path = "../../sdk" }
-superduper-synth-core = { path = "../../synth-core" }
+superduper-synth-core = { path = "../../synth-core", features = ["gui"] }
+
+# GUI stack — see Kwarf's "Writing a CLAP synthesizer in Rust" 2025 tutorial
+# and BillyDM/egui-baseview README. baseview is pinned to a specific commit
+# so it matches the rev egui-baseview's workspace uses.
+egui = "0.33"
+egui-baseview = { git = "https://github.com/BillyDM/egui-baseview" }
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
+raw-window-handle = "0.5"
 
 [build-dependencies]
 superduper-dsp-sdk-build = { path = "../../sdk-build" }

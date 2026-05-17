@@ -85,12 +85,18 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clack-plugin = "0.1"
-clack-extensions = { version = "0.1", features = ["params", "audio-ports", "clack-plugin"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "gui", "clack-plugin", "raw-window-handle_05"] }
 clack-common = "0.1"
 atomic_float = "1"
 parking_lot = "0.12"
 superduper-dsp-sdk = { path = "../../sdk" }
-superduper-synth-core = { path = "../../synth-core" }
+superduper-synth-core = { path = "../../synth-core", features = ["gui"] }
+
+# GUI stack — must match versions used in superduper-reverb / supermass.
+egui = "0.33"
+egui-baseview = { git = "https://github.com/BillyDM/egui-baseview" }
+baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
+raw-window-handle = "0.5"
 
 [build-dependencies]
 superduper-dsp-sdk-build = { path = "../../sdk-build" }
@@ -163,7 +169,97 @@ impl DefaultPluginFactory for ... {
 clack_export_entry!(SinglePluginEntry<...>);
 ```
 
-### 5. Tests
+### 5. GUI (optional but recommended)
+
+Every effect ships with an egui_baseview window. Three files per plugin
+(`gui.rs` + `presets.rs` + GUI extension in `lib.rs`) following the same
+pattern, all sitting on top of `superduper_synth_core::gui` shared helpers.
+
+Minimum skeleton — see `effects/superduper-reverb/src/gui.rs` for the full
+~120-line working example. The shape is:
+
+```rust
+// src/gui.rs
+use superduper_synth_core::gui as core_gui;
+use crate::presets::PRESETS;
+
+pub const DEFAULT_WIDTH: u32 = 720;  pub const DEFAULT_HEIGHT: u32 = 760;
+pub const MIN_WIDTH: u32 = 520;      pub const MIN_HEIGHT: u32 = 640;
+pub const MAX_WIDTH: u32 = 1400;     pub const MAX_HEIGHT: u32 = 1200;
+
+pub type ResizeBridge = core_gui::ResizeBridge;
+pub fn new_resize_bridge() -> ResizeBridge {
+    core_gui::new_resize_bridge(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+}
+
+struct GuiState { shared: SharedParams, resize: ResizeBridge,
+                  applied_size: (u32, u32), selected_preset: Option<usize>,
+                  preset_names: Vec<&'static str> }
+
+pub fn open_window<P: HasRawWindowHandle>(parent: &P, shared, resize) -> WindowHandle {
+    EguiWindow::open_parented(parent, settings, GraphicsConfig::default(), state,
+        |ctx, _, _| core_gui::install_default_style(ctx),
+        |ctx, queue, state| {
+            // Host-resize bridge
+            let want = core_gui::read_bridge(&state.resize);
+            if want != state.applied_size { queue.resize(...); ... }
+            // Draw
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(i) = core_gui::top_bar(ui, "<Plugin Name>", ..., bypass, "<combo_id>", &state.preset_names, &mut state.selected_preset) {
+                    apply_preset(state, i);
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    core_gui::section(ui, "Section A", |ui| {
+                        core_gui::param_row(ui, &state.shared.params[P_FOO], &PARAMS[P_FOO]);
+                        // ...
+                    });
+                    core_gui::section(ui, "Section B", |ui| { /* ... */ });
+                });
+            });
+            ctx.request_repaint();
+        },
+    )
+}
+```
+
+The presets file (`src/presets.rs`) is just a static `&[Preset]` slice where
+each `Preset` is `(name, [f32; PARAMS.len()])`. `Preset::from_overrides`
+const-builds one from a sparse list of (index, value) — typo-proof and
+falls back to the param table's default for unspecified slots.
+
+Wiring CLAP GUI extension in `lib.rs`:
+
+```rust
+use clack_extensions::gui::{
+    AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints,
+    GuiSize, PluginGuiImpl, Window as ClapGuiWindow,
+};
+
+// In Plugin::declare_extensions:
+builder
+    .register::<PluginAudioPorts>()
+    .register::<PluginParams>()
+    .register::<clack_extensions::gui::PluginGui>();
+
+// PluginMainThread fields:
+gui_handle: Option<baseview::WindowHandle>,
+gui_resize: gui::ResizeBridge,
+
+impl PluginGuiImpl for PluginMainThread<'_> {
+    // is_api_supported / get_preferred_api: COCOA/WIN32/X11, embedded only
+    // can_resize: true; get_resize_hints: horizontal + vertical, no aspect ratio
+    // adjust_size / set_size: clamp to MIN_*..MAX_* and write to gui_resize
+    // set_parent: open_window(&window, shared.shared_handle(), gui_resize.clone())
+    // destroy: gui_handle = None  (dropping it closes the egui window)
+}
+```
+
+Important: `PluginShared.inner` must be `Arc<SharedParamsInner>` so the GUI
+thread can clone it via `shared.shared_handle()`. See reverb's `lib.rs`
+for the boilerplate including the `Deref` impl that keeps existing
+`shared.params[i]` call sites compiling.
+
+### 6. Tests
 
 Every effect crate ships at least 3 test files:
 - `tests/dsp_smoke.rs` — drives the DSP block directly, validates RMS / peak /

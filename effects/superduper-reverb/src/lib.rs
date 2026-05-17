@@ -8,6 +8,8 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod plate;
+pub mod gui;
+pub mod presets;
 pub use plate::{PlateParams, PlateState};
 
 use atomic_float::AtomicF32;
@@ -95,34 +97,54 @@ const PARAMS: &[ParamDef] = &[
     ParamDef { id: 9, name: b"Duck Release",  min: 10.0, max: 1000.0, default: 150.0, unit: "ms" },
 ];
 
-const P_SIZE: usize = 0;
-const P_DECAY: usize = 1;
-const P_DAMP: usize = 2;
-const P_PREDELAY: usize = 3;
-const P_MOD: usize = 4;
-const P_WIDTH: usize = 5;
-const P_MIX: usize = 6;
-const P_DUCK_AMOUNT: usize = 7;
-const P_DUCK_ATTACK: usize = 8;
-const P_DUCK_RELEASE: usize = 9;
+pub const P_SIZE: usize = 0;
+pub const P_DECAY: usize = 1;
+pub const P_DAMP: usize = 2;
+pub const P_PREDELAY: usize = 3;
+pub const P_MOD: usize = 4;
+pub const P_WIDTH: usize = 5;
+pub const P_MIX: usize = 6;
+pub const P_DUCK_AMOUNT: usize = 7;
+pub const P_DUCK_ATTACK: usize = 8;
+pub const P_DUCK_RELEASE: usize = 9;
 
 
 // ===========================================================================
 // CLAP wiring
 // ===========================================================================
 
-pub struct PluginShared {
+/// Atomics live in an Arc so the GUI thread (egui_baseview) can hold its own
+/// clone and read/write them without lifetime tangles with the host's
+/// PluginShared ownership.
+pub type SharedParams = std::sync::Arc<SharedParamsInner>;
+
+pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+}
+
+pub struct PluginShared {
+    pub inner: SharedParams,
 }
 
 impl PluginShared {
     pub fn new() -> Self {
         Self {
-            params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
-            bypass: std::sync::atomic::AtomicBool::new(false),
+            inner: std::sync::Arc::new(SharedParamsInner {
+                params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
+                bypass: std::sync::atomic::AtomicBool::new(false),
+            }),
         }
     }
+    /// Clone the Arc for handing to the GUI thread.
+    pub fn shared_handle(&self) -> SharedParams { std::sync::Arc::clone(&self.inner) }
+}
+
+// Auto-deref so existing call sites `shared.params[i]` and `shared.bypass.load(...)`
+// keep compiling without per-line rewrites.
+impl std::ops::Deref for PluginShared {
+    type Target = SharedParamsInner;
+    fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
 
 impl Default for PluginShared {
@@ -135,6 +157,13 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 pub struct PluginMainThread<'a> {
     shared: &'a PluginShared,
+    /// Open egui-baseview window. Created in `set_parent`, dropped in
+    /// `destroy()` so the window goes away cleanly when the host closes the
+    /// FX editor.
+    gui_handle: Option<baseview::WindowHandle>,
+    /// Shared with the egui update closure so we can push host-driven resize
+    /// requests across the thread boundary.
+    gui_resize: gui::ResizeBridge,
 }
 
 impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
@@ -486,6 +515,94 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
+// ===========================================================================
+// CLAP GUI extension — embedded egui_baseview window.
+// ===========================================================================
+
+use clack_extensions::gui::{
+    AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
+    Window as ClapGuiWindow,
+};
+use std::sync::atomic::Ordering as AtomicOrdering;
+
+impl PluginGuiImpl for PluginMainThread<'_> {
+    fn is_api_supported(&mut self, config: GuiConfiguration) -> bool {
+        if config.is_floating {
+            return false;
+        }
+        config.api_type == GuiApiType::COCOA
+            || config.api_type == GuiApiType::WIN32
+            || config.api_type == GuiApiType::X11
+    }
+
+    fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
+        let api_type = if cfg!(target_os = "macos") {
+            GuiApiType::COCOA
+        } else if cfg!(target_os = "windows") {
+            GuiApiType::WIN32
+        } else {
+            GuiApiType::X11
+        };
+        Some(GuiConfiguration { api_type, is_floating: false })
+    }
+
+    fn create(&mut self, _config: GuiConfiguration) -> Result<(), PluginError> {
+        rlog!("gui::create");
+        Ok(())
+    }
+
+    fn destroy(&mut self) {
+        rlog!("gui::destroy");
+        self.gui_handle = None;
+    }
+
+    fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> { Ok(()) }
+
+    fn get_size(&mut self) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: self.gui_resize.0.load(AtomicOrdering::Relaxed),
+            height: self.gui_resize.1.load(AtomicOrdering::Relaxed),
+        })
+    }
+
+    fn can_resize(&mut self) -> bool { true }
+
+    fn get_resize_hints(&mut self) -> Option<GuiResizeHints> {
+        Some(GuiResizeHints {
+            can_resize_horizontally: true,
+            can_resize_vertically: true,
+            strategy: AspectRatioStrategy::Disregard,
+        })
+    }
+
+    fn adjust_size(&mut self, size: GuiSize) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: size.width.clamp(gui::MIN_WIDTH, gui::MAX_WIDTH),
+            height: size.height.clamp(gui::MIN_HEIGHT, gui::MAX_HEIGHT),
+        })
+    }
+
+    fn set_size(&mut self, size: GuiSize) -> Result<(), PluginError> {
+        let w = size.width.clamp(gui::MIN_WIDTH, gui::MAX_WIDTH);
+        let h = size.height.clamp(gui::MIN_HEIGHT, gui::MAX_HEIGHT);
+        self.gui_resize.0.store(w, AtomicOrdering::Relaxed);
+        self.gui_resize.1.store(h, AtomicOrdering::Relaxed);
+        Ok(())
+    }
+
+    fn set_parent(&mut self, window: ClapGuiWindow) -> Result<(), PluginError> {
+        rlog!("gui::set_parent (api={:?})", window.api_type());
+        let shared = self.shared.shared_handle();
+        let handle = gui::open_window(&window, shared, self.gui_resize.clone());
+        self.gui_handle = Some(handle);
+        Ok(())
+    }
+
+    fn set_transient(&mut self, _window: ClapGuiWindow) -> Result<(), PluginError> { Ok(()) }
+    fn show(&mut self) -> Result<(), PluginError> { rlog!("gui::show"); Ok(()) }
+    fn hide(&mut self) -> Result<(), PluginError> { rlog!("gui::hide"); Ok(()) }
+}
+
 pub struct SuperDuperReverb;
 
 impl Plugin for SuperDuperReverb {
@@ -499,7 +616,8 @@ impl Plugin for SuperDuperReverb {
     ) {
         builder
             .register::<PluginAudioPorts>()
-            .register::<PluginParams>();
+            .register::<PluginParams>()
+            .register::<clack_extensions::gui::PluginGui>();
     }
 }
 
@@ -535,7 +653,11 @@ impl DefaultPluginFactory for SuperDuperReverb {
         _host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        Ok(PluginMainThread { shared })
+        Ok(PluginMainThread {
+            shared,
+            gui_handle: None,
+            gui_resize: gui::new_resize_bridge(),
+        })
     }
 }
 

@@ -1,0 +1,18 @@
+[package]
+name = "sdsp-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Standalone CLAP host: load a .clap, play audio through it, show its GUI"
+
+[[bin]]
+name = "sdsp-runner"
+path = "src/main.rs"
+
+[dependencies]
+clack-host = "0.1"
+clack-extensions = { version = "0.1", features = ["gui", "audio-ports", "params", "log", "clack-host", "raw-window-handle_05"] }
+cpal = "0.15"
+hound = "3.5"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

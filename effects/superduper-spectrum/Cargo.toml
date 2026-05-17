@@ -1,12 +1,12 @@
 [package]
-name = "superduper-supermass"
+name = "superduper-spectrum"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Cascade reverb + chorus (Valhalla Supermassive-style) — standalone CLAP plugin"
+description = "Real-time spectrum analyzer (audio passthrough + FFT visualization) — CLAP plugin"
 
 [lib]
-name = "superduper_supermass"
+name = "superduper_spectrum"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -15,15 +15,17 @@ clack-extensions = { version = "0.1", features = ["params", "audio-ports", "gui"
 clack-common = "0.1"
 atomic_float = "1"
 parking_lot = "0.12"
-fundsp = "0.23"
 superduper-dsp-sdk = { path = "../../sdk" }
 superduper-synth-core = { path = "../../synth-core", features = ["gui"] }
 
-# GUI stack — see effects/superduper-reverb for rationale and version pinning.
 egui = "0.33"
 egui-baseview = { git = "https://github.com/BillyDM/egui-baseview" }
 baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
 raw-window-handle = "0.5"
+
+# Lock-free SPSC ring buffer for audio → GUI sample stream. Lighter than
+# crossbeam and zero-allocation in the hot path.
+rtrb = "0.3"
 
 [build-dependencies]
 superduper-dsp-sdk-build = { path = "../../sdk-build" }
@@ -31,4 +33,3 @@ superduper-dsp-sdk-build = { path = "../../sdk-build" }
 [dev-dependencies]
 clack-host = { version = "0.1", features = ["clack-plugin"] }
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "clack-host"] }
-superduper-synth-core = { path = "../../synth-core" }

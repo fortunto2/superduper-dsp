@@ -11,6 +11,8 @@ members = [
     "effects/example-passthrough",
     "effects/superduper-reverb",
     "effects/superduper-supermass",
+    "effects/superduper-spectrum",
+    "tools/sdsp-runner",
 ]
 
 [workspace.package]

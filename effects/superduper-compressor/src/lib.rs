@@ -140,6 +140,11 @@ pub struct SharedParamsInner {
     pub bypass: std::sync::atomic::AtomicBool,
     /// Current gain reduction in dB (always <= 0). Updated each block.
     pub gain_reduction_db: AtomicF32,
+    /// Plugin latency in samples — written by `activate()` once sample
+    /// rate is known, read by the CLAP latency extension's `get()` impl.
+    /// Constant across the active session because our lookahead is fixed
+    /// at compile time.
+    pub latency_samples: std::sync::atomic::AtomicU32,
 }
 
 pub struct PluginShared {
@@ -153,6 +158,7 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 gain_reduction_db: AtomicF32::new(0.0),
+                latency_samples: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }
@@ -227,6 +233,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let look_samples = sr * 0.001 * LOOKAHEAD_MS;
         let cap = (look_samples as usize + 64).next_power_of_two().max(1024);
         let max_frames = audio_config.max_frames_count as usize;
+
+        // Report our latency to the host once we know SR. This is the
+        // amount of delay the lookahead delay-line introduces, in samples.
+        shared
+            .latency_samples
+            .store(look_samples as u32, Ordering::Relaxed);
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
@@ -621,7 +633,14 @@ impl Plugin for SuperDuperCompressor {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
-            .register::<clack_extensions::gui::PluginGui>();
+            .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::latency::PluginLatency>();
+    }
+}
+
+impl clack_extensions::latency::PluginLatencyImpl for PluginMainThread<'_> {
+    fn get(&mut self) -> u32 {
+        self.shared.latency_samples.load(Ordering::Relaxed)
     }
 }
 

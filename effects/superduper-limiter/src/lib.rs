@@ -105,6 +105,10 @@ pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
     pub gain_reduction_db: AtomicF32,
+    /// Reported to the host via CLAP latency extension for PDC. Set in
+    /// `activate()` based on the maximum lookahead the user could dial in
+    /// (10 ms) so changing the knob mid-session doesn't break PDC.
+    pub latency_samples: std::sync::atomic::AtomicU32,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -116,6 +120,7 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 gain_reduction_db: AtomicF32::new(0.0),
+                latency_samples: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }
@@ -227,6 +232,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         slog!("activate sr={}", sr);
         let max_look = (sr * 0.001 * 12.0) as usize; // accommodate up to 12 ms
         let cap = (max_look + 64).next_power_of_two().max(1024);
+
+        // Report maximum possible lookahead as our latency. We use the
+        // maximum because the user can change the Lookahead knob in
+        // realtime; reporting the worst-case keeps PDC stable so the
+        // limiter never drifts ahead of host-compensated tracks.
+        let max_lookahead_samples = (sr * 0.001 * 10.0) as u32;
+        shared
+            .latency_samples
+            .store(max_lookahead_samples, Ordering::Relaxed);
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
@@ -487,7 +501,14 @@ impl Plugin for SuperDuperLimiter {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
-            .register::<clack_extensions::gui::PluginGui>();
+            .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::latency::PluginLatency>();
+    }
+}
+
+impl clack_extensions::latency::PluginLatencyImpl for PluginMainThread<'_> {
+    fn get(&mut self) -> u32 {
+        self.shared.latency_samples.load(Ordering::Relaxed)
     }
 }
 

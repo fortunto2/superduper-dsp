@@ -21,7 +21,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_KNEE, P_LINK, P_LOOKAHEAD, P_MAKEUP, P_MIX,
+    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_KNEE, P_LINK, P_LOOKAHEAD, P_MAKEUP, P_MIX, P_OS,
     P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN, SharedParams,
 };
 
@@ -38,6 +38,7 @@ pub fn new_resize_bridge() -> ResizeBridge {
 }
 
 const HPF_NAMES: [&str; 4] = ["Off", "80 Hz", "150 Hz", "300 Hz"];
+const OS_NAMES: [&str; 3] = ["Off", "2×", "4×"];
 
 /// Scope display range (dB). Anything below this floor is clipped to it.
 const SCOPE_DB_FLOOR: f32 = -60.0;
@@ -194,6 +195,29 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::param_row(ui, &state.shared.params[P_MAKEUP], &PARAMS[P_MAKEUP]);
                 core_gui::param_row(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING]);
                 core_gui::param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX]);
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [90.0, 18.0],
+                        egui::Label::new(
+                            egui::RichText::new("Oversamp").color(core_gui::GREEN).monospace(),
+                        ),
+                    );
+                    let cur = state.shared.params[P_OS]
+                        .load(Ordering::Relaxed)
+                        .round() as usize;
+                    let cur = cur.min(OS_NAMES.len() - 1);
+                    egui::ComboBox::from_id_salt("comp_os_combo")
+                        .selected_text(OS_NAMES[cur])
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in OS_NAMES.iter().enumerate() {
+                                if ui.selectable_label(cur == i, *name).clicked() {
+                                    state.shared.params[P_OS]
+                                        .store(i as f32, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                });
             });
         });
     });

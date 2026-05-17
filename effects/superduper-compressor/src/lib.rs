@@ -48,7 +48,7 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    compressor_gain_db, DelayLine, EnvelopeDetector, OnePoleLp, SmoothedParam,
+    compressor_gain_db, DelayLine, EnvelopeDetector, OnePoleLp, Oversampler2x, SmoothedParam,
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +119,13 @@ pub const PARAMS: &[ParamDef] = &[
     // Stereo coupling: 1.0 = fully linked (max of L/R drives both),
     // 0.0 = fully independent (each channel gets its own GR).
     ParamDef { id: 11, name: b"Link",      min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+    // Oversampling for the ceiling clipper stage. 0 = Off (native),
+    // 1 = 2×, 2 = 4× (two cascaded halfband stages). Aliasing produced
+    // by tanh on loud signals folds back into the audible band at the
+    // native rate; running the non-linearity at 2× or 4× pushes the
+    // mirror images above Nyquist where the decimator stop-band
+    // attenuates them by ~80 dB.
+    ParamDef { id: 12, name: b"OS",        min: 0.0,   max: 2.0,    default: 0.0,   unit: ""   },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -133,6 +140,7 @@ pub const P_AUTO_REL: usize = 8;
 pub const P_LOOKAHEAD: usize = 9;
 pub const P_CEILING: usize = 10;
 pub const P_LINK: usize = 11;
+pub const P_OS: usize = 12;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -311,6 +319,15 @@ pub struct PluginAudioProcessor<'a> {
     scope_acc_out: f32,
     scope_acc_gr: f32,
     scope_acc_count: usize,
+    /// Halfband oversamplers for the ceiling clipper. Two cascaded stages
+    /// per channel give 1×/2×/4× modes — only stage 1 is used at 2×, both
+    /// at 4×. Aliasing avoidance is local to the non-linear clipper since
+    /// the compressor curve itself is mostly linear and doesn't produce
+    /// problematic intermod.
+    os1_l: Oversampler2x,
+    os1_r: Oversampler2x,
+    os2_l: Oversampler2x,
+    os2_r: Oversampler2x,
     /// Last reported lookahead value (samples). Tracked so we can republish
     /// the CLAP latency hint to the host whenever the knob moves enough to
     /// matter — DAW PDC will re-compensate on the next process call.
@@ -372,6 +389,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             scope_acc_out: 0.0,
             scope_acc_gr: 0.0,
             scope_acc_count: 0,
+            os1_l: Oversampler2x::default(),
+            os1_r: Oversampler2x::default(),
+            os2_l: Oversampler2x::default(),
+            os2_r: Oversampler2x::default(),
             last_lookahead_samples: initial_look_samples as u32,
             sample_rate: sr,
         })
@@ -399,6 +420,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             .shared.params[P_LOOKAHEAD].load(Ordering::Relaxed).max(0.0);
         let ceiling_target = self.shared.params[P_CEILING].load(Ordering::Relaxed);
         let link_target = self.shared.params[P_LINK].load(Ordering::Relaxed).clamp(0.0, 1.0);
+        // Oversampling mode is a discrete switch — round and clamp.
+        let os_mode = self.shared.params[P_OS]
+            .load(Ordering::Relaxed)
+            .round()
+            .clamp(0.0, 2.0) as u32;
         let sc_hpf_idx = self.shared.params[P_SC_HPF]
             .load(Ordering::Relaxed)
             .round() as u32;
@@ -468,6 +494,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     threshold_target, ratio_target, attack_target, release_target,
                     knee_target, makeup_target, mix_target,
                     lookahead_ms_target, ceiling_target, link_target,
+                    os_mode,
                     sc_hpf_freq, sc_present, auto_rel,
                     &mut max_gr_db,
                 );
@@ -522,6 +549,7 @@ fn process_stereo_block(
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
     lookahead_ms_target: f32, ceiling_target: f32, link_target: f32,
+    os_mode: u32,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     max_gr_db: &mut f32,
 ) {
@@ -600,16 +628,27 @@ fn process_stereo_block(
         let mut wet_l = delayed_l * gain_lin;
         let mut wet_r = delayed_r * gain_lin;
 
-        // Soft tanh ceiling — when Ceiling is at 0 dB it's transparent
-        // for any signal that fits in unity. Negative ceilings progressively
-        // squeeze peaks: y = ceil_lin * tanh(x / ceil_lin). At |x| ≪ ceiling
-        // the output is the linear input; at large |x| it asymptotes to
-        // ±ceil_lin. Provides the "Clipper" character ZL's plugin shows
-        // on the strip above the waveform.
+        // Soft tanh ceiling — optionally evaluated at 2× or 4× the host
+        // rate to push the tanh's harmonics above Nyquist where the
+        // halfband decimator buries them. Off mode = native rate, no
+        // CPU overhead beyond the comparison. ZLCompressor's Oversample
+        // setting drives the same thing.
         if ceiling_db < -0.05 {
             let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
-            wet_l = ceil_lin * (wet_l / ceil_lin).tanh();
-            wet_r = ceil_lin * (wet_r / ceil_lin).tanh();
+            wet_l = apply_clipper_os(
+                wet_l, ceil_lin, os_mode,
+                &mut p.os1_l, &mut p.os2_l,
+            );
+            wet_r = apply_clipper_os(
+                wet_r, ceil_lin, os_mode,
+                &mut p.os1_r, &mut p.os2_r,
+            );
+        } else if os_mode != 0 {
+            // Keep oversampler delays consistent so toggling OS on/off
+            // mid-playback doesn't cause a transient — push zeros through
+            // both stages.
+            let _ = apply_clipper_os(wet_l, 1.0, os_mode, &mut p.os1_l, &mut p.os2_l);
+            let _ = apply_clipper_os(wet_r, 1.0, os_mode, &mut p.os1_r, &mut p.os2_r);
         }
 
         let out_l = delayed_l * (1.0 - mix) + wet_l * mix;
@@ -621,6 +660,60 @@ fn process_stereo_block(
         let in_peak = dry_l.abs().max(dry_r.abs());
         let out_peak = out_l.abs().max(out_r.abs());
         push_scope(p, in_peak, out_peak, gr_db);
+    }
+}
+
+/// Apply the tanh ceiling clipper to one sample, optionally oversampled.
+/// Exposed (`pub`) so the integration tests can measure aliasing rejection
+/// without copy-pasting the implementation.
+#[doc(hidden)]
+pub fn _test_apply_clipper_os(
+    x: f32,
+    ceil_lin: f32,
+    os_mode: u32,
+    os1: &mut Oversampler2x,
+    os2: &mut Oversampler2x,
+) -> f32 {
+    apply_clipper_os(x, ceil_lin, os_mode, os1, os2)
+}
+
+
+/// `os_mode`: 0 = native (just `clip(x)`), 1 = 2×, 2 = 4× (cascade).
+///
+/// The two oversampler stages are owned by the caller so the L and R
+/// channel paths each get their own independent state — sharing them
+/// would re-bias the halfband history and smear stereo image. Even when
+/// the clipper isn't engaged (ceiling near 0 dB) the audio thread runs
+/// this function with `ceil_lin=1.0` so the oversampler delay lines stay
+/// primed; toggling OS on then has no transient.
+#[inline]
+fn apply_clipper_os(
+    x: f32,
+    ceil_lin: f32,
+    os_mode: u32,
+    os1: &mut Oversampler2x,
+    os2: &mut Oversampler2x,
+) -> f32 {
+    let clip = |s: f32| ceil_lin * (s / ceil_lin).tanh();
+    match os_mode {
+        0 => clip(x),
+        1 => {
+            let (e, o) = os1.upsample(x);
+            os1.downsample(clip(e), clip(o))
+        }
+        _ => {
+            // 4× cascade: stage1 → stage2 (4 phases) → tanh → stage2 → stage1.
+            let (e1, o1) = os1.upsample(x);
+            let (ee, eo) = os2.upsample(e1);
+            let (oe, oo) = os2.upsample(o1);
+            let ee2 = clip(ee);
+            let eo2 = clip(eo);
+            let oe2 = clip(oe);
+            let oo2 = clip(oo);
+            let e1d = os2.downsample(ee2, eo2);
+            let o1d = os2.downsample(oe2, oo2);
+            os1.downsample(e1d, o1d)
+        }
     }
 }
 

@@ -232,9 +232,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
             // We only need the output side — Ambient generates audio.
             for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                use superduper_dsp_sdk::clap_helpers::split_io;
-                let (_read, write) = match split_io(channel_pair) {
-                    Some(io) => io,
+                use superduper_dsp_sdk::clap_helpers::output_slice;
+                let write = match output_slice(channel_pair) {
+                    Some(w) => w,
                     None => continue,
                 };
                 if bypassed {

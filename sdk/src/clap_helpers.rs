@@ -140,3 +140,17 @@ pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32]
         ChannelPair::InputOnly(_) => None,
     }
 }
+
+/// Variant of `split_io` for **generators / synthesizers** — anything that
+/// has no audio input port and just wants the host's output buffer. The
+/// effect-side helper `split_io` returns `None` for `OutputOnly` because
+/// effects can't process audio that isn't there; instruments would
+/// silently get zeroed buffers if they reused it. Use this from synth
+/// plugins (Pad, Ambient) instead.
+pub fn output_slice<'b>(c: ChannelPair<'b, f32>) -> Option<&'b mut [f32]> {
+    match c {
+        ChannelPair::OutputOnly(buf) | ChannelPair::InPlace(buf) => Some(buf),
+        ChannelPair::InputOutput(_, buf) => Some(buf),
+        ChannelPair::InputOnly(_) => None,
+    }
+}

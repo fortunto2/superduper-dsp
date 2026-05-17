@@ -506,8 +506,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             };
             let mut writers: Vec<_> = channel_pairs
                 .into_iter()
-                .filter_map(superduper_dsp_sdk::clap_helpers::split_io)
-                .map(|(_r, w)| w)
+                .filter_map(superduper_dsp_sdk::clap_helpers::output_slice)
                 .collect();
             if writers.len() < 2 {
                 // Mono output isn't useful for a stereo pad; silence and bail.

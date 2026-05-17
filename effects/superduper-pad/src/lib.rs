@@ -256,13 +256,19 @@ impl<'a> PluginAudioProcessor<'a> {
                 return;
             }
         }
-        // 2. Free voice.
+        // 2. Free voice — assign without touching PadVoice/filter state.
+        //    A full `Voice::default()` reset zeroes the SVF integrators
+        //    and resets the oscillator phases, which causes an audible
+        //    click on any new note. Re-using whatever state the voice
+        //    had left (it was idle, so amplitude is 0 anyway) lets the
+        //    attack ramp smoothly from silence with the same oscillator
+        //    continuity.
         if let Some(v) = self.voices.iter_mut().find(|v| v.env.is_idle()) {
-            *v = Voice::default();
             v.key = key;
             v.note_id = note_id;
             v.velocity = velocity;
             v.age_stamp = stamp;
+            v.env = AdsrEnvelope::default();
             v.env.gate_on();
             return;
         }
@@ -290,8 +296,12 @@ impl<'a> PluginAudioProcessor<'a> {
                 }
             }
         }
+        // Stealing a still-sounding voice: preserve oscillator + filter
+        // state (avoids the same click) and replay the attack from the
+        // current envelope level, not from zero. The amplitude jump from
+        // the previous-note velocity to the new attack is smoothed by
+        // the env's own ramp instead of being a hard cut.
         let v = &mut self.voices[steal_idx];
-        *v = Voice::default();
         v.key = key;
         v.note_id = note_id;
         v.velocity = velocity;

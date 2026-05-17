@@ -155,15 +155,22 @@ impl PadVoice {
             mix += self.phases[i].sin() * gain;
         }
 
-        // Resonant 2-pole lowpass (Chamberlin SVF lite). Two state variables.
-        let cutoff = p.cutoff_hz.clamp(40.0, p.sr * 0.45);
-        let f = 2.0 * (core::f32::consts::PI * cutoff / p.sr).sin();
-        let q = (1.0 - p.resonance.clamp(0.0, 0.95) * 0.999).max(0.05);
-        let highpass = mix - self.lp_z2 - self.lp_z1 * q;
-        let bandpass = self.lp_z1 + highpass * f;
-        let lowpass = self.lp_z2 + bandpass * f;
-        self.lp_z1 = bandpass;
-        self.lp_z2 = lowpass;
+        // Trapezoidal (zero-delay-feedback) state-variable filter
+        // — Vadim Zavalishin's "The Art of VA Filter Design", chap. 5.
+        // Stable for any cutoff up to Nyquist; doesn't suffer from the
+        // Chamberlin SVF's blow-up at high frequency. Two integrator
+        // states (lp_z1 = bandpass-integrator, lp_z2 = lowpass-integrator).
+        let cutoff = p.cutoff_hz.clamp(40.0, p.sr * 0.49);
+        let g = (core::f32::consts::PI * cutoff / p.sr).tan();
+        // k = 2 → no resonance, k → 0 → self-oscillation. Map our 0..0.95
+        // resonance knob into the upper half of that range.
+        let k = 2.0 - 2.0 * p.resonance.clamp(0.0, 0.95);
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let v1 = a1 * (self.lp_z1 + g * (mix - self.lp_z2));
+        let lowpass = self.lp_z2 + g * v1;
+        // Trapezoidal update for the two integrator states.
+        self.lp_z1 = 2.0 * v1 - self.lp_z1;
+        self.lp_z2 = 2.0 * lowpass - self.lp_z2;
 
         // Soft saturation for analog warmth.
         (lowpass * (1.0 + p.drive * 1.5)).tanh()

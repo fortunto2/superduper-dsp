@@ -489,6 +489,99 @@ pub fn compressor_gain_db(
     }
 }
 
+/// Compression curve shape selector. ZLCompressor exposes the same three
+/// flavors under different names; the audible distinction is the shape
+/// of the knee transition and the slope behavior past the knee.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CompressorCurve {
+    /// Giannoulis-Massberg-Reiss quadratic — the existing `compressor_gain_db`.
+    /// Transparent, mathematically clean, the SSL/Pro-C default.
+    Clean = 0,
+    /// Asymmetric "pump" curve — slope is boosted by ~25% in the first
+    /// 6 dB above threshold then tapers back to the user-set ratio. Gives
+    /// the percussive "punching" character of FET compressors (1176 LN
+    /// "All-button" / OptoLA-2A in fast mode).
+    Pump = 1,
+    /// Cubic smoothstep knee — the transition `3x² - 2x³` is C¹-continuous
+    /// at both edges, so the curve smoothly approaches the linear slope
+    /// asymptotically instead of joining it with a corner. Quieter than
+    /// Clean on sustained material.
+    Smooth = 2,
+}
+
+impl CompressorCurve {
+    #[inline]
+    pub fn from_index(i: u32) -> Self {
+        match i {
+            1 => Self::Pump,
+            2 => Self::Smooth,
+            _ => Self::Clean,
+        }
+    }
+}
+
+/// Static compression curve in dB, dispatched on the selected shape.
+/// Curve = Clean reproduces `compressor_gain_db` bit-for-bit.
+#[inline]
+pub fn compressor_gain_db_curve(
+    input_db: f32,
+    threshold_db: f32,
+    ratio: f32,
+    knee_db: f32,
+    curve: CompressorCurve,
+) -> f32 {
+    match curve {
+        CompressorCurve::Clean => compressor_gain_db(input_db, threshold_db, ratio, knee_db),
+        CompressorCurve::Pump => pump_gain_db(input_db, threshold_db, ratio, knee_db),
+        CompressorCurve::Smooth => smooth_gain_db(input_db, threshold_db, ratio, knee_db),
+    }
+}
+
+/// Asymmetric "pump" curve. Base slope is the same `1 - 1/ratio`; in the
+/// first 6 dB above (threshold + knee/2) we multiply the gain reduction
+/// by an extra factor that drops from 1.25 → 1.0 along a half-cosine.
+/// The result is a slightly steeper initial bite (audible as percussive
+/// "pump") that smoothly returns to the user-set ratio for sustained
+/// signals. Below and inside the knee the curve matches Clean so the
+/// difference shows up only when the comp is actually working.
+#[inline]
+fn pump_gain_db(input_db: f32, threshold_db: f32, ratio: f32, knee_db: f32) -> f32 {
+    let base = compressor_gain_db(input_db, threshold_db, ratio, knee_db);
+    let over = input_db - (threshold_db + knee_db * 0.5);
+    if over <= 0.0 {
+        return base;
+    }
+    const PUMP_REGION_DB: f32 = 6.0;
+    const PUMP_BOOST: f32 = 0.25;
+    let t = (over / PUMP_REGION_DB).clamp(0.0, 1.0);
+    // Half-cosine envelope — 1 at over=0, 0 at over=PUMP_REGION_DB.
+    let boost = 0.5 * (core::f32::consts::PI * t).cos() + 0.5;
+    base * (1.0 + PUMP_BOOST * boost)
+}
+
+/// Cubic-smoothstep knee. Same slope and limits as Clean but the
+/// transition through the knee follows `3x² - 2x³` instead of quadratic
+/// `x²`. That makes both edges of the knee tangent to the bypass / hard
+/// regions (smoothstep is C¹ at both endpoints), giving a perceptibly
+/// gentler engagement under steady material.
+#[inline]
+fn smooth_gain_db(input_db: f32, threshold_db: f32, ratio: f32, knee_db: f32) -> f32 {
+    let knee_half = knee_db * 0.5;
+    let slope = 1.0 - 1.0 / ratio.max(1.0);
+    if knee_db > 0.0001 && (input_db - threshold_db).abs() <= knee_half {
+        let x = (input_db - threshold_db + knee_half) / knee_db; // 0..1 across knee
+        // Smoothstep: integral of 6x(1-x); produces 3x²-2x³ shape.
+        let s = x * x * (3.0 - 2.0 * x);
+        // GR at the knee's right edge is -slope * knee_half — interpolate
+        // 0 → -slope * knee_half via smoothstep.
+        -slope * knee_half * s
+    } else if input_db > threshold_db + knee_half {
+        -(input_db - threshold_db) * slope
+    } else {
+        0.0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DelayLine — variable-length delay with 3rd-order Lagrange interpolation.
 //

@@ -16,13 +16,13 @@ use baseview::{PhySize, Size, WindowHandle, WindowOpenOptions, WindowScalePolicy
 use egui_baseview::{EguiWindow, GraphicsConfig};
 use raw_window_handle::HasRawWindowHandle;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
-use superduper_synth_core::dsp_blocks::compressor_gain_db;
+use superduper_synth_core::dsp_blocks::{compressor_gain_db_curve, CompressorCurve};
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_KNEE, P_LINK, P_LOOKAHEAD, P_MAKEUP, P_MIX, P_OS,
-    P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN, SharedParams,
+    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_KNEE, P_LINK, P_LOOKAHEAD, P_MAKEUP, P_MIX,
+    P_OS, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN, SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 760;
@@ -39,6 +39,7 @@ pub fn new_resize_bridge() -> ResizeBridge {
 
 const HPF_NAMES: [&str; 4] = ["Off", "80 Hz", "150 Hz", "300 Hz"];
 const OS_NAMES: [&str; 3] = ["Off", "2×", "4×"];
+const CURVE_NAMES: [&str; 3] = ["Clean", "Pump", "Smooth"];
 
 /// Scope display range (dB). Anything below this floor is clipped to it.
 const SCOPE_DB_FLOOR: f32 = -60.0;
@@ -139,6 +140,29 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::param_row(ui, &state.shared.params[P_THRESHOLD], &PARAMS[P_THRESHOLD]);
                 core_gui::param_row(ui, &state.shared.params[P_RATIO], &PARAMS[P_RATIO]);
                 core_gui::param_row(ui, &state.shared.params[P_KNEE], &PARAMS[P_KNEE]);
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [90.0, 18.0],
+                        egui::Label::new(
+                            egui::RichText::new("Curve").color(core_gui::GREEN).monospace(),
+                        ),
+                    );
+                    let cur = state.shared.params[P_CURVE]
+                        .load(Ordering::Relaxed)
+                        .round() as usize;
+                    let cur = cur.min(CURVE_NAMES.len() - 1);
+                    egui::ComboBox::from_id_salt("comp_curve_combo")
+                        .selected_text(CURVE_NAMES[cur])
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in CURVE_NAMES.iter().enumerate() {
+                                if ui.selectable_label(cur == i, *name).clicked() {
+                                    state.shared.params[P_CURVE]
+                                        .store(i as f32, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                });
             });
 
             core_gui::section(ui, "Envelope", |ui| {
@@ -276,10 +300,13 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
     let ratio = state.shared.params[P_RATIO].load(Ordering::Relaxed);
     let knee = state.shared.params[P_KNEE].load(Ordering::Relaxed);
     let makeup = state.shared.params[P_MAKEUP].load(Ordering::Relaxed);
+    let curve_kind = CompressorCurve::from_index(
+        state.shared.params[P_CURVE].load(Ordering::Relaxed).round() as u32,
+    );
     let mut curve_pts = Vec::with_capacity(64);
     for i in 0..=64_usize {
         let in_db = SCOPE_DB_FLOOR + (SCOPE_DB_CEIL - SCOPE_DB_FLOOR) * (i as f32 / 64.0);
-        let gr = compressor_gain_db(in_db, threshold, ratio, knee);
+        let gr = compressor_gain_db_curve(in_db, threshold, ratio, knee, curve_kind);
         let out_db = (in_db + gr + makeup).clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
         let x = rect.left() + rect.width() * (i as f32 / 64.0);
         let y = rect.bottom() - rect.height() * (out_db - SCOPE_DB_FLOOR)

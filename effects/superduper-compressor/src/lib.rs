@@ -48,7 +48,8 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    compressor_gain_db, DelayLine, EnvelopeDetector, OnePoleLp, Oversampler2x, SmoothedParam,
+    compressor_gain_db, compressor_gain_db_curve, CompressorCurve, DelayLine, EnvelopeDetector,
+    OnePoleLp, Oversampler2x, SmoothedParam,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,10 @@ pub const PARAMS: &[ParamDef] = &[
     // mirror images above Nyquist where the decimator stop-band
     // attenuates them by ~80 dB.
     ParamDef { id: 12, name: b"OS",        min: 0.0,   max: 2.0,    default: 0.0,   unit: ""   },
+    // Static compression curve shape. 0 = Clean (Giannoulis quadratic),
+    // 1 = Pump (asymmetric, +25% slope boost in the first 6 dB above
+    // threshold), 2 = Smooth (cubic smoothstep knee). Discrete switch.
+    ParamDef { id: 13, name: b"Curve",     min: 0.0,   max: 2.0,    default: 0.0,   unit: ""   },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -141,6 +146,7 @@ pub const P_LOOKAHEAD: usize = 9;
 pub const P_CEILING: usize = 10;
 pub const P_LINK: usize = 11;
 pub const P_OS: usize = 12;
+pub const P_CURVE: usize = 13;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -425,6 +431,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             .load(Ordering::Relaxed)
             .round()
             .clamp(0.0, 2.0) as u32;
+        let curve = CompressorCurve::from_index(
+            self.shared.params[P_CURVE].load(Ordering::Relaxed).round().clamp(0.0, 2.0) as u32,
+        );
         let sc_hpf_idx = self.shared.params[P_SC_HPF]
             .load(Ordering::Relaxed)
             .round() as u32;
@@ -494,7 +503,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     threshold_target, ratio_target, attack_target, release_target,
                     knee_target, makeup_target, mix_target,
                     lookahead_ms_target, ceiling_target, link_target,
-                    os_mode,
+                    os_mode, curve,
                     sc_hpf_freq, sc_present, auto_rel,
                     &mut max_gr_db,
                 );
@@ -549,7 +558,7 @@ fn process_stereo_block(
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
     lookahead_ms_target: f32, ceiling_target: f32, link_target: f32,
-    os_mode: u32,
+    os_mode: u32, curve: CompressorCurve,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     max_gr_db: &mut f32,
 ) {
@@ -607,7 +616,7 @@ fn process_stereo_block(
 
         let env = p.detector.process(sc, sr, attack, release);
         let env_db = 20.0 * env.max(1e-9).log10();
-        let gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
+        let gr_db = compressor_gain_db_curve(env_db, threshold, ratio, knee, curve);
         if gr_db < *max_gr_db { *max_gr_db = gr_db; }
 
         let gr_norm = (-gr_db / 6.0).clamp(0.0, 1.0);

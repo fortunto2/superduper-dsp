@@ -47,6 +47,13 @@ const SCOPE_DB_CEIL: f32 = 0.0;
 /// GR overlay clipped to this many dB of reduction so the line stays
 /// inside the scope panel.
 const GR_DISPLAY_RANGE_DB: f32 = 30.0;
+/// Width of the input-level histogram strip rendered to the left of the
+/// waveform area (in scope-panel pixels).
+const HISTOGRAM_WIDTH: f32 = 36.0;
+/// Number of dB bins in the histogram. 60 bins over the scope range
+/// (-60..0 dB) → 1 dB per bin, fine enough to read mix density without
+/// looking jagged.
+const HISTOGRAM_BINS: usize = 60;
 
 /// Scope colours — borrowed from the ZLCompressor reference but mapped
 /// into the SuperDuper green palette so it doesn't look out of place.
@@ -260,20 +267,28 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
         &mut state.scope_gr,
     );
 
-    let desired = egui::vec2(
-        ui.available_width().min(1200.0),
-        220.0,
-    );
-    let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
-    let painter = ui.painter_at(rect);
+    let outer = egui::vec2(ui.available_width().min(1200.0), 220.0);
+    let (full_rect, _resp) = ui.allocate_exact_size(outer, egui::Sense::hover());
+    let painter = ui.painter_at(full_rect);
 
-    painter.rect_filled(rect, 0.0, SCOPE_BG);
+    // Split: histogram strip on the left, waveform on the right.
+    let hist_rect = egui::Rect::from_min_size(
+        full_rect.min,
+        egui::vec2(HISTOGRAM_WIDTH, full_rect.height()),
+    );
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(full_rect.min.x + HISTOGRAM_WIDTH + 2.0, full_rect.min.y),
+        egui::vec2(full_rect.width() - HISTOGRAM_WIDTH - 2.0, full_rect.height()),
+    );
+
+    painter.rect_filled(full_rect, 0.0, SCOPE_BG);
     painter.rect_stroke(
-        rect,
+        full_rect,
         0.0,
         egui::Stroke::new(1.0, core_gui::GREEN_FAINT),
         egui::StrokeKind::Inside,
     );
+    draw_histogram(&painter, hist_rect, &state.scope_in);
 
     // Horizontal grid every 12 dB.
     for db in [-12, -24, -36, -48] {
@@ -374,6 +389,57 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
         "■ in  ▶ out  ▬ gr  ▬ curve",
         egui::FontId::monospace(10.0),
         core_gui::GREEN_DIM,
+    );
+}
+
+/// Input-level histogram. Bins each scope frame's input dB value into a
+/// fixed-resolution grid spanning the scope's dB range, then draws each
+/// bin as a horizontal bar — taller bin = more frames sat at that level.
+/// ZLCompressor's left strip is the inspiration; this version uses the
+/// SuperDuper green palette so it ties into the theme.
+fn draw_histogram(painter: &egui::Painter, rect: egui::Rect, in_db: &[f32]) {
+    let mut bins = [0u32; HISTOGRAM_BINS];
+    for &v in in_db {
+        if !v.is_finite() {
+            continue;
+        }
+        let v = v.clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
+        let frac = (v - SCOPE_DB_FLOOR) / (SCOPE_DB_CEIL - SCOPE_DB_FLOOR);
+        let idx = (frac * (HISTOGRAM_BINS as f32 - 1.0)).round() as usize;
+        bins[idx] = bins[idx].saturating_add(1);
+    }
+    let max = bins.iter().copied().max().unwrap_or(1).max(1);
+
+    let bin_h = rect.height() / HISTOGRAM_BINS as f32;
+    for (i, &count) in bins.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let bar_frac = count as f32 / max as f32;
+        let bar_w = rect.width() * bar_frac;
+        // Bins are indexed bottom-up: bin 0 = SCOPE_DB_FLOOR.
+        let y_bottom = rect.bottom() - bin_h * i as f32;
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), y_bottom - bin_h),
+            egui::vec2(bar_w.max(1.0), (bin_h - 0.5).max(1.0)),
+        );
+        // Brighten taller bars so the "this is where the signal lives"
+        // peak pops visually.
+        let bright = (0.35 + 0.65 * bar_frac).clamp(0.0, 1.0);
+        let r = (INPUT_LINE.r() as f32 * bright) as u8;
+        let g = (INPUT_LINE.g() as f32 * bright) as u8;
+        let b = (INPUT_LINE.b() as f32 * bright) as u8;
+        painter.rect_filled(bar_rect, 0.0, egui::Color32::from_rgb(r, g, b));
+    }
+
+    // Right-edge separator so the histogram doesn't bleed into the
+    // waveform area visually.
+    painter.line_segment(
+        [
+            egui::pos2(rect.right() + 1.0, rect.top()),
+            egui::pos2(rect.right() + 1.0, rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, core_gui::GREEN_FAINT),
     );
 }
 

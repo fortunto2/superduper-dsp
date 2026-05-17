@@ -131,6 +131,15 @@ pub const PARAMS: &[ParamDef] = &[
     // 1 = Pump (asymmetric, +25% slope boost in the first 6 dB above
     // threshold), 2 = Smooth (cubic smoothstep knee). Discrete switch.
     ParamDef { id: 13, name: b"Curve",     min: 0.0,   max: 2.0,    default: 0.0,   unit: ""   },
+    // Hard limit on maximum gain reduction. 0 dB = no clamp (the curve
+    // freely takes the ratio above threshold). Anything >0 caps GR at
+    // -Range, useful for "soft limit" and downward-expansion-style use.
+    ParamDef { id: 14, name: b"Range",     min: 0.0,   max: 36.0,   default: 0.0,   unit: "dB" },
+    // After the detector envelope falls below threshold, freeze the
+    // current GR for `Hold` ms before the release stage begins. Same
+    // knob ZLCompressor calls "Hold" — preserves sustain on slow material
+    // while preventing pumping on transients with gaps.
+    ParamDef { id: 15, name: b"Hold",      min: 0.0,   max: 500.0,  default: 0.0,   unit: "ms" },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -147,6 +156,8 @@ pub const P_CEILING: usize = 10;
 pub const P_LINK: usize = 11;
 pub const P_OS: usize = 12;
 pub const P_CURVE: usize = 13;
+pub const P_RANGE: usize = 14;
+pub const P_HOLD: usize = 15;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -319,6 +330,14 @@ pub struct PluginAudioProcessor<'a> {
     /// Slow envelope tracking how sustained the current compression is.
     /// Drives the program-dependent release multiplier.
     sustained_gr_env: f32,
+    /// Hold-stage state — when the static curve says "release allowed"
+    /// (input below threshold), we freeze the previous GR for this many
+    /// remaining samples before letting the detector envelope cool down.
+    hold_remaining_samples: f32,
+    /// Latched GR value used while `hold_remaining_samples > 0`. Sample-
+    /// accurate latch on the per-sample compressor output, not an extra
+    /// smoothed value.
+    hold_gr_db: f32,
     /// Running scope accumulator — collects peak input / peak output / max
     /// GR across SCOPE_HOP samples then emits one scope frame.
     scope_acc_in: f32,
@@ -399,6 +418,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             os1_r: Oversampler2x::default(),
             os2_l: Oversampler2x::default(),
             os2_r: Oversampler2x::default(),
+            hold_remaining_samples: 0.0,
+            hold_gr_db: 0.0,
             last_lookahead_samples: initial_look_samples as u32,
             sample_rate: sr,
         })
@@ -434,6 +455,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let curve = CompressorCurve::from_index(
             self.shared.params[P_CURVE].load(Ordering::Relaxed).round().clamp(0.0, 2.0) as u32,
         );
+        let range_target = self.shared.params[P_RANGE].load(Ordering::Relaxed).max(0.0);
+        let hold_target = self.shared.params[P_HOLD].load(Ordering::Relaxed).max(0.0);
         let sc_hpf_idx = self.shared.params[P_SC_HPF]
             .load(Ordering::Relaxed)
             .round() as u32;
@@ -503,7 +526,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     threshold_target, ratio_target, attack_target, release_target,
                     knee_target, makeup_target, mix_target,
                     lookahead_ms_target, ceiling_target, link_target,
-                    os_mode, curve,
+                    os_mode, curve, range_target, hold_target,
                     sc_hpf_freq, sc_present, auto_rel,
                     &mut max_gr_db,
                 );
@@ -559,6 +582,7 @@ fn process_stereo_block(
     knee_target: f32, makeup_target: f32, mix_target: f32,
     lookahead_ms_target: f32, ceiling_target: f32, link_target: f32,
     os_mode: u32, curve: CompressorCurve,
+    range_target: f32, hold_target: f32,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     max_gr_db: &mut f32,
 ) {
@@ -616,7 +640,43 @@ fn process_stereo_block(
 
         let env = p.detector.process(sc, sr, attack, release);
         let env_db = 20.0 * env.max(1e-9).log10();
-        let gr_db = compressor_gain_db_curve(env_db, threshold, ratio, knee, curve);
+        let mut gr_db = compressor_gain_db_curve(env_db, threshold, ratio, knee, curve);
+
+        // Range — hard floor on how much GR is applied. 0 = no clamp.
+        if range_target > 0.05 {
+            gr_db = gr_db.max(-range_target);
+        }
+
+        // Hold — when the static curve has stopped asking for more GR
+        // (compressing → released stage), keep the previous GR latched
+        // for hold_target ms. The detector's own release still ticks down
+        // behind the scenes; we just delay the moment the GR follows it.
+        // Active hold extends only when the GR is currently below the
+        // latched value (i.e. the detector is recovering, not still
+        // attacking deeper).
+        if hold_target > 0.05 {
+            let hold_samples = hold_target * 0.001 * sr;
+            if gr_db < p.hold_gr_db - 0.05 {
+                // Going deeper — restart hold window with the new lower
+                // GR. (gr_db is negative; "lower" means more reduction.)
+                p.hold_gr_db = gr_db;
+                p.hold_remaining_samples = hold_samples;
+            } else if gr_db > p.hold_gr_db + 0.05 && p.hold_remaining_samples > 0.0 {
+                // Recovery requested but hold timer still running — latch
+                // GR at the held value.
+                gr_db = p.hold_gr_db;
+                p.hold_remaining_samples -= 1.0;
+            } else {
+                // Either GR matches the held value (stable compression) or
+                // hold timer expired and we're back to following the
+                // detector's release.
+                p.hold_gr_db = gr_db;
+                if p.hold_remaining_samples > 0.0 {
+                    p.hold_remaining_samples -= 1.0;
+                }
+            }
+        }
+
         if gr_db < *max_gr_db { *max_gr_db = gr_db; }
 
         let gr_norm = (-gr_db / 6.0).clamp(0.0, 1.0);

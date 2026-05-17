@@ -21,14 +21,15 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_KNEE, P_LINK, P_LOOKAHEAD, P_MAKEUP, P_MIX,
-    P_OS, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN, SharedParams,
+    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_HOLD, P_KNEE, P_LINK, P_LOOKAHEAD,
+    P_MAKEUP, P_MIX, P_OS, P_RANGE, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN,
+    SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 760;
-pub const DEFAULT_HEIGHT: u32 = 700;
+pub const DEFAULT_HEIGHT: u32 = 640;
 pub const MIN_WIDTH: u32 = 540;
-pub const MIN_HEIGHT: u32 = 520;
+pub const MIN_HEIGHT: u32 = 380;
 pub const MAX_WIDTH: u32 = 1600;
 pub const MAX_HEIGHT: u32 = 1200;
 
@@ -58,7 +59,10 @@ const HISTOGRAM_BINS: usize = 60;
 /// Scope colours — borrowed from the ZLCompressor reference but mapped
 /// into the SuperDuper green palette so it doesn't look out of place.
 const SCOPE_BG: egui::Color32 = core_gui::PANEL_BG;
-const INPUT_FILL: egui::Color32 = egui::Color32::from_rgb(34, 56, 38);
+/// Input waveform: faint translucent fill so the orange curve and the
+/// magenta GR overlay stay visible behind it. ZLCompressor uses a similar
+/// muted grey for the same reason.
+const INPUT_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(20, 36, 24, 90);
 const INPUT_LINE: egui::Color32 = egui::Color32::from_rgb(64, 110, 78);
 const OUTPUT_LINE: egui::Color32 = egui::Color32::from_rgb(160, 230, 170);
 /// Magenta GR overlay — same colour ZLCompressor uses.
@@ -72,6 +76,12 @@ struct GuiState {
     applied_size: (u32, u32),
     selected_preset: Option<usize>,
     preset_names: Vec<&'static str>,
+    /// Toggle for the scope panel — collapsing it hides the waveform,
+    /// histogram, curve plot, and GR meter so the window can shrink to
+    /// just the param sliders. GUI-local state, doesn't round-trip
+    /// through CLAP params on purpose: it's a viewing preference, not
+    /// part of the patch.
+    show_scope: bool,
     /// Scratch buffers for scope snapshot. Allocated once at GUI build
     /// time so per-frame draws don't churn the allocator. Triple buffer
     /// matches the audio side's ScopeBuf layout (input / output / GR).
@@ -98,6 +108,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         applied_size: (initial_w, initial_h),
         selected_preset: Some(0),
         preset_names: PRESETS.iter().map(|p| p.name).collect(),
+        show_scope: true,
         scope_in: vec![SCOPE_DB_FLOOR; SCOPE_LEN],
         scope_out: vec![SCOPE_DB_FLOOR; SCOPE_LEN],
         scope_gr: vec![0.0; SCOPE_LEN],
@@ -137,10 +148,34 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             }
         }
 
-        draw_scope(ui, state);
-        ui.add_space(4.0);
-        draw_gr_meter(ui, &state.shared);
-        ui.add_space(4.0);
+        // Toggle row — scope on/off + numeric GR readout next to it so
+        // users who collapse the scope still see compression activity.
+        ui.horizontal(|ui| {
+            let label = if state.show_scope { "[X] scope" } else { "[ ] scope" };
+            if ui
+                .selectable_label(
+                    state.show_scope,
+                    egui::RichText::new(label).color(core_gui::GREEN).monospace(),
+                )
+                .clicked()
+            {
+                state.show_scope = !state.show_scope;
+            }
+            ui.add_space(8.0);
+            let gr_db = state.shared.gain_reduction_db.load(Ordering::Relaxed);
+            ui.label(
+                egui::RichText::new(format!("{:>5.1} dB GR", gr_db.max(-24.0).min(0.0)))
+                    .color(core_gui::GREEN_BRIGHT)
+                    .monospace(),
+            );
+        });
+
+        if state.show_scope {
+            draw_scope(ui, state);
+            ui.add_space(2.0);
+            draw_gr_meter(ui, &state.shared);
+            ui.add_space(4.0);
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Compression", |ui| {
@@ -174,7 +209,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
             core_gui::section(ui, "Envelope", |ui| {
                 core_gui::param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK]);
+                core_gui::param_row(ui, &state.shared.params[P_HOLD], &PARAMS[P_HOLD]);
                 core_gui::param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE]);
+                core_gui::param_row(ui, &state.shared.params[P_RANGE], &PARAMS[P_RANGE]);
                 ui.horizontal(|ui| {
                     let on = state.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
                     let label = if on { "[X] auto release" } else { "[ ] auto release" };
@@ -267,7 +304,7 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
         &mut state.scope_gr,
     );
 
-    let outer = egui::vec2(ui.available_width().min(1200.0), 220.0);
+    let outer = egui::vec2(ui.available_width().min(1200.0), 170.0);
     let (full_rect, _resp) = ui.allocate_exact_size(outer, egui::Sense::hover());
     let painter = ui.painter_at(full_rect);
 
@@ -346,11 +383,15 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
         input_poly.push(egui::pos2(x, y));
     }
     input_poly.push(egui::pos2(rect.right(), rect.bottom()));
-    painter.add(egui::Shape::convex_polygon(
-        input_poly.clone(),
-        INPUT_FILL,
-        egui::Stroke::new(1.0, INPUT_LINE),
-    ));
+    // Translucent fill (premultiplied alpha) so the orange curve and the
+    // magenta GR line behind the input wave stay readable. A bright
+    // outline keeps the input contour easy to track.
+    painter.add(egui::Shape::Path(egui::epaint::PathShape {
+        points: input_poly.clone(),
+        closed: true,
+        fill: INPUT_FILL,
+        stroke: egui::Stroke::new(1.0, INPUT_LINE).into(),
+    }));
 
     // Output waveform — bright line over the top.
     let mut output_pts = Vec::with_capacity(n);

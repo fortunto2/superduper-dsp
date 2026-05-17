@@ -15,7 +15,6 @@ use std::sync::atomic::Ordering;
 use baseview::{PhySize, Size, WindowHandle, WindowOpenOptions, WindowScalePolicy};
 use egui_baseview::{EguiWindow, GraphicsConfig};
 use raw_window_handle::HasRawWindowHandle;
-use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_synth_core::dsp_blocks::{compressor_gain_db_curve, CompressorCurve};
 use superduper_synth_core::gui as core_gui;
 
@@ -59,15 +58,16 @@ const HISTOGRAM_BINS: usize = 60;
 /// Scope colours — borrowed from the ZLCompressor reference but mapped
 /// into the SuperDuper green palette so it doesn't look out of place.
 const SCOPE_BG: egui::Color32 = core_gui::PANEL_BG;
-/// Input waveform: faint translucent fill so the orange curve and the
-/// magenta GR overlay stay visible behind it. ZLCompressor uses a similar
-/// muted grey for the same reason.
-const INPUT_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(20, 36, 24, 90);
-const INPUT_LINE: egui::Color32 = egui::Color32::from_rgb(64, 110, 78);
-const OUTPUT_LINE: egui::Color32 = egui::Color32::from_rgb(160, 230, 170);
+/// Input waveform: very low-alpha fill so output / curve / GR lines on
+/// top dominate. The fill is there for "sense of mass", not as a
+/// readable signal — the input outline (drawn over the fill) is what
+/// reads as the input signal.
+const INPUT_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(14, 26, 18, 35);
+const INPUT_LINE: egui::Color32 = egui::Color32::from_rgb(96, 150, 110);
+const OUTPUT_LINE: egui::Color32 = egui::Color32::from_rgb(190, 240, 200);
 /// Magenta GR overlay — same colour ZLCompressor uses.
-const GR_LINE: egui::Color32 = egui::Color32::from_rgb(214, 86, 196);
-const CURVE_LINE: egui::Color32 = egui::Color32::from_rgb(232, 168, 84);
+const GR_LINE: egui::Color32 = egui::Color32::from_rgb(240, 96, 210);
+const CURVE_LINE: egui::Color32 = egui::Color32::from_rgb(240, 178, 92);
 const GRID: egui::Color32 = core_gui::GREEN_FAINT;
 
 struct GuiState {
@@ -88,6 +88,13 @@ struct GuiState {
     scope_in: Vec<f32>,
     scope_out: Vec<f32>,
     scope_gr: Vec<f32>,
+    /// Per-frame polygon scratch — cleared and re-filled each draw rather
+    /// than reallocated. Keeps the GUI thread off the allocator at
+    /// 30 Hz × ~1024 points.
+    curve_pts: Vec<egui::Pos2>,
+    input_poly: Vec<egui::Pos2>,
+    output_pts: Vec<egui::Pos2>,
+    gr_pts: Vec<egui::Pos2>,
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -112,6 +119,10 @@ pub fn open_window<P: HasRawWindowHandle>(
         scope_in: vec![SCOPE_DB_FLOOR; SCOPE_LEN],
         scope_out: vec![SCOPE_DB_FLOOR; SCOPE_LEN],
         scope_gr: vec![0.0; SCOPE_LEN],
+        curve_pts: Vec::with_capacity(65),
+        input_poly: Vec::with_capacity(SCOPE_LEN + 2),
+        output_pts: Vec::with_capacity(SCOPE_LEN),
+        gr_pts: Vec::with_capacity(SCOPE_LEN),
     };
     EguiWindow::open_parented(
         parent,
@@ -355,7 +366,29 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
     let curve_kind = CompressorCurve::from_index(
         state.shared.params[P_CURVE].load(Ordering::Relaxed).round() as u32,
     );
-    let mut curve_pts = Vec::with_capacity(64);
+    // Draw order: input fill (background mass), curve (orange), input
+    // outline (faint contour), output line (bright), GR line (top). All
+    // line layers above the fill so they read clearly against the wave.
+    let n = state.scope_in.len();
+    let dx = rect.width() / n as f32;
+    state.input_poly.clear();
+    state.input_poly.push(egui::pos2(rect.left(), rect.bottom()));
+    for (i, db) in state.scope_in.iter().enumerate() {
+        let v = db.clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
+        let frac = (v - SCOPE_DB_FLOOR) / (SCOPE_DB_CEIL - SCOPE_DB_FLOOR);
+        let y = rect.bottom() - rect.height() * frac;
+        let x = rect.left() + dx * i as f32;
+        state.input_poly.push(egui::pos2(x, y));
+    }
+    state.input_poly.push(egui::pos2(rect.right(), rect.bottom()));
+    painter.add(egui::Shape::Path(egui::epaint::PathShape {
+        points: state.input_poly.clone(),
+        closed: true,
+        fill: INPUT_FILL,
+        stroke: egui::Stroke::NONE.into(),
+    }));
+
+    state.curve_pts.clear();
     for i in 0..=64_usize {
         let in_db = SCOPE_DB_FLOOR + (SCOPE_DB_CEIL - SCOPE_DB_FLOOR) * (i as f32 / 64.0);
         let gr = compressor_gain_db_curve(in_db, threshold, ratio, knee, curve_kind);
@@ -363,64 +396,46 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
         let x = rect.left() + rect.width() * (i as f32 / 64.0);
         let y = rect.bottom() - rect.height() * (out_db - SCOPE_DB_FLOOR)
             / (SCOPE_DB_CEIL - SCOPE_DB_FLOOR);
-        curve_pts.push(egui::pos2(x, y));
+        state.curve_pts.push(egui::pos2(x, y));
     }
     painter.add(egui::Shape::line(
-        curve_pts,
-        egui::Stroke::new(1.5, CURVE_LINE),
+        state.curve_pts.clone(),
+        egui::Stroke::new(2.0, CURVE_LINE),
     ));
 
-    // Input waveform — a faint filled silhouette underneath.
-    let n = state.scope_in.len();
-    let dx = rect.width() / n as f32;
-    let mut input_poly = Vec::with_capacity(n + 2);
-    input_poly.push(egui::pos2(rect.left(), rect.bottom()));
-    for (i, db) in state.scope_in.iter().enumerate() {
-        let v = db.clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
-        let frac = (v - SCOPE_DB_FLOOR) / (SCOPE_DB_CEIL - SCOPE_DB_FLOOR);
-        let y = rect.bottom() - rect.height() * frac;
-        let x = rect.left() + dx * i as f32;
-        input_poly.push(egui::pos2(x, y));
-    }
-    input_poly.push(egui::pos2(rect.right(), rect.bottom()));
-    // Translucent fill (premultiplied alpha) so the orange curve and the
-    // magenta GR line behind the input wave stay readable. A bright
-    // outline keeps the input contour easy to track.
-    painter.add(egui::Shape::Path(egui::epaint::PathShape {
-        points: input_poly.clone(),
-        closed: true,
-        fill: INPUT_FILL,
-        stroke: egui::Stroke::new(1.0, INPUT_LINE).into(),
-    }));
+    // Input contour — separate from the fill so we can layer it after
+    // the curve (so the input outline doesn't bury the orange).
+    let input_outline: Vec<egui::Pos2> = state.input_poly[1..state.input_poly.len() - 1].to_vec();
+    painter.add(egui::Shape::line(
+        input_outline,
+        egui::Stroke::new(1.0, INPUT_LINE),
+    ));
 
-    // Output waveform — bright line over the top.
-    let mut output_pts = Vec::with_capacity(n);
+    state.output_pts.clear();
     for (i, db) in state.scope_out.iter().enumerate() {
         let v = db.clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
         let frac = (v - SCOPE_DB_FLOOR) / (SCOPE_DB_CEIL - SCOPE_DB_FLOOR);
         let y = rect.bottom() - rect.height() * frac;
         let x = rect.left() + dx * i as f32;
-        output_pts.push(egui::pos2(x, y));
+        state.output_pts.push(egui::pos2(x, y));
     }
     painter.add(egui::Shape::line(
-        output_pts,
-        egui::Stroke::new(1.4, OUTPUT_LINE),
+        state.output_pts.clone(),
+        egui::Stroke::new(1.8, OUTPUT_LINE),
     ));
 
-    // GR overlay — magenta line clamped to the top portion of the scope.
-    // 0 dB GR sits at scope_top, GR_DISPLAY_RANGE_DB at scope_top + 60 px.
     let gr_band_h = (rect.height() * 0.4).min(80.0);
-    let mut gr_pts = Vec::with_capacity(n);
+    state.gr_pts.clear();
     for (i, gr_db) in state.scope_gr.iter().enumerate() {
         let g = (-gr_db).clamp(0.0, GR_DISPLAY_RANGE_DB);
         let frac = g / GR_DISPLAY_RANGE_DB;
         let y = rect.top() + gr_band_h * frac;
         let x = rect.left() + dx * i as f32;
-        gr_pts.push(egui::pos2(x, y));
+        state.gr_pts.push(egui::pos2(x, y));
     }
     painter.add(egui::Shape::line(
-        gr_pts,
-        egui::Stroke::new(1.6, GR_LINE),
+        state.gr_pts.clone(),
+        egui::Stroke::new(2.2, GR_LINE),
     ));
 
     // Legend strip at the top of the scope.
@@ -531,5 +546,3 @@ fn draw_gr_meter(ui: &mut egui::Ui, shared: &crate::SharedParamsInner) {
     );
 }
 
-#[allow(dead_code)]
-fn _keep_paramdef_referenced(_d: &ParamDef) {}

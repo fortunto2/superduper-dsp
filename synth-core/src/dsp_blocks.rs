@@ -210,6 +210,44 @@ pub struct Oversampler2x {
     write_out: usize,
 }
 
+/// Apply a per-sample non-linearity at the chosen oversampling rate.
+/// `os_mode`: 0 = native, 1 = 2× (one halfband stage), 2 = 4× (two stages
+/// cascaded). At anything other than `Off`, the caller's `f` closure runs
+/// at the oversampled rate and the halfband decimator pushes its
+/// harmonics above Nyquist where the stop-band buries them.
+///
+/// The two stages are caller-owned so each channel (or each effect) gets
+/// its own independent state — sharing the history smears stereo image
+/// and can starve odd-phase computations.
+#[inline]
+pub fn oversample_apply<F: FnMut(f32) -> f32>(
+    x: f32,
+    os_mode: u32,
+    os1: &mut Oversampler2x,
+    os2: &mut Oversampler2x,
+    mut f: F,
+) -> f32 {
+    match os_mode {
+        0 => f(x),
+        1 => {
+            let (e, o) = os1.upsample(x);
+            os1.downsample(f(e), f(o))
+        }
+        _ => {
+            let (e1, o1) = os1.upsample(x);
+            let (ee, eo) = os2.upsample(e1);
+            let (oe, oo) = os2.upsample(o1);
+            let ee2 = f(ee);
+            let eo2 = f(eo);
+            let oe2 = f(oe);
+            let oo2 = f(oo);
+            let e1d = os2.downsample(ee2, eo2);
+            let o1d = os2.downsample(oe2, oo2);
+            os1.downsample(e1d, o1d)
+        }
+    }
+}
+
 impl Oversampler2x {
     /// Push one input sample, return two upsampled samples.
     /// First is the even phase (just delayed input, no FIR cost), second

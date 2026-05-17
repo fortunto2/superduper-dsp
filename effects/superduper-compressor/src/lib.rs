@@ -48,8 +48,8 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    compressor_gain_db, compressor_gain_db_curve, CompressorCurve, DelayLine, EnvelopeDetector,
-    OnePoleLp, Oversampler2x, SmoothedParam,
+    compressor_gain_db, compressor_gain_db_curve, oversample_apply, CompressorCurve, DelayLine,
+    EnvelopeDetector, Oversampler2x, SmoothedParam,
 };
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,6 @@ pub struct ScopeBuf {
     pub out_db: Box<[AtomicF32]>,
     pub gr_db: Box<[AtomicF32]>,
     pub head: std::sync::atomic::AtomicU32,
-    pub written: std::sync::atomic::AtomicU64,
 }
 
 impl ScopeBuf {
@@ -201,7 +200,6 @@ impl ScopeBuf {
             out_db: mk(-72.0),
             gr_db: mk(0.0),
             head: std::sync::atomic::AtomicU32::new(0),
-            written: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -216,7 +214,6 @@ impl ScopeBuf {
         // Wrap head explicitly so the next write lands at the right slot.
         let next = ((idx + 1) % len) as u32;
         self.head.store(next, Ordering::Relaxed);
-        self.written.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Read out a chronologically-ordered snapshot. Called from the GUI
@@ -353,10 +350,6 @@ pub struct PluginAudioProcessor<'a> {
     os1_r: Oversampler2x,
     os2_l: Oversampler2x,
     os2_r: Oversampler2x,
-    /// Last reported lookahead value (samples). Tracked so we can republish
-    /// the CLAP latency hint to the host whenever the knob moves enough to
-    /// matter — DAW PDC will re-compensate on the next process call.
-    last_lookahead_samples: u32,
     sample_rate: f32,
 }
 
@@ -420,7 +413,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             os2_r: Oversampler2x::default(),
             hold_remaining_samples: 0.0,
             hold_gr_db: 0.0,
-            last_lookahead_samples: initial_look_samples as u32,
             sample_rate: sr,
         })
     }
@@ -463,17 +455,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
         let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
 
-        // Lookahead in samples — clamped to the delay-line capacity (set
-        // for MAX_LOOKAHEAD_MS at activate). Update CLAP latency when the
-        // value moves by >1 sample so DAW PDC stays in sync.
+        // Lookahead drives CLAP latency directly. Hosts only re-do PDC
+        // when this value changes; a Relaxed store on a clamped knob is
+        // cheap enough to send every block.
         let look_samples_target = sr * 0.001 * lookahead_ms_target.min(MAX_LOOKAHEAD_MS);
-        let look_samples_u32 = look_samples_target as u32;
-        if look_samples_u32.abs_diff(self.last_lookahead_samples) > 1 {
-            self.shared
-                .latency_samples
-                .store(look_samples_u32, Ordering::Relaxed);
-            self.last_lookahead_samples = look_samples_u32;
-        }
+        self.shared
+            .latency_samples
+            .store(look_samples_target as u32, Ordering::Relaxed);
 
         let mut max_gr_db: f32 = 0.0;
 
@@ -668,12 +656,11 @@ fn process_stereo_block(
                 p.hold_remaining_samples -= 1.0;
             } else {
                 // Either GR matches the held value (stable compression) or
-                // hold timer expired and we're back to following the
-                // detector's release.
+                // the hold timer expired. Either way the latch follows the
+                // detector again; clear the countdown so it doesn't tick
+                // past zero pointlessly.
                 p.hold_gr_db = gr_db;
-                if p.hold_remaining_samples > 0.0 {
-                    p.hold_remaining_samples -= 1.0;
-                }
+                p.hold_remaining_samples = 0.0;
             }
         }
 
@@ -704,20 +691,9 @@ fn process_stereo_block(
         // setting drives the same thing.
         if ceiling_db < -0.05 {
             let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
-            wet_l = apply_clipper_os(
-                wet_l, ceil_lin, os_mode,
-                &mut p.os1_l, &mut p.os2_l,
-            );
-            wet_r = apply_clipper_os(
-                wet_r, ceil_lin, os_mode,
-                &mut p.os1_r, &mut p.os2_r,
-            );
-        } else if os_mode != 0 {
-            // Keep oversampler delays consistent so toggling OS on/off
-            // mid-playback doesn't cause a transient — push zeros through
-            // both stages.
-            let _ = apply_clipper_os(wet_l, 1.0, os_mode, &mut p.os1_l, &mut p.os2_l);
-            let _ = apply_clipper_os(wet_r, 1.0, os_mode, &mut p.os1_r, &mut p.os2_r);
+            let clip = |s: f32| ceil_lin * (s / ceil_lin).tanh();
+            wet_l = oversample_apply(wet_l, os_mode, &mut p.os1_l, &mut p.os2_l, clip);
+            wet_r = oversample_apply(wet_r, os_mode, &mut p.os1_r, &mut p.os2_r, clip);
         }
 
         let out_l = delayed_l * (1.0 - mix) + wet_l * mix;
@@ -729,60 +705,6 @@ fn process_stereo_block(
         let in_peak = dry_l.abs().max(dry_r.abs());
         let out_peak = out_l.abs().max(out_r.abs());
         push_scope(p, in_peak, out_peak, gr_db);
-    }
-}
-
-/// Apply the tanh ceiling clipper to one sample, optionally oversampled.
-/// Exposed (`pub`) so the integration tests can measure aliasing rejection
-/// without copy-pasting the implementation.
-#[doc(hidden)]
-pub fn _test_apply_clipper_os(
-    x: f32,
-    ceil_lin: f32,
-    os_mode: u32,
-    os1: &mut Oversampler2x,
-    os2: &mut Oversampler2x,
-) -> f32 {
-    apply_clipper_os(x, ceil_lin, os_mode, os1, os2)
-}
-
-
-/// `os_mode`: 0 = native (just `clip(x)`), 1 = 2×, 2 = 4× (cascade).
-///
-/// The two oversampler stages are owned by the caller so the L and R
-/// channel paths each get their own independent state — sharing them
-/// would re-bias the halfband history and smear stereo image. Even when
-/// the clipper isn't engaged (ceiling near 0 dB) the audio thread runs
-/// this function with `ceil_lin=1.0` so the oversampler delay lines stay
-/// primed; toggling OS on then has no transient.
-#[inline]
-fn apply_clipper_os(
-    x: f32,
-    ceil_lin: f32,
-    os_mode: u32,
-    os1: &mut Oversampler2x,
-    os2: &mut Oversampler2x,
-) -> f32 {
-    let clip = |s: f32| ceil_lin * (s / ceil_lin).tanh();
-    match os_mode {
-        0 => clip(x),
-        1 => {
-            let (e, o) = os1.upsample(x);
-            os1.downsample(clip(e), clip(o))
-        }
-        _ => {
-            // 4× cascade: stage1 → stage2 (4 phases) → tanh → stage2 → stage1.
-            let (e1, o1) = os1.upsample(x);
-            let (ee, eo) = os2.upsample(e1);
-            let (oe, oo) = os2.upsample(o1);
-            let ee2 = clip(ee);
-            let eo2 = clip(eo);
-            let oe2 = clip(oe);
-            let oo2 = clip(oo);
-            let e1d = os2.downsample(ee2, eo2);
-            let o1d = os2.downsample(oe2, oo2);
-            os1.downsample(e1d, o1d)
-        }
     }
 }
 
@@ -806,6 +728,8 @@ fn push_scope(p: &mut PluginAudioProcessor<'_>, in_lin: f32, out_lin: f32, gr_db
         p.scope_acc_count = 0;
     }
 }
+
+
 
 #[allow(clippy::too_many_arguments)]
 fn process_sample_mono(
@@ -1031,13 +955,6 @@ impl DefaultPluginFactory for SuperDuperCompressor {
             gui_resize: gui::new_resize_bridge(),
         })
     }
-}
-
-// Touch OnePoleLp so unused-import lint doesn't fire — kept available for
-// future tweaks of the sidechain HPF without changing imports.
-#[allow(dead_code)]
-fn _keep_onepole_referenced() {
-    let _ = OnePoleLp::default();
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperCompressor>);

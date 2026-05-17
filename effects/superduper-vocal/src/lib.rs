@@ -1,0 +1,596 @@
+//! SuperDuper Vocal — split-band de-esser + ratio-based de-clicker.
+//!
+//! Two cleanup stages in series. Either can be set to 0 amount to bypass.
+//!
+//! # De-Esser (split-band)
+//! Standard technique used by SSL, FabFilter Pro-DS, Waves Renaissance
+//! De-Esser when set to "split" mode.
+//!
+//! 1. RBJ biquad HPF at the user's sibilance frequency yields the
+//!    "sibilance band". The complement (`input - sibilance`) is the
+//!    "body band". Both bands sum back to bit-identical input until we
+//!    touch the sibilance band — important for transparency on quiet
+//!    passages.
+//! 2. Envelope detector on `max(|sibilance_L|, |sibilance_R|)` with a
+//!    fast attack (0.5 ms) and short release (20 ms) — sibilants are
+//!    short bursts of 2-10 kHz energy, longer time constants smear them.
+//! 3. Static gain reduction = -min(env_dB - threshold, amount). The
+//!    sibilance band is attenuated by this much; the body band passes
+//!    untouched.
+//!
+//! # De-Clicker (ratio detector)
+//! Idea borrowed from iZotope's mouth de-click and accusonus De-Clicker:
+//! mouth clicks and lip smacks show up as **transient spikes** that have
+//! much higher short-term energy than the local average. A clean vocal
+//! line keeps the short / long envelope ratio close to unity (~1.5x at
+//! consonant onsets); a click pushes it to 3-8x for a few ms.
+//!
+//! 1. Compute two envelopes of `|x|`: fast (0.1 ms attack / 0.5 ms
+//!    release) and slow (5 ms attack / 50 ms release).
+//! 2. If `fast / slow > sensitivity_threshold` AND fast above a floor
+//!    (so we don't trigger on silence), schedule a duck — target gain
+//!    = `10^(-Amount/20)`.
+//! 3. Smooth the duck toward target with a fast attack (~0.5 ms) and
+//!    `Sensitivity`-controlled release (3 - 30 ms). Apply broadband to
+//!    L+R so the click disappears uniformly.
+//!
+//! This is **not** AR/LSAR-style interpolation (the academic state of
+//! the art) — that's offline-only. Real-time de-clicking with a fast
+//! ducker is the JST Gain Reduction / accusonus approach and works
+//! well for the kind of mouth noise that shows up in rap vocals.
+
+#![allow(clippy::missing_safety_doc)]
+
+pub mod gui;
+pub mod presets;
+
+use atomic_float::AtomicF32;
+use clack_common::utils::ClapId;
+use clack_extensions::audio_ports::{
+    AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
+    PluginAudioPortsImpl,
+};
+use clack_extensions::params::{
+    ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
+    PluginParams,
+};
+use clack_plugin::plugin::features::*;
+use clack_plugin::prelude::*;
+use std::ffi::CStr;
+use std::sync::atomic::Ordering;
+use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
+use superduper_synth_core::dsp_blocks::{Biquad, EnvelopeDetector, SmoothedParam};
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+fn log_path() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".superduper-dsp")
+        .join("vocal.log")
+}
+static LOG_FILE: std::sync::OnceLock<parking_lot::Mutex<Option<std::fs::File>>> =
+    std::sync::OnceLock::new();
+fn init_logging() {
+    LOG_FILE.get_or_init(|| {
+        let path = log_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        parking_lot::Mutex::new(file)
+    });
+}
+fn slog_args(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    if let Some(slot) = LOG_FILE.get() {
+        if let Some(file) = slot.lock().as_mut() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let _ = writeln!(file, "[{}] {}", now, args);
+        }
+    }
+}
+macro_rules! slog { ($($arg:tt)*) => { $crate::slog_args(format_args!($($arg)*)) } }
+
+// ---------------------------------------------------------------------------
+// Params — De-Ess section (4) + De-Click section (3) + Output (2)
+// ---------------------------------------------------------------------------
+
+pub const PARAMS: &[ParamDef] = &[
+    ParamDef { id: 0, name: b"Ess Thr",    min: -60.0, max: 0.0,    default: -24.0, unit: "dB" },
+    ParamDef { id: 1, name: b"Ess Freq",   min: 2000.0, max: 10000.0, default: 6000.0, unit: "Hz" },
+    ParamDef { id: 2, name: b"Ess Amt",    min: 0.0,   max: 18.0,   default: 6.0,   unit: "dB" },
+    ParamDef { id: 3, name: b"Ess Range",  min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+    // Ratio threshold — short-env / long-env. Below 1.5 every consonant
+    // triggers; above 6 most mouth clicks slip through.
+    ParamDef { id: 4, name: b"Clk Sens",   min: 1.5,   max: 8.0,    default: 3.0,   unit: "x"  },
+    ParamDef { id: 5, name: b"Clk Amt",    min: 0.0,   max: 24.0,   default: 12.0,  unit: "dB" },
+    ParamDef { id: 6, name: b"Clk Floor",  min: -60.0, max: -20.0,  default: -40.0, unit: "dB" },
+    ParamDef { id: 7, name: b"Output",     min: -24.0, max: 24.0,   default: 0.0,   unit: "dB" },
+    ParamDef { id: 8, name: b"Mix",        min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+];
+
+pub const P_ESS_THR: usize = 0;
+pub const P_ESS_FREQ: usize = 1;
+pub const P_ESS_AMT: usize = 2;
+pub const P_ESS_RANGE: usize = 3;
+pub const P_CLK_SENS: usize = 4;
+pub const P_CLK_AMT: usize = 5;
+pub const P_CLK_FLOOR: usize = 6;
+pub const P_OUTPUT: usize = 7;
+pub const P_MIX: usize = 8;
+
+// ---------------------------------------------------------------------------
+// Shared params
+// ---------------------------------------------------------------------------
+
+pub type SharedParams = std::sync::Arc<SharedParamsInner>;
+
+pub struct SharedParamsInner {
+    pub params: [AtomicF32; PARAMS.len()],
+    pub bypass: std::sync::atomic::AtomicBool,
+    /// Latest de-ess GR in dB (negative or zero). Block-rate.
+    pub ess_gr_db: AtomicF32,
+    /// Latest de-click GR in dB (negative or zero). Block-rate.
+    pub click_gr_db: AtomicF32,
+}
+
+pub struct PluginShared {
+    pub inner: SharedParams,
+}
+
+impl PluginShared {
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(SharedParamsInner {
+                params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
+                bypass: std::sync::atomic::AtomicBool::new(false),
+                ess_gr_db: AtomicF32::new(0.0),
+                click_gr_db: AtomicF32::new(0.0),
+            }),
+        }
+    }
+    pub fn shared_handle(&self) -> SharedParams { std::sync::Arc::clone(&self.inner) }
+}
+
+impl Default for PluginShared { fn default() -> Self { Self::new() } }
+impl std::ops::Deref for PluginShared {
+    type Target = SharedParamsInner;
+    fn deref(&self) -> &SharedParamsInner { &self.inner }
+}
+impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
+
+// ---------------------------------------------------------------------------
+// Audio processor
+// ---------------------------------------------------------------------------
+
+pub struct PluginMainThread<'a> {
+    shared: &'a PluginShared,
+    gui_handle: Option<baseview::WindowHandle>,
+    gui_resize: gui::ResizeBridge,
+}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+
+pub struct PluginAudioProcessor<'a> {
+    shared: &'a PluginShared,
+    // De-Ess
+    ess_hpf_l: Biquad,
+    ess_hpf_r: Biquad,
+    ess_env: EnvelopeDetector,
+    /// Last freq the HPF was set up at; re-coefficient the biquad when the
+    /// smoothed knob value drifts more than the perception-threshold so
+    /// dragging the freq slider doesn't pop.
+    ess_freq_state: f32,
+    // De-Click — two envelopes per channel + one shared duck-gain state
+    click_fast_l: EnvelopeDetector,
+    click_fast_r: EnvelopeDetector,
+    click_slow_l: EnvelopeDetector,
+    click_slow_r: EnvelopeDetector,
+    click_gain: f32,
+    // Smoothed knobs
+    smooth_ess_thr: SmoothedParam,
+    smooth_ess_freq: SmoothedParam,
+    smooth_ess_amt: SmoothedParam,
+    smooth_ess_range: SmoothedParam,
+    smooth_clk_sens: SmoothedParam,
+    smooth_clk_amt: SmoothedParam,
+    smooth_clk_floor: SmoothedParam,
+    smooth_output: SmoothedParam,
+    smooth_mix: SmoothedParam,
+    sample_rate: f32,
+}
+
+fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
+    superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events);
+}
+
+impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
+    for PluginAudioProcessor<'a>
+{
+    fn activate(
+        _host: HostAudioProcessorHandle<'a>,
+        _main_thread: &mut PluginMainThread<'a>,
+        shared: &'a PluginShared,
+        audio_config: PluginAudioConfiguration,
+    ) -> Result<Self, PluginError> {
+        let sr = audio_config.sample_rate as f32;
+        slog!("activate sr={}", sr);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
+
+        let mut ess_hpf_l = Biquad::default();
+        let mut ess_hpf_r = Biquad::default();
+        let initial_freq = load(P_ESS_FREQ);
+        ess_hpf_l.set_hpf(sr, initial_freq, 0.707);
+        ess_hpf_r.set_hpf(sr, initial_freq, 0.707);
+
+        Ok(Self {
+            shared,
+            ess_hpf_l,
+            ess_hpf_r,
+            ess_env: EnvelopeDetector::default(),
+            ess_freq_state: initial_freq,
+            click_fast_l: EnvelopeDetector::default(),
+            click_fast_r: EnvelopeDetector::default(),
+            click_slow_l: EnvelopeDetector::default(),
+            click_slow_r: EnvelopeDetector::default(),
+            click_gain: 1.0,
+            smooth_ess_thr: SmoothedParam::new(load(P_ESS_THR)),
+            smooth_ess_freq: SmoothedParam::new(load(P_ESS_FREQ)),
+            smooth_ess_amt: SmoothedParam::new(load(P_ESS_AMT)),
+            smooth_ess_range: SmoothedParam::new(load(P_ESS_RANGE)),
+            smooth_clk_sens: SmoothedParam::new(load(P_CLK_SENS)),
+            smooth_clk_amt: SmoothedParam::new(load(P_CLK_AMT)),
+            smooth_clk_floor: SmoothedParam::new(load(P_CLK_FLOOR)),
+            smooth_output: SmoothedParam::new(load(P_OUTPUT)),
+            smooth_mix: SmoothedParam::new(load(P_MIX)),
+            sample_rate: sr,
+        })
+    }
+
+    fn process(
+        &mut self,
+        _process: Process,
+        mut audio: Audio,
+        events: Events,
+    ) -> Result<ProcessStatus, PluginError> {
+        apply_param_events(self.shared, events.input);
+
+        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        let sr = self.sample_rate;
+
+        let ess_thr_t = self.shared.params[P_ESS_THR].load(Ordering::Relaxed);
+        let ess_freq_t = self.shared.params[P_ESS_FREQ].load(Ordering::Relaxed);
+        let ess_amt_t = self.shared.params[P_ESS_AMT].load(Ordering::Relaxed);
+        let ess_range_t = self.shared.params[P_ESS_RANGE].load(Ordering::Relaxed);
+        let clk_sens_t = self.shared.params[P_CLK_SENS].load(Ordering::Relaxed);
+        let clk_amt_t = self.shared.params[P_CLK_AMT].load(Ordering::Relaxed);
+        let clk_floor_t = self.shared.params[P_CLK_FLOOR].load(Ordering::Relaxed);
+        let output_t = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
+        let mix_t = self.shared.params[P_MIX].load(Ordering::Relaxed);
+
+        let mut max_ess_gr_db: f32 = 0.0;
+        let mut max_click_gr_db: f32 = 0.0;
+
+        for mut port_pair in &mut audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
+            let mut iter = channel_pairs.into_iter();
+            let Some(ch_l) = iter.next() else { continue };
+            let ch_r = iter.next();
+
+            use superduper_dsp_sdk::clap_helpers::split_io;
+            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
+            let r = ch_r.and_then(split_io);
+
+            if bypassed {
+                l_write.copy_from_slice(l_read);
+                if let Some((rr, rw)) = r {
+                    rw.copy_from_slice(rr);
+                }
+                continue;
+            }
+
+            match r {
+                Some((r_read, r_write)) => process_stereo(
+                    self, l_read, l_write, r_read, r_write, sr,
+                    ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+                    clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                    &mut max_ess_gr_db, &mut max_click_gr_db,
+                ),
+                None => process_mono(
+                    self, l_read, l_write, sr,
+                    ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+                    clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                    &mut max_ess_gr_db, &mut max_click_gr_db,
+                ),
+            }
+        }
+
+        self.shared.ess_gr_db.store(max_ess_gr_db, Ordering::Relaxed);
+        self.shared.click_gr_db.store(max_click_gr_db, Ordering::Relaxed);
+
+        Ok(ProcessStatus::Continue)
+    }
+}
+
+/// Per-sample DSP for one (L, R) sample pair. Returns the GR values so the
+/// caller can track per-block maxima for the GUI meters. Updated state
+/// (filters, envelopes, smoothed knobs, click gain) lives on `p`.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn step_sample(
+    p: &mut PluginAudioProcessor<'_>,
+    dry_l: f32, dry_r: f32,
+    sr: f32,
+    ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
+    output_t: f32, mix_t: f32,
+) -> (f32, f32, f32, f32) {
+    let ess_thr = p.smooth_ess_thr.step(ess_thr_t, sr);
+    let ess_freq = p.smooth_ess_freq.step(ess_freq_t, sr);
+    let ess_amt = p.smooth_ess_amt.step(ess_amt_t, sr);
+    let ess_range = p.smooth_ess_range.step(ess_range_t, sr).clamp(0.0, 1.0);
+    let clk_sens = p.smooth_clk_sens.step(clk_sens_t, sr);
+    let clk_amt = p.smooth_clk_amt.step(clk_amt_t, sr);
+    let clk_floor_db = p.smooth_clk_floor.step(clk_floor_t, sr);
+    let output_db = p.smooth_output.step(output_t, sr);
+    let mix = p.smooth_mix.step(mix_t, sr);
+
+    if (ess_freq - p.ess_freq_state).abs() > 5.0 {
+        p.ess_hpf_l.set_hpf(sr, ess_freq, 0.707);
+        p.ess_hpf_r.set_hpf(sr, ess_freq, 0.707);
+        p.ess_freq_state = ess_freq;
+    }
+
+    let sib_l = p.ess_hpf_l.process(dry_l);
+    let sib_r = p.ess_hpf_r.process(dry_r);
+    let body_l = dry_l - sib_l;
+    let body_r = dry_r - sib_r;
+
+    let sc = sib_l.abs().max(sib_r.abs());
+    let env = p.ess_env.process(sc, sr, 0.5, 20.0);
+    let env_db = 20.0 * env.max(1e-9).log10();
+    let over = env_db - ess_thr;
+    let ess_gr_db = if over > 0.0 && ess_amt > 0.05 {
+        -(over.min(ess_amt))
+    } else {
+        0.0
+    };
+    let ess_gain_lin = 10f32.powf(ess_gr_db * ess_range / 20.0);
+    let proc_l = body_l + sib_l * ess_gain_lin;
+    let proc_r = body_r + sib_r * ess_gain_lin;
+
+    let fast_l = p.click_fast_l.process(proc_l.abs(), sr, 0.1, 0.5);
+    let fast_r = p.click_fast_r.process(proc_r.abs(), sr, 0.1, 0.5);
+    let slow_l = p.click_slow_l.process(proc_l.abs(), sr, 5.0, 50.0);
+    let slow_r = p.click_slow_r.process(proc_r.abs(), sr, 5.0, 50.0);
+    let fast = fast_l.max(fast_r);
+    let slow = slow_l.max(slow_r).max(1e-6);
+    let ratio = fast / slow;
+    let fast_db = 20.0 * fast.max(1e-9).log10();
+
+    let target_gain = if ratio > clk_sens && fast_db > clk_floor_db && clk_amt > 0.05 {
+        10f32.powf(-clk_amt / 20.0)
+    } else {
+        1.0
+    };
+    let release_ms = 3.0 + (clk_sens - 1.5) * (27.0 / 6.5);
+    let attack_ms = 0.5_f32;
+    let atk_coef = (-1.0 / (attack_ms * 0.001 * sr)).exp();
+    let rel_coef = (-1.0 / (release_ms * 0.001 * sr)).exp();
+    let coef = if target_gain < p.click_gain { atk_coef } else { rel_coef };
+    p.click_gain = target_gain + (p.click_gain - target_gain) * coef;
+    let click_gain_db = 20.0 * p.click_gain.max(1e-9).log10();
+
+    let cleaned_l = proc_l * p.click_gain;
+    let cleaned_r = proc_r * p.click_gain;
+    let out_gain = 10f32.powf(output_db / 20.0);
+    let wet_l = cleaned_l * out_gain;
+    let wet_r = cleaned_r * out_gain;
+    let final_l = dry_l * (1.0 - mix) + wet_l * mix;
+    let final_r = dry_r * (1.0 - mix) + wet_r * mix;
+
+    (final_l, final_r, ess_gr_db, click_gain_db)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_stereo(
+    p: &mut PluginAudioProcessor<'_>,
+    l_read: &[f32], l_write: &mut [f32],
+    r_read: &[f32], r_write: &mut [f32],
+    sr: f32,
+    ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
+    output_t: f32, mix_t: f32,
+    max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
+) {
+    let n = l_read.len().min(r_read.len());
+    for i in 0..n {
+        let (fl, fr, ess_gr, click_gr) = step_sample(
+            p, l_read[i], r_read[i], sr,
+            ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+            clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+        );
+        l_write[i] = fl;
+        r_write[i] = fr;
+        if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
+        if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_mono(
+    p: &mut PluginAudioProcessor<'_>,
+    l_read: &[f32], l_write: &mut [f32],
+    sr: f32,
+    ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
+    output_t: f32, mix_t: f32,
+    max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
+) {
+    let n = l_read.len();
+    for i in 0..n {
+        let s = l_read[i];
+        let (fl, _fr, ess_gr, click_gr) = step_sample(
+            p, s, s, sr,
+            ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+            clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+        );
+        l_write[i] = fl;
+        if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
+        if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLAP extensions
+// ---------------------------------------------------------------------------
+
+impl PluginAudioPortsImpl for PluginMainThread<'_> {
+    fn count(&mut self, is_input: bool) -> u32 { if is_input { 1 } else { 1 } }
+    fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
+        if index != 0 { return; }
+        writer.set(&AudioPortInfo {
+            id: ClapId::new(0),
+            name: if is_input { b"Input" } else { b"Output" },
+            channel_count: 2,
+            flags: AudioPortFlags::IS_MAIN,
+            port_type: Some(AudioPortType::STEREO),
+            in_place_pair: Some(ClapId::new(0)),
+        });
+    }
+}
+
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
+        ParamDef::write_info(PARAMS, idx, info);
+    }
+    fn get_value(&mut self, id: ClapId) -> Option<f64> {
+        let i = id.get() as usize;
+        self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
+    }
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+    fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        ParamDef::parse_text(PARAMS, id, t)
+    }
+    fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
+        apply_param_events(self.shared, ev);
+    }
+}
+
+impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
+    fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
+        apply_param_events(self.shared, ev);
+    }
+}
+
+use clack_extensions::gui::{
+    AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
+    Window as ClapGuiWindow,
+};
+use std::sync::atomic::Ordering as AtomicOrdering;
+
+impl PluginGuiImpl for PluginMainThread<'_> {
+    fn is_api_supported(&mut self, c: GuiConfiguration) -> bool {
+        if c.is_floating { return false; }
+        c.api_type == GuiApiType::COCOA || c.api_type == GuiApiType::WIN32 || c.api_type == GuiApiType::X11
+    }
+    fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
+        let api_type = if cfg!(target_os = "macos") { GuiApiType::COCOA }
+            else if cfg!(target_os = "windows") { GuiApiType::WIN32 } else { GuiApiType::X11 };
+        Some(GuiConfiguration { api_type, is_floating: false })
+    }
+    fn create(&mut self, _: GuiConfiguration) -> Result<(), PluginError> { Ok(()) }
+    fn destroy(&mut self) { self.gui_handle = None; }
+    fn set_scale(&mut self, _: f64) -> Result<(), PluginError> { Ok(()) }
+    fn get_size(&mut self) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: self.gui_resize.0.load(AtomicOrdering::Relaxed),
+            height: self.gui_resize.1.load(AtomicOrdering::Relaxed),
+        })
+    }
+    fn can_resize(&mut self) -> bool { true }
+    fn get_resize_hints(&mut self) -> Option<GuiResizeHints> {
+        Some(GuiResizeHints {
+            can_resize_horizontally: true,
+            can_resize_vertically: true,
+            strategy: AspectRatioStrategy::Disregard,
+        })
+    }
+    fn adjust_size(&mut self, s: GuiSize) -> Option<GuiSize> {
+        Some(GuiSize {
+            width: s.width.clamp(gui::MIN_WIDTH, gui::MAX_WIDTH),
+            height: s.height.clamp(gui::MIN_HEIGHT, gui::MAX_HEIGHT),
+        })
+    }
+    fn set_size(&mut self, s: GuiSize) -> Result<(), PluginError> {
+        let w = s.width.clamp(gui::MIN_WIDTH, gui::MAX_WIDTH);
+        let h = s.height.clamp(gui::MIN_HEIGHT, gui::MAX_HEIGHT);
+        self.gui_resize.0.store(w, AtomicOrdering::Relaxed);
+        self.gui_resize.1.store(h, AtomicOrdering::Relaxed);
+        Ok(())
+    }
+    fn set_parent(&mut self, window: ClapGuiWindow) -> Result<(), PluginError> {
+        let handle = gui::open_window(&window, self.shared.shared_handle(), self.gui_resize.clone());
+        self.gui_handle = Some(handle);
+        Ok(())
+    }
+    fn set_transient(&mut self, _: ClapGuiWindow) -> Result<(), PluginError> { Ok(()) }
+    fn show(&mut self) -> Result<(), PluginError> { Ok(()) }
+    fn hide(&mut self) -> Result<(), PluginError> { Ok(()) }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+pub struct SuperDuperVocal;
+
+impl Plugin for SuperDuperVocal {
+    type AudioProcessor<'a> = PluginAudioProcessor<'a>;
+    type Shared<'a> = PluginShared;
+    type MainThread<'a> = PluginMainThread<'a>;
+    fn declare_extensions(builder: &mut PluginExtensions<Self>, _: Option<&Self::Shared<'_>>) {
+        builder
+            .register::<PluginAudioPorts>()
+            .register::<PluginParams>()
+            .register::<clack_extensions::gui::PluginGui>();
+    }
+}
+
+impl DefaultPluginFactory for SuperDuperVocal {
+    fn get_descriptor() -> PluginDescriptor {
+        PluginDescriptor::new(
+            "co.superduperai.vocal",
+            plugin_display_name!("SuperDuper Vocal"),
+        )
+        .with_vendor("SuperDuperAI")
+        .with_version(version_string!("0.1"))
+        .with_description("Vocal cleanup — de-esser + mouth de-clicker for rap and spoken word")
+        .with_features([AUDIO_EFFECT, STEREO])
+    }
+    fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
+        init_logging();
+        slog!("new_shared: Vocal — build {} ({})", build_num!(), build_date!());
+        Ok(PluginShared::new())
+    }
+    fn new_main_thread<'a>(
+        _host: HostMainThreadHandle<'a>,
+        shared: &'a PluginShared,
+    ) -> Result<PluginMainThread<'a>, PluginError> {
+        Ok(PluginMainThread {
+            shared,
+            gui_handle: None,
+            gui_resize: gui::new_resize_bridge(),
+        })
+    }
+}
+
+clack_export_entry!(SinglePluginEntry<SuperDuperVocal>);

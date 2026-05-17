@@ -55,7 +55,8 @@ jobs:
             -p superduper-eq \
             -p superduper-limiter \
             -p superduper-ambient \
-            -p superduper-pad
+            -p superduper-pad \
+            -p superduper-vocal
 
       - name: Run tests
         run: |
@@ -70,6 +71,7 @@ jobs:
             -p superduper-limiter \
             -p superduper-ambient \
             -p superduper-pad \
+            -p superduper-vocal \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -89,7 +91,8 @@ jobs:
               "superduper_eq|SuperDuperEq|co.superduperai.eq" \
               "superduper_limiter|SuperDuperLimiter|co.superduperai.limiter" \
               "superduper_ambient|SuperDuperAmbient|co.superduperai.ambient" \
-              "superduper_pad|SuperDuperPad|co.superduperai.pad"
+              "superduper_pad|SuperDuperPad|co.superduperai.pad" \
+              "superduper_vocal|SuperDuperVocal|co.superduperai.vocal"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -121,7 +124,7 @@ jobs:
               SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
               SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
               SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
-              SuperDuperPad.clap)
+              SuperDuperPad.clap SuperDuperVocal.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -178,7 +181,8 @@ jobs:
             -p superduper-eq `
             -p superduper-limiter `
             -p superduper-ambient `
-            -p superduper-pad
+            -p superduper-pad `
+            -p superduper-vocal
 
       - name: Run tests
         run: |
@@ -193,6 +197,7 @@ jobs:
             -p superduper-limiter `
             -p superduper-ambient `
             -p superduper-pad `
+            -p superduper-vocal `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -211,7 +216,8 @@ jobs:
             @{ dll = "superduper_eq.dll";         name = "SuperDuperEq" },
             @{ dll = "superduper_limiter.dll";    name = "SuperDuperLimiter" },
             @{ dll = "superduper_ambient.dll";    name = "SuperDuperAmbient" },
-            @{ dll = "superduper_pad.dll";        name = "SuperDuperPad" }
+            @{ dll = "superduper_pad.dll";        name = "SuperDuperPad" },
+            @{ dll = "superduper_vocal.dll";      name = "SuperDuperVocal" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -273,6 +279,7 @@ jobs:
             * SuperDuper Limiter — lookahead brickwall, 4× true-peak detection, PDC
             * SuperDuper Ambient — autonomous 4-voice chord-drone generator
             * SuperDuper Pad — polyphonic MIDI synth, 8-voice PadVoice + ADSR
+            * SuperDuper Vocal — split-band de-esser + mouth de-clicker for rap
 
             Download the platform zip below and follow INSTALL.md.
 

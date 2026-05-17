@@ -19,6 +19,7 @@ members = [
     "effects/superduper-limiter",
     "effects/superduper-ambient",
     "effects/superduper-pad",
+    "effects/superduper-vocal",
     "tools/sdsp-runner",
 ]
 

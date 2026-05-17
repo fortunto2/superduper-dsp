@@ -3440,6 +3440,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-vocal"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "symphonia"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

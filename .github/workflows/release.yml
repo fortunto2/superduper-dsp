@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (without leading v) — only used for manual dry runs"
+        required: false
+        default: "0.0.0-dev"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # macOS (Apple Silicon). Builds three CLAP plugins, packages each as a
+  # .clap bundle (directory + Info.plist), ad-hoc signs them, zips, uploads.
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: macOS arm64
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ inputs.version || '0.0.0-dev' }}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building $V"
+
+      - name: Build plugins
+        run: |
+          cargo build --release \
+            -p superduper-reverb \
+            -p superduper-supermass \
+            -p superduper-spectrum
+
+      - name: Run tests
+        run: |
+          cargo test --release \
+            -p superduper-reverb \
+            -p superduper-supermass \
+            -p superduper-spectrum \
+            -p superduper-synth-core
+
+      - name: Package .clap bundles
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/macos
+          for entry in \
+              "superduper_reverb|SuperDuperReverb|co.superduperai.reverb" \
+              "superduper_supermass|SuperDuperSupermass|co.superduperai.supermass" \
+              "superduper_spectrum|SuperDuperSpectrum|co.superduperai.spectrum"
+          do
+              IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
+              dylib="target/release/lib${dylib_stem}.dylib"
+              [[ -f "$dylib" ]] || { echo "missing $dylib"; exit 1; }
+              bundle="dist/macos/${name}.clap"
+              mkdir -p "$bundle/Contents/MacOS"
+              cp "$dylib" "$bundle/Contents/MacOS/$name"
+              cat > "$bundle/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key><string>English</string>
+              <key>CFBundleExecutable</key><string>$name</string>
+              <key>CFBundleIdentifier</key><string>$bundle_id</string>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleName</key><string>$name</string>
+              <key>CFBundlePackageType</key><string>BNDL</string>
+              <key>CFBundleShortVersionString</key><string>$V</string>
+              <key>CFBundleVersion</key><string>$V</string>
+              <key>LSMinimumSystemVersion</key><string>12.0</string>
+          </dict>
+          </plist>
+          EOF
+              codesign --force --sign - --deep "$bundle" || true
+              (cd dist/macos && zip -qry "../${name}-${V}-macos-arm64.zip" "${name}.clap")
+          done
+          (cd dist/macos && zip -qry "../superduper-dsp-${V}-macos-arm64.zip" \
+              SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap)
+          (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
+          ls -la dist/
+
+      - name: Upload artifact (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*.zip
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS-macos.txt
+
+  # ---------------------------------------------------------------------------
+  # Windows x86_64. CLAP on Windows is a single `.clap` file (renamed .dll),
+  # not a bundle directory. Build, rename, zip, upload.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ inputs.version || '0.0.0-dev' }}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugins
+        run: |
+          cargo build --release `
+            -p superduper-reverb `
+            -p superduper-supermass `
+            -p superduper-spectrum
+
+      - name: Run tests
+        run: |
+          cargo test --release `
+            -p superduper-reverb `
+            -p superduper-supermass `
+            -p superduper-spectrum `
+            -p superduper-synth-core
+
+      - name: Package .clap files
+        shell: pwsh
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $plugins = @(
+            @{ dll = "superduper_reverb.dll";    name = "SuperDuperReverb" },
+            @{ dll = "superduper_supermass.dll"; name = "SuperDuperSupermass" },
+            @{ dll = "superduper_spectrum.dll";  name = "SuperDuperSpectrum" }
+          )
+          foreach ($p in $plugins) {
+            $src = "target/release/$($p.dll)"
+            $clap = "dist/$($p.name).clap"
+            Copy-Item -Path $src -Destination $clap -Force
+            Compress-Archive -Path $clap -DestinationPath "dist/$($p.name)-$env:V-windows-x64.zip" -Force
+          }
+          $combined = $plugins | ForEach-Object { "dist/$($_.name).clap" }
+          Compress-Archive -Path $combined -DestinationPath "dist/superduper-dsp-$env:V-windows-x64.zip" -Force
+          Get-FileHash -Algorithm SHA256 dist/*.zip | Format-Table -AutoSize | Out-File -FilePath dist/SHA256SUMS-windows.txt -Encoding ascii
+          Get-ChildItem dist/
+
+      - name: Upload artifact (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/*.zip
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS-windows.txt
+
+  # ---------------------------------------------------------------------------
+  # Release notes — populates the body of the GitHub Release after both
+  # build jobs finish. Skipped on workflow_dispatch.
+  # ---------------------------------------------------------------------------
+  release-notes:
+    name: Generate release notes
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            SuperDuper DSP ${{ github.ref_name }}
+
+            Three CLAP plugins inside:
+            * SuperDuper Reverb — Dattorro plate with sidechain ducking
+            * SuperDuper Supermass — Valhalla-style cascade reverb
+            * SuperDuper Spectrum — pass-through analyzer (Spectrum / Spectrogram / Split)
+
+            Download the platform zip below and follow INSTALL.md.
+
+            macOS install needs **one extra step** because the bundles are
+            not notarised yet:
+
+            ```bash
+            xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/SuperDuper*.clap
+            ```

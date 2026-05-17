@@ -417,6 +417,38 @@ tail -F ~/.superduper-dsp/supermass.log
 ./scripts/restart_reaper.sh --force # SIGKILL + open
 ```
 
+### Cutting a release
+
+Tag-driven via GitHub Actions. Two paths:
+
+**Local-only (macOS only):**
+```bash
+./scripts/build_release.sh 0.1.0
+# produces dist/release-0.1.0/*.zip + SHA256SUMS
+```
+Upload those zips manually to a GitHub release if you prefer the manual route.
+
+**Full release (macOS + Windows via CI):**
+```bash
+# Bump versions in Cargo.toml across all three plugin crates first.
+git tag -a v0.1.0 -m "Release 0.1.0"
+git push origin v0.1.0
+```
+GitHub Actions `.github/workflows/release.yml` runs:
+1. `build-macos` on `macos-14` runner — produces arm64 .clap bundles, ad-hoc
+   signs them, zips per-plugin + combined.
+2. `build-windows` on `windows-latest` — produces .clap files (single .dll
+   each), zips them.
+3. `release-notes` — concatenates generated release notes + manual body
+   with install instructions.
+
+Tags must match `v*` (e.g. `v0.1.0`, `v0.2.0-rc1`). Manual dry-runs:
+Actions → Release → "Run workflow" — uploads artifacts to the workflow run
+instead of creating a GitHub Release.
+
+User-facing install instructions live in `INSTALL.md` (auto-included in
+each release zip).
+
 ### REAPER plugin cache problems
 If a rebuild doesn't take effect: REAPER Preferences → Plug-ins → CLAP →
 **Clear cache and re-scan**. Build numbers in the display name (`[bNNNNN]`)

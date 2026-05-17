@@ -84,6 +84,18 @@ pub static PRESETS: &[Preset] = &[
         (P_DRIVE, 0.0),
         (P_TILT, -0.2),
     ]),
+
+    // Vocal send ducked: aux send + vocal into sidechain. Big cinematic
+    // wash that gets out of the way the moment the vocal speaks.
+    Preset::from_overrides("Vocal Send Ducked", &[
+        (P_MIX, 1.0),
+        (P_WIDTH, 1.0),
+        (P_DRIVE, 0.05),
+        (P_TILT, 0.1),
+        (P_DUCK_AMOUNT, 14.0),
+        (P_DUCK_ATTACK, 5.0),
+        (P_DUCK_RELEASE, 300.0),
+    ]),
 ];
 
 pub fn apply(shared: &crate::SharedParamsInner, preset: &Preset) {

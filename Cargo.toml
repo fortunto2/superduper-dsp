@@ -12,6 +12,9 @@ members = [
     "effects/superduper-reverb",
     "effects/superduper-supermass",
     "effects/superduper-spectrum",
+    "effects/superduper-saturator",
+    "effects/superduper-delay",
+    "effects/superduper-compressor",
     "tools/sdsp-runner",
 ]
 

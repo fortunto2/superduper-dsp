@@ -76,6 +76,229 @@ impl DcBlocker {
 }
 
 // ---------------------------------------------------------------------------
+// Saturation curves — shared between the Saturator and Limiter, plus
+// anywhere else a per-sample non-linearity is needed.
+// ---------------------------------------------------------------------------
+
+/// Symmetric tanh soft-clip. `drive` is a linear gain pre-clip (typically
+/// computed from a dB knob via `10^(dB/20)`). Output stays within ±1.
+#[inline]
+pub fn tanh_drive(x: f32, drive: f32) -> f32 {
+    (x * drive).tanh()
+}
+
+/// "Tape" style soft-clip — flatter saturation than tanh, with audible
+/// even-order harmonics. Algebraic — `y = x / (1 + |x|)`.
+#[inline]
+pub fn tape_clip(x: f32, drive: f32) -> f32 {
+    let y = x * drive;
+    y / (1.0 + y.abs())
+}
+
+/// "Tube" style asymmetric clipper — positive half compressed harder than
+/// negative half, producing the strong 2nd-harmonic character of a class-A
+/// triode stage. Bias is small intentionally — too much bias adds audible DC.
+#[inline]
+pub fn tube_clip(x: f32, drive: f32) -> f32 {
+    let y = x * drive + 0.08; // small upward DC bias for asymmetry
+    let clipped = if y >= 0.0 {
+        y / (1.0 + y * 0.7)
+    } else {
+        y / (1.0 + y.abs() * 1.2)
+    };
+    clipped - 0.08 // remove bias (downstream DcBlocker scrubs residue)
+}
+
+// ---------------------------------------------------------------------------
+// EnvelopeDetector — peak-with-one-pole-smoothing envelope follower.
+//
+// Modern transparent compressor approach (Giannoulis-Massberg-Reiss 2012):
+// detect instantaneous peak |x|, smooth with asymmetric attack/release
+// one-poles. Faster than RMS, smoother than raw peak.
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Copy, Clone)]
+pub struct EnvelopeDetector {
+    envelope: f32,
+}
+
+impl EnvelopeDetector {
+    /// Process one sample. Returns the smoothed |x| envelope (linear, not dB).
+    /// `attack_ms`/`release_ms` are 1-pole time constants.
+    #[inline]
+    pub fn process(&mut self, x: f32, sr: f32, attack_ms: f32, release_ms: f32) -> f32 {
+        let rectified = x.abs();
+        let tc = if rectified > self.envelope {
+            attack_ms.max(0.01)
+        } else {
+            release_ms.max(0.01)
+        };
+        let coef = (-1.0 / (tc * 0.001 * sr)).exp();
+        self.envelope = rectified + (self.envelope - rectified) * coef;
+        self.envelope
+    }
+
+    pub fn level(&self) -> f32 { self.envelope }
+    pub fn reset(&mut self) { self.envelope = 0.0; }
+}
+
+/// Static compression curve in dB. Returns the **gain reduction** (negative or
+/// zero dB) to apply to a signal whose envelope-level is `input_db`.
+///
+/// Soft-knee form per Giannoulis-Massberg-Reiss 2012, Eq. 4 — quadratic
+/// transition over the `knee_db`-wide region centred on `threshold_db`.
+#[inline]
+pub fn compressor_gain_db(
+    input_db: f32,
+    threshold_db: f32,
+    ratio: f32,
+    knee_db: f32,
+) -> f32 {
+    let knee_half = knee_db * 0.5;
+    let slope = 1.0 - 1.0 / ratio.max(1.0);
+
+    if knee_db > 0.0001 && (input_db - threshold_db).abs() <= knee_half {
+        // Inside the knee: quadratic interpolation.
+        let x = input_db - threshold_db + knee_half;
+        -(slope * x * x) / (2.0 * knee_db)
+    } else if input_db > threshold_db + knee_half {
+        // Hard region above the knee.
+        -(input_db - threshold_db) * slope
+    } else {
+        // Below the knee — no compression.
+        0.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DelayLine — variable-length delay with 3rd-order Lagrange interpolation.
+//
+// Why Lagrange-3 and not linear: linear interpolation high-shelfs the
+// fractional-sample reads (~6 dB cut at Nyquist for 0.5-sample offset),
+// audible as dullness on repeats. Lagrange-3 is "maximally flat at DC"
+// (Smith / Välimäki) — costs 3 multiplies + 3 adds per read, gives a
+// nearly-flat response out to ~0.4 * Nyquist with low distortion.
+// Allpass interpolation has lower CPU but adds frequency-dependent group
+// delay that interacts badly with modulated time changes, so we keep
+// Lagrange for the delay tap.
+// ---------------------------------------------------------------------------
+
+pub struct DelayLine {
+    buf: Vec<f32>,
+    write_idx: usize,
+    capacity: usize,
+}
+
+impl DelayLine {
+    pub fn new(max_delay_samples: usize) -> Self {
+        let cap = max_delay_samples.next_power_of_two().max(1024);
+        Self {
+            buf: vec![0.0; cap],
+            write_idx: 0,
+            capacity: cap,
+        }
+    }
+
+    /// Write one sample, advancing the head.
+    #[inline]
+    pub fn write(&mut self, x: f32) {
+        self.buf[self.write_idx] = x;
+        self.write_idx = (self.write_idx + 1) % self.capacity;
+    }
+
+    /// Read at fractional delay `d` samples. Uses 3rd-order Lagrange
+    /// interpolation between four neighbouring samples.
+    ///
+    /// `d` must satisfy `1.0 <= d <= capacity-2`. Caller clamps.
+    #[inline]
+    pub fn read_lagrange3(&self, d: f32) -> f32 {
+        let d = d.max(1.0).min((self.capacity - 2) as f32);
+        let d_int = d as usize;
+        let frac = d - d_int as f32;
+
+        // Read four taps: y_{-1}, y_0, y_1, y_2 around the fractional point.
+        let n = self.capacity;
+        let base = (self.write_idx + n - d_int - 1) % n;
+        let y_m1 = self.buf[base];
+        let y_0  = self.buf[(base + 1) % n];
+        let y_1  = self.buf[(base + 2) % n];
+        let y_2  = self.buf[(base + 3) % n];
+
+        // 3rd-order Lagrange — coefficients pre-factored for `frac ∈ [0,1]`.
+        // Reference: J.O. Smith, "Physical Audio Signal Processing",
+        // Section "Lagrange Interpolation".
+        let c0 = -frac * (frac - 1.0) * (frac - 2.0) / 6.0;
+        let c1 = (frac + 1.0) * (frac - 1.0) * (frac - 2.0) / 2.0;
+        let c2 = -(frac + 1.0) * frac * (frac - 2.0) / 2.0;
+        let c3 = (frac + 1.0) * frac * (frac - 1.0) / 6.0;
+
+        c0 * y_m1 + c1 * y_0 + c2 * y_1 + c3 * y_2
+    }
+
+    pub fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.write_idx = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SlewLimiter2Pole — two cascaded one-pole filters on a control parameter.
+//
+// Single one-pole has a discontinuous first derivative when target jumps,
+// which audibly clicks on delay-time changes (you hear a step in pitch).
+// Two in series → C¹ continuous → smooth tape-style pitch sweep.
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Copy, Clone)]
+pub struct SlewLimiter2Pole {
+    a: f32,
+    b: f32,
+}
+
+impl SlewLimiter2Pole {
+    pub fn new(initial: f32) -> Self {
+        Self { a: initial, b: initial }
+    }
+
+    /// Slew toward `target` with a `time_const_ms` time constant on each
+    /// of the two cascaded one-poles. ~30 ms gives a noticeable but musical
+    /// tape-doppler when the time knob is swept.
+    #[inline]
+    pub fn step(&mut self, target: f32, sr: f32, time_const_ms: f32) -> f32 {
+        let coef = (-1.0 / (time_const_ms.max(0.1) * 0.001 * sr)).exp();
+        self.a = target + (self.a - target) * coef;
+        self.b = self.a + (self.b - self.a) * coef;
+        self.b
+    }
+
+    pub fn snap(&mut self, value: f32) {
+        self.a = value;
+        self.b = value;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OnePoleLp — basic one-pole low-pass. Useful as the tone control inside
+// a delay's feedback loop (the "every repeat gets darker" trick).
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Copy, Clone)]
+pub struct OnePoleLp {
+    z: f32,
+}
+
+impl OnePoleLp {
+    /// Process one sample. `cutoff_hz` clamped internally.
+    #[inline]
+    pub fn process(&mut self, x: f32, sr: f32, cutoff_hz: f32) -> f32 {
+        let cutoff = cutoff_hz.clamp(20.0, sr * 0.45);
+        let coef = (-core::f32::consts::TAU * cutoff / sr).exp();
+        self.z = x * (1.0 - coef) + self.z * coef;
+        self.z
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tilt — single-shelf brightness control, ±6 dB at ±1.0.
 // ---------------------------------------------------------------------------
 

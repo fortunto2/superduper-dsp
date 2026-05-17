@@ -123,6 +123,21 @@ pub static PRESETS: &[Preset] = &[
         (P_DUCK_ATTACK, 5.0),
         (P_DUCK_RELEASE, 220.0),
     ]),
+
+    // Classic vocal send: plug on aux, feed dry vocal into sidechain,
+    // reverb wet ducks down when vocal speaks. Mix = 1.0 for SEND use.
+    Preset::from_overrides("Vocal Send Ducked", &[
+        (P_SIZE, 1.0),
+        (P_DECAY, 0.8),
+        (P_DAMP, 0.45),
+        (P_PREDELAY, 30.0),
+        (P_MOD, 0.45),
+        (P_WIDTH, 1.0),
+        (P_MIX, 1.0),
+        (P_DUCK_AMOUNT, 14.0),
+        (P_DUCK_ATTACK, 5.0),
+        (P_DUCK_RELEASE, 250.0),
+    ]),
 ];
 
 /// Apply a preset by writing every value into the shared atomics.

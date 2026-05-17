@@ -76,6 +76,101 @@ impl DcBlocker {
 }
 
 // ---------------------------------------------------------------------------
+// PadVoice — autonomous drone pad. Four sine partials at ratios 1.0 / 1.005 /
+// 1.5 / 2.0 (fundamental, slight detune, fifth, octave) with per-partial
+// slow LFOs giving each voice gentle pitch drift. Mixed into a one-pole
+// resonant lowpass + tanh saturation for analog warmth.
+//
+// Ported in spirit from rust-synth's `pad_zimmer` voice. Not a fundsp graph
+// — manual sample loop so the Ambient plugin can drive multiple voices in
+// one block without paying the Net overhead per voice.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub struct PadVoice {
+    /// Phase of each partial (in radians).
+    phases: [f32; 4],
+    /// LFO phase for the slow per-partial detune.
+    lfo_phase: f32,
+    /// One-pole lowpass state for the resonant filter.
+    lp_z1: f32,
+    lp_z2: f32,
+}
+
+impl Default for PadVoice {
+    fn default() -> Self {
+        Self {
+            // Offset starting phases so the partials don't all start in lockstep
+            // (which produces a noticeable click on the first sample).
+            phases: [0.0, 1.234, 2.468, 3.702],
+            lfo_phase: 0.0,
+            lp_z1: 0.0,
+            lp_z2: 0.0,
+        }
+    }
+}
+
+/// Tunables passed to PadVoice::process each sample. Sized so all params
+/// fit in a couple of cache lines (cheap to copy).
+#[derive(Copy, Clone)]
+pub struct PadParams {
+    pub sr: f32,
+    /// Root frequency (Hz). Partials scale from this.
+    pub root_hz: f32,
+    /// Cutoff frequency (Hz) of the post-mix lowpass.
+    pub cutoff_hz: f32,
+    /// Resonance, 0..0.95. Higher = more emphasis at cutoff.
+    pub resonance: f32,
+    /// LFO depth in cents — 0 = no detune motion, 50 = quarter-tone drift.
+    pub modulation_cents: f32,
+    /// Drive into the post-filter tanh, 0..1.
+    pub drive: f32,
+}
+
+impl PadVoice {
+    /// Process one sample. Returns mono — caller can detune two voices
+    /// (one per channel) for stereo width.
+    #[inline]
+    pub fn process(&mut self, p: PadParams) -> f32 {
+        // LFO — 0.13 Hz drift (∼ 8 s per cycle).
+        self.lfo_phase += core::f32::consts::TAU * 0.13 / p.sr;
+        if self.lfo_phase >= core::f32::consts::TAU {
+            self.lfo_phase -= core::f32::consts::TAU;
+        }
+        // Convert cents to a multiplicative ratio: 2^(cents/1200).
+        let cents = p.modulation_cents * self.lfo_phase.sin();
+        let detune = 2f32.powf(cents / 1200.0);
+
+        // Four partials with different detune phases (so they drift relative
+        // to each other, producing the slow phasing motion of a real pad).
+        const RATIOS: [f32; 4] = [1.0, 1.005, 1.5, 2.0];
+        const GAINS: [f32; 4] = [0.45, 0.30, 0.18, 0.10];
+        let mut mix = 0.0_f32;
+        for (i, (&ratio, &gain)) in RATIOS.iter().zip(GAINS.iter()).enumerate() {
+            let phase_inc = core::f32::consts::TAU * p.root_hz * ratio * detune / p.sr;
+            self.phases[i] += phase_inc;
+            if self.phases[i] >= core::f32::consts::TAU {
+                self.phases[i] -= core::f32::consts::TAU;
+            }
+            mix += self.phases[i].sin() * gain;
+        }
+
+        // Resonant 2-pole lowpass (Chamberlin SVF lite). Two state variables.
+        let cutoff = p.cutoff_hz.clamp(40.0, p.sr * 0.45);
+        let f = 2.0 * (core::f32::consts::PI * cutoff / p.sr).sin();
+        let q = (1.0 - p.resonance.clamp(0.0, 0.95) * 0.999).max(0.05);
+        let highpass = mix - self.lp_z2 - self.lp_z1 * q;
+        let bandpass = self.lp_z1 + highpass * f;
+        let lowpass = self.lp_z2 + bandpass * f;
+        self.lp_z1 = bandpass;
+        self.lp_z2 = lowpass;
+
+        // Soft saturation for analog warmth.
+        (lowpass * (1.0 + p.drive * 1.5)).tanh()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Oversampler2x — minimum-phase 11-tap halfband FIR upsampler / downsampler.
 //
 // Saturation / non-linear processors produce harmonics that mirror around

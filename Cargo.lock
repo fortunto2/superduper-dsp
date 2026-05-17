@@ -3150,6 +3150,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "superduper-ambient"
+version = "0.2.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-compressor"
 version = "0.2.0"
 dependencies = [

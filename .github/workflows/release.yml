@@ -53,7 +53,8 @@ jobs:
             -p superduper-delay \
             -p superduper-compressor \
             -p superduper-eq \
-            -p superduper-limiter
+            -p superduper-limiter \
+            -p superduper-ambient
 
       - name: Run tests
         run: |
@@ -66,6 +67,7 @@ jobs:
             -p superduper-compressor \
             -p superduper-eq \
             -p superduper-limiter \
+            -p superduper-ambient \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -83,7 +85,8 @@ jobs:
               "superduper_delay|SuperDuperDelay|co.superduperai.delay" \
               "superduper_compressor|SuperDuperCompressor|co.superduperai.compressor" \
               "superduper_eq|SuperDuperEq|co.superduperai.eq" \
-              "superduper_limiter|SuperDuperLimiter|co.superduperai.limiter"
+              "superduper_limiter|SuperDuperLimiter|co.superduperai.limiter" \
+              "superduper_ambient|SuperDuperAmbient|co.superduperai.ambient"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -114,7 +117,7 @@ jobs:
           (cd dist/macos && zip -qry "../superduper-dsp-${V}-macos-arm64.zip" \
               SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
               SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
-              SuperDuperEq.clap SuperDuperLimiter.clap)
+              SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -169,7 +172,8 @@ jobs:
             -p superduper-delay `
             -p superduper-compressor `
             -p superduper-eq `
-            -p superduper-limiter
+            -p superduper-limiter `
+            -p superduper-ambient
 
       - name: Run tests
         run: |
@@ -182,6 +186,7 @@ jobs:
             -p superduper-compressor `
             -p superduper-eq `
             -p superduper-limiter `
+            -p superduper-ambient `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -198,7 +203,8 @@ jobs:
             @{ dll = "superduper_delay.dll";      name = "SuperDuperDelay" },
             @{ dll = "superduper_compressor.dll"; name = "SuperDuperCompressor" },
             @{ dll = "superduper_eq.dll";         name = "SuperDuperEq" },
-            @{ dll = "superduper_limiter.dll";    name = "SuperDuperLimiter" }
+            @{ dll = "superduper_limiter.dll";    name = "SuperDuperLimiter" },
+            @{ dll = "superduper_ambient.dll";    name = "SuperDuperAmbient" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -249,15 +255,16 @@ jobs:
           body: |
             SuperDuper DSP ${{ github.ref_name }}
 
-            Eight CLAP plugins covering the full vocal chain:
+            Nine CLAP plugins — full vocal chain + ambient generator:
             * SuperDuper Reverb — Dattorro plate with sidechain ducking
             * SuperDuper Supermass — Valhalla-style cascade reverb
             * SuperDuper Spectrum — analyzer (Spectrum / Spectrogram / Split)
-            * SuperDuper Saturator — tape / tube / soft-clip warmth
+            * SuperDuper Saturator — tape / tube / soft-clip warmth, 2×/4× oversampling
             * SuperDuper Delay — Lagrange-interp delay, tape-flavoured feedback, ping-pong, sidechain ducking
-            * SuperDuper Compressor — soft-knee, lookahead, sidechain HPF, gain-reduction meter
+            * SuperDuper Compressor — soft-knee, lookahead, sidechain HPF, auto-release, GR meter, PDC
             * SuperDuper EQ — 3-band parametric RBJ biquad + HP/LP
-            * SuperDuper Limiter — lookahead brickwall, 4× true-peak detection
+            * SuperDuper Limiter — lookahead brickwall, 4× true-peak detection, PDC
+            * SuperDuper Ambient — autonomous 4-voice chord-drone generator
 
             Download the platform zip below and follow INSTALL.md.
 

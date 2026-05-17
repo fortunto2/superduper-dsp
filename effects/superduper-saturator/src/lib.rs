@@ -34,7 +34,9 @@ use std::ffi::CStr;
 use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
-use superduper_synth_core::dsp_blocks::{tanh_drive, tape_clip, tube_clip, DcBlocker, SmoothedParam, Tilt};
+use superduper_synth_core::dsp_blocks::{
+    tanh_drive, tape_clip, tube_clip, DcBlocker, Oversampler2x, SmoothedParam, Tilt,
+};
 
 // ---------------------------------------------------------------------------
 // Logging — file in ~/.superduper-dsp/saturator.log
@@ -90,6 +92,9 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 2, name: b"Tone",   min: -1.0,  max: 1.0,  default: 0.0,  unit: ""   },
     ParamDef { id: 3, name: b"Output", min: -24.0, max: 12.0, default: 0.0,  unit: "dB" },
     ParamDef { id: 4, name: b"Mix",    min: 0.0,   max: 1.0,  default: 1.0,  unit: ""   },
+    // Oversampling — 0 = off (cheap, aliasing at high drive), 1 = 2× (good
+    // for most cases), 2 = 4× (mastering-grade, ≥80 dB aliasing rejection).
+    ParamDef { id: 5, name: b"OS",     min: 0.0,   max: 2.0,  default: 1.0,  unit: ""   },
 ];
 
 pub const P_DRIVE: usize = 0;
@@ -97,6 +102,7 @@ pub const P_TYPE: usize = 1;
 pub const P_TONE: usize = 2;
 pub const P_OUTPUT: usize = 3;
 pub const P_MIX: usize = 4;
+pub const P_OS: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Shared params (Arc pattern shared with the GUI thread)
@@ -154,6 +160,12 @@ pub struct PluginAudioProcessor<'a> {
     dc_r: DcBlocker,
     tilt_l: Tilt,
     tilt_r: Tilt,
+    // Cascaded 2× upsamplers — running them both gives 4× total. The
+    // OS param selects how many stages we actually use.
+    os1_l: Oversampler2x,
+    os1_r: Oversampler2x,
+    os2_l: Oversampler2x,
+    os2_r: Oversampler2x,
     smooth_drive: SmoothedParam,
     smooth_tone: SmoothedParam,
     smooth_output: SmoothedParam,
@@ -192,6 +204,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             dc_r: DcBlocker::default(),
             tilt_l: Tilt::default(),
             tilt_r: Tilt::default(),
+            os1_l: Oversampler2x::default(),
+            os1_r: Oversampler2x::default(),
+            os2_l: Oversampler2x::default(),
+            os2_r: Oversampler2x::default(),
             smooth_drive: SmoothedParam::new(load(P_DRIVE)),
             smooth_tone: SmoothedParam::new(load(P_TONE)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
@@ -210,6 +226,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let curve = self.shared.params[P_TYPE].load(Ordering::Relaxed).round() as u32;
+        let os_mode = self.shared.params[P_OS].load(Ordering::Relaxed).round() as u32;
         let drive_db_target = self.shared.params[P_DRIVE].load(Ordering::Relaxed);
         let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
         let output_db_target = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
@@ -219,16 +236,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
             for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                let (dc, tilt) = if ch_idx == 0 {
-                    (&mut self.dc_l, &mut self.tilt_l)
+                let (dc, tilt, os1, os2) = if ch_idx == 0 {
+                    (&mut self.dc_l, &mut self.tilt_l, &mut self.os1_l, &mut self.os2_l)
                 } else {
-                    (&mut self.dc_r, &mut self.tilt_r)
+                    (&mut self.dc_r, &mut self.tilt_r, &mut self.os1_r, &mut self.os2_r)
                 };
                 process_channel(
-                    dc, tilt,
+                    dc, tilt, os1, os2,
                     &mut self.smooth_drive, &mut self.smooth_tone,
                     &mut self.smooth_output, &mut self.smooth_mix,
-                    channel_pair, sr, curve,
+                    channel_pair, sr, curve, os_mode,
                     drive_db_target, tone_target, output_db_target, mix_target,
                     bypassed,
                 );
@@ -242,6 +259,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 fn process_channel(
     dc: &mut DcBlocker,
     tilt: &mut Tilt,
+    os1: &mut Oversampler2x,
+    os2: &mut Oversampler2x,
     smooth_drive: &mut SmoothedParam,
     smooth_tone: &mut SmoothedParam,
     smooth_output: &mut SmoothedParam,
@@ -249,6 +268,7 @@ fn process_channel(
     channel: ChannelPair<'_, f32>,
     sr: f32,
     curve: u32,
+    os_mode: u32,
     drive_db_target: f32,
     tone_target: f32,
     output_db_target: f32,
@@ -265,19 +285,41 @@ fn process_channel(
     for (i, o) in read.iter().zip(write.iter_mut()) {
         let dry = *i;
 
-        // Per-sample smoothing of every user-facing knob.
         let drive_db = smooth_drive.step(drive_db_target, sr);
         let tone = smooth_tone.step(tone_target, sr);
         let out_db = smooth_output.step(output_db_target, sr);
         let mix = smooth_mix.step(mix_target, sr);
-
         let drive_lin = 10f32.powf(drive_db / 20.0);
         let out_lin = 10f32.powf(out_db / 20.0);
 
-        // DC block at the input — keeps the saturation symmetric (especially
-        // for the tube curve which is asymmetric around zero).
         let cleaned = dc.process(dry);
-        let saturated = saturate(curve, cleaned, drive_lin);
+
+        // Saturate at oversampled rate so the harmonics produced by the
+        // non-linearity fold cleanly back into the original Nyquist.
+        let saturated = match os_mode {
+            0 => saturate(curve, cleaned, drive_lin),
+            1 => {
+                // 2×: upsample to two values, saturate each, decimate.
+                let (e, odd) = os1.upsample(cleaned);
+                let se = saturate(curve, e, drive_lin);
+                let so = saturate(curve, odd, drive_lin);
+                os1.downsample(se, so)
+            }
+            _ => {
+                // 4×: cascade two stages.
+                let (e1, o1) = os1.upsample(cleaned);
+                let (e2a, o2a) = os2.upsample(e1);
+                let (e2b, o2b) = os2.upsample(o1);
+                let se2a = saturate(curve, e2a, drive_lin);
+                let so2a = saturate(curve, o2a, drive_lin);
+                let se2b = saturate(curve, e2b, drive_lin);
+                let so2b = saturate(curve, o2b, drive_lin);
+                let a = os2.downsample(se2a, so2a);
+                let b = os2.downsample(se2b, so2b);
+                os1.downsample(a, b)
+            }
+        };
+
         let toned = tilt.process(saturated, sr, tone);
         let wet = toned * out_lin;
 

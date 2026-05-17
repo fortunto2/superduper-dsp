@@ -6,7 +6,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DRIVE, P_MIX, P_OUTPUT, P_TONE, P_TYPE, PARAMS, SharedParams};
+use crate::{P_DRIVE, P_MIX, P_OS, P_OUTPUT, P_TONE, P_TYPE, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 340;
@@ -21,6 +21,7 @@ pub fn new_resize_bridge() -> ResizeBridge {
 }
 
 const CURVE_NAMES: [&str; 3] = ["Tape", "Tube", "Soft (tanh)"];
+const OS_NAMES: [&str; 3] = ["Off", "2×", "4×"];
 
 struct GuiState {
     shared: SharedParams,
@@ -113,6 +114,30 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
             core_gui::section(ui, "Tone", |ui| {
                 core_gui::param_row(ui, &state.shared.params[P_TONE], &PARAMS[P_TONE]);
+            });
+
+            core_gui::section(ui, "Quality", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [90.0, 18.0],
+                        egui::Label::new(
+                            egui::RichText::new("OS").color(core_gui::GREEN).monospace(),
+                        ),
+                    );
+                    let cur = state.shared.params[P_OS].load(Ordering::Relaxed).round() as usize;
+                    let cur = cur.min(OS_NAMES.len() - 1);
+                    egui::ComboBox::from_id_salt("sat_os_combo")
+                        .selected_text(OS_NAMES[cur])
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            for (i, name) in OS_NAMES.iter().enumerate() {
+                                if ui.selectable_label(cur == i, *name).clicked() {
+                                    state.shared.params[P_OS]
+                                        .store(i as f32, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                });
             });
 
             core_gui::section(ui, "Output", |ui| {

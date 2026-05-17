@@ -7,22 +7,32 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state
+## Current state — vocal chain complete (8 plugins)
 
-- **superduper-reverb** — Dattorro figure-of-eight plate. 10 params (Size,
-  Decay, Damping, Pre-Delay, Modulation, Width, Mix, Duck Amount/Attack/Release).
-  Sidechain input port. DC blocker on input. Smoothed Mix/Width/Duck.
+- **superduper-reverb** — Dattorro figure-of-eight plate. Sidechain ducking.
 - **superduper-supermass** — Valhalla-style cascade (reverb 35m/15s →
-  stereo chorus → reverb 50m/28s) built on fundsp 0.23 + synth-core helpers.
-  7 params (Mix, Width, Drive, Tilt, Duck Amount/Attack/Release). Sidechain.
-  DC blocker per channel. Smoothed knobs.
-- **Both** ship as `.clap` bundles, show up in REAPER as
-  `SuperDuper Reverb [bNNNNN]` / `SuperDuper Supermass [bNNNNN]` where
-  the build number rolls forward on every rebuild.
+  stereo chorus → reverb 50m/28s) on fundsp 0.23. Sidechain ducking.
+- **superduper-spectrum** — pass-through analyzer (Spectrum / Spectrogram
+  / Split view, 3 colour palettes).
+- **superduper-saturator** — Tape / Tube / Soft-tanh curves + Tilt EQ.
+- **superduper-delay** — 3rd-order Lagrange-interp delay, tape-style
+  feedback saturation, ping-pong + slap modes, sidechain ducking.
+- **superduper-compressor** — soft-knee feed-forward, peak+LP detector,
+  2 ms lookahead, sidechain HPF, external sidechain port, live GR meter.
+- **superduper-eq** — 3-band parametric (low shelf + mid peak + high shelf)
+  RBJ biquad + HP/LP, output trim.
+- **superduper-limiter** — lookahead brickwall, 4× true-peak detection
+  on a sidechain upsampler, live GR meter.
 
-Planned: SuperDuper Ambient (multi-track autonomous generator from rust-synth),
-SuperDuper Pad (note-driven synth via MIDI input port). Both will reuse the
-same shared infrastructure.
+All eight ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+in their display name. Released for macOS arm64 + Windows x64 via CI.
+
+`tools/sdsp-runner` is the standalone CLAP host — loads any `.clap`,
+plays a WAV file through it to cpal output (`sdsp-runner <plugin.clap>
+[<input.wav>]`). Useful for fast dev loop without REAPER.
+
+Planned: SuperDuper Ambient (multi-track autonomous generator from
+rust-synth), SuperDuper Pad (note-driven synth via MIDI input port).
 
 ## Workspace layout
 

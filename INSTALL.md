@@ -1,10 +1,15 @@
 # Installing SuperDuper DSP plugins
 
-Three CLAP plugins ship from this repo:
+Eight CLAP plugins ship from this repo — a full vocal chain:
 
+- **SuperDuper EQ** — 3-band parametric (low shelf, mid peak, high shelf) + HP/LP
+- **SuperDuper Compressor** — soft-knee feed-forward with lookahead, sidechain HPF and external sidechain port, live GR meter
+- **SuperDuper Saturator** — tape / tube / soft-clip analog warmth + Tilt EQ
+- **SuperDuper Delay** — Lagrange-interp stereo delay with tape-style feedback saturation, ping-pong + slap modes, sidechain ducking
 - **SuperDuper Reverb** — Dattorro plate reverb with sidechain ducking
-- **SuperDuper Supermass** — Valhalla-style cascade reverb (chorus + double tail)
-- **SuperDuper Spectrum** — pass-through analyzer with spectrum / spectrogram / split views
+- **SuperDuper Supermass** — Valhalla-style cascade reverb (chorus + double tail), sidechain ducking
+- **SuperDuper Limiter** — lookahead brickwall with 4× true-peak detection, live GR meter
+- **SuperDuper Spectrum** — pass-through analyzer (Spectrum / Spectrogram / Split view)
 
 They run in any CLAP-aware DAW: REAPER 7+, Bitwig Studio 4.3+, Studio One 6.5+,
 FL Studio 21+, MultitrackStudio, etc.

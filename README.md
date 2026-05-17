@@ -1,133 +1,122 @@
 # SuperDuper DSP
 
-Headless CLAP plugin + companion daemon. Claude writes DSP code, the plugin hot-loads it as native Rust.
+Open-source CLAP plugin suite — a full vocal-chain in eight focused effects
+written in Rust. Custom egui-based GUIs with a retro phosphor-green theme,
+factory presets, and sidechain ducking across the family.
 
-**Status:** M1 (Hello CLAP + Daemon handshake) — work in progress.
+[**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
+· [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
 
-## What this is
+## The plugins
 
-```
-┌──────────────┐     MCP (HTTP/SSE)      ┌────────────────┐
-│ Claude Code  │ ◄─────── :7891 ─────────►│ superduperd    │
-└──────────────┘                         │ (daemon)       │
-                                         └───────┬────────┘
-                                                 │ Unix socket
-                                                 │
-                                    ┌────────────┴───────────┐
-                                    │                        │
-                          ┌─────────▼───────┐    ┌───────────▼─────┐
-                          │ SuperDuperDSP   │    │ SuperDuperDSP   │
-                          │ .clap (track 1) │    │ .clap (track 2) │
-                          └─────────────────┘    └─────────────────┘
-```
+| Plugin | Use | Highlights |
+|---|---|---|
+| **EQ** | tone shaping | 3-band parametric (low shelf + mid peak + high shelf) + HP/LP. RBJ biquad math. |
+| **Compressor** | dynamics | Soft-knee feed-forward, peak+LP detector, 2 ms lookahead, sidechain HPF, **external sidechain** port, live GR meter. |
+| **Saturator** | warmth | Tape / Tube / Soft-tanh curves with Tone tilt and DC blocker. |
+| **Delay** | rhythm/space | 3rd-order Lagrange interpolation, tape-style feedback saturation, Stereo / Ping-Pong / Slap modes, sidechain ducking. |
+| **Reverb** | space | Dattorro figure-of-eight plate with modulated allpasses, cross-feedback, sidechain ducking. |
+| **Supermass** | wash | Valhalla-style cascade (reverb → stereo chorus → reverb, 28 s tail), sidechain ducking. |
+| **Limiter** | mastering | Lookahead brickwall with 4× true-peak detection on a sidechain upsampler, live GR meter. |
+| **Spectrum** | metering | Pass-through analyzer — Spectrum / Spectrogram / Split view, three colour palettes. |
 
-You add SuperDuper DSP to a track in REAPER (or any CLAP host). In your terminal, you
-talk to Claude Code. Claude generates Rust DSP code and pushes it through the MCP server.
-The daemon compiles it (`cargo build --release --crate-type cdylib`), the plugin
-`dlopen`s the fresh `.dylib`, atomically swaps the `process` function pointer, and the
-new effect is playing — typically 1–3 seconds end-to-end.
+All eight share:
 
-No code editor inside the plugin. No GUI prompt fields. You live in the terminal.
+- **Sidechain ports** wherever it makes sense (Reverb, Supermass, Delay,
+  Saturator, Compressor). Classic use case — route plugin on an aux/send,
+  feed dry vocal into the Sidechain port, plugin wet ducks under vocal
+  phrases for a clear, modern mix.
+- **Custom egui GUI** with shared retro-phosphor theme, monospace
+  layout, ASCII section headers, and factory presets.
+- **`[bNNNNN]` build-number suffix** in the display name so you always
+  know which build is loaded.
+- **CLAP** format — runs in REAPER, Bitwig, Studio One, FL Studio,
+  MultitrackStudio, etc.
 
-## Why this exists
+## Quick start
 
-`RS5k manager` + `MPL framework` + `SWS` + `ReaImGui` + `js_ReaScriptAPI` — five layers,
-each a failure point. SuperDuper DSP is one plugin and one daemon, both Rust, both yours.
+### Install
 
-Also: it's the simplest possible interface for AI-generated audio. The plugin doesn't
-know what an effect is — it just runs the function pointer. The intelligence is in
-Claude Code, where it belongs.
+Grab the latest zip from
+[Releases](https://github.com/fortunto2/superduper-dsp/releases/latest),
+unzip, drop the `.clap` bundles into your CLAP folder, and rescan your
+host. Full step-by-step + macOS Gatekeeper notes in
+[INSTALL.md](INSTALL.md).
 
-## Setup
+### Vocal-send-ducked pattern
+
+The "Vocal Send Ducked" preset (available on Reverb, Supermass, and
+Delay) is the classic pop-vocal trick:
+
+1. On the vocal track: dry vocal only (maybe EQ → Compressor first).
+2. New aux/send track: insert SuperDuper Reverb (or Delay/Supermass).
+3. In REAPER: right-click plugin → **Pin Connector** → route the
+   vocal track's signal into the plugin's **Sidechain** port (pins 3-4).
+4. Pick the **"Vocal Send Ducked"** preset.
+5. The reverb wet now ducks down whenever the vocal speaks — vocal
+   stays clear, reverb fills the silences.
+
+## Building from source
+
+Apple Silicon (or Windows / Linux native):
 
 ```bash
-git clone https://github.com/superduperai/superduper-dsp
-cd superduper-dsp
-
-# Build everything
-cargo build --release
-
-# Bundle and install the .clap for macOS
-./scripts/build_bundle.sh
-./scripts/install_local.sh
+cargo build --release \
+    -p superduper-reverb \
+    -p superduper-supermass \
+    -p superduper-spectrum \
+    -p superduper-saturator \
+    -p superduper-delay \
+    -p superduper-compressor \
+    -p superduper-eq \
+    -p superduper-limiter
 ```
 
-Then in REAPER: FX browser → "SuperDuper DSP" (instrument/utility category).
+Per-plugin install scripts under `scripts/` build the .clap bundle and
+drop it into `~/Library/Audio/Plug-Ins/CLAP/` on macOS. The combined
+`scripts/build_release.sh <version>` produces signed zips ready to ship.
 
-Configure Claude Code to use the MCP server:
+## Standalone runner
 
-```json
-{
-  "mcpServers": {
-    "superduper-dsp": {
-      "url": "http://127.0.0.1:7891/sse"
-    }
-  }
-}
+`tools/sdsp-runner` is a tiny CLAP host that loads any `.clap` bundle
+and plays a WAV file through it to your speakers via cpal. Useful
+during DSP development — much faster iteration than restart-REAPER.
+
+```bash
+cargo run --release -p sdsp-runner -- \
+    ~/Library/Audio/Plug-Ins/CLAP/SuperDuperReverb.clap test-vocal.wav
 ```
 
-## Workflow
+## DSP highlights (research-driven)
+
+- **Reverb** — Dattorro 1997 "Effect Design Part 1" figure-of-eight
+  topology. Modulated allpasses + cross-feedback for true stereo.
+- **Compressor** — Giannoulis-Massberg-Reiss "Digital Dynamic Range
+  Compressor Design" (JAES 2012). Quadratic soft-knee, peak+LP detector.
+- **EQ** — Robert Bristow-Johnson "Cookbook formulae for audio EQ
+  biquad filter coefficients" (W3C TR). Symmetric peaking
+  (boost N dB + cut N dB at same f/Q = unity).
+- **Delay** — 3rd-order Lagrange fractional delay (J.O. Smith,
+  Physical Audio Signal Processing). 2-pole slew for tape doppler.
+- **Limiter** — FabFilter Pro-L style architecture: lookahead delay
+  through Lagrange interpolation, 4× FIR upsampler for true-peak ISP
+  detection, asymmetric attack/release envelope.
+
+## Workspace layout
 
 ```
-$ claude
-> add a tape saturation to the Lead track
-[Claude generates code, calls load_effect via MCP, daemon compiles, plugin loads]
-> warmer, less drive
-[Claude calls set_param]
-> save as 'warm_lead'
-[Claude calls save_session]
+sdk/                — CLAP plumbing helpers (ParamDef, apply_param_events, …)
+sdk-build/          — build.rs helper that injects SDSP_BUILD_NUM / DATE
+sdk-macros/         — proc-macro params!{} (M2)
+synth-core/         — shared DSP blocks (Biquad, DelayLine, Ducker,
+                      EnvelopeDetector, …) + analysis (FFT, ASCII
+                      spectrogram, sine sweep frequency response) +
+                      GUI helpers (style, section, param_row, presets)
+effects/superduper-*/   — eight plugins
+tools/sdsp-runner/  — standalone CLAP host
+.github/workflows/  — release CI (macos-14 + windows-latest)
 ```
-
-## Roadmap
-
-| Milestone | Status | What |
-|---|---|---|
-| M1 | 🚧 | Hello CLAP + Daemon handshake |
-| M2 | ⏳ | Full MCP server with all tools |
-| M3 | ⏳ | Hot-reload Rust code |
-| M4 | ⏳ | Params system with CLAP rescan |
-| M5 | ⏳ | Minimal GUI (status + bypass + name) |
-| M6 | ⏳ | Sessions save/load |
-| M7 | ⏳ | Polish, examples, v0.1 release |
-
-## Project layout
-
-```
-superduper-dsp/
-├─ plugin/                 CLAP plugin (loads in DAW)
-├─ daemon/                 superduperd (MCP server + build orchestrator)
-├─ protocol/               Shared IPC and MCP types
-├─ sdk/                    superduper-dsp-sdk (used by user effect crates)
-├─ effects/                Example effect crates
-│  └─ example-passthrough/ Reference: gain + soft clip
-├─ scripts/                Build & install scripts
-├─ SPEC.md                 Full design doc
-├─ CLAUDE.md               Instructions for Claude Code
-└─ README.md               This file
-```
-
-## Why Rust?
-
-- Same stack as the rest of SuperDuperAI infrastructure
-- No GC pauses, no allocator surprises in audio thread
-- Cargo handles hot-reload compilation trivially
-- Claude Code writes Rust DSP code excellently
-
-## Inspired by
-
-- **ConjureDSP** — for the live-coded DSP plugin concept (Python + Rust dual mode)
-- **Live coding scenes** — Extempore, SuperCollider, Glicol (hot-reload code at audio time)
-- **ReaScript** — for showing that programmable DAWs are powerful
-
-But none of those let you say "soft tape saturation" in plain English and have it
-happen. That's the gap SuperDuper DSP fills.
 
 ## License
 
-MIT. See LICENSE.
-
-## Part of the SuperDuperAI family
-
-- **SuperDuperAI** — AI-first creative tools (video editor, mobile inference)
-- **Akbuzat** — decentralized mesh messenger (Bashkir mythology)
-- **SuperDuper DSP** — this project, AI-driven DSP runtime
+MIT. See [LICENSE](LICENSE).

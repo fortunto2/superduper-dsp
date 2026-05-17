@@ -8,8 +8,8 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_ATTACK, P_KNEE, P_MAKEUP, P_MIX, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, PARAMS,
-            SharedParams};
+use crate::{P_ATTACK, P_AUTO_REL, P_KNEE, P_MAKEUP, P_MIX, P_RATIO, P_RELEASE, P_SC_HPF,
+            P_THRESHOLD, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 500;
 pub const DEFAULT_HEIGHT: u32 = 460;
@@ -101,6 +101,16 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Envelope", |ui| {
                 core_gui::param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK]);
                 core_gui::param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE]);
+                ui.horizontal(|ui| {
+                    let on = state.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
+                    let label = if on { "[X] auto release" } else { "[ ] auto release" };
+                    if ui.selectable_label(on, egui::RichText::new(label)
+                        .color(core_gui::GREEN).monospace()).clicked()
+                    {
+                        state.shared.params[P_AUTO_REL]
+                            .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
+                    }
+                });
             });
 
             core_gui::section(ui, "Detector", |ui| {

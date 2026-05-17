@@ -104,6 +104,10 @@ pub const PARAMS: &[ParamDef] = &[
     // 0 = off, 1 = 80 Hz, 2 = 150 Hz, 3 = 300 Hz
     ParamDef { id: 6, name: b"SC HPF",    min: 0.0,   max: 3.0,    default: 1.0,   unit: ""   },
     ParamDef { id: 7, name: b"Mix",       min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+    // Auto-release tracks how long compression has been sustained and
+    // stretches the release accordingly — fast on transients, slower on
+    // sustained material. Classic FabFilter Pro-C / Waves SSL behavior.
+    ParamDef { id: 8, name: b"Auto Rel",  min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -114,6 +118,7 @@ pub const P_KNEE: usize = 4;
 pub const P_MAKEUP: usize = 5;
 pub const P_SC_HPF: usize = 6;
 pub const P_MIX: usize = 7;
+pub const P_AUTO_REL: usize = 8;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -198,6 +203,9 @@ pub struct PluginAudioProcessor<'a> {
     smooth_mix: SmoothedParam,
     /// Used by the GUI meter — peak-hold smoothing so the bar doesn't flicker.
     meter_smooth: f32,
+    /// Slow envelope tracking how sustained the current compression is.
+    /// Drives the program-dependent release multiplier.
+    sustained_gr_env: f32,
     sample_rate: f32,
 }
 
@@ -238,6 +246,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_makeup: SmoothedParam::new(load(P_MAKEUP)),
             smooth_mix: SmoothedParam::new(load(P_MIX)),
             meter_smooth: 0.0,
+            sustained_gr_env: 0.0,
             sample_rate: sr,
         })
     }
@@ -264,6 +273,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             .load(Ordering::Relaxed)
             .round() as u32;
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
+        let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
 
         let mut max_gr_db: f32 = 0.0;
 
@@ -315,7 +325,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     self, l_read, l_write, r_read, r_write, sr,
                     threshold_target, ratio_target, attack_target, release_target,
                     knee_target, makeup_target, mix_target,
-                    sc_hpf_freq, sc_present,
+                    sc_hpf_freq, sc_present, auto_rel,
                     &mut max_gr_db,
                 );
             } else {
@@ -365,7 +375,7 @@ fn process_stereo_block(
     sr: f32,
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
-    sc_hpf_freq: Option<f32>, sc_present: bool,
+    sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     max_gr_db: &mut f32,
 ) {
     let n = l_read.len().min(r_read.len());
@@ -376,10 +386,18 @@ fn process_stereo_block(
         let threshold = p.smooth_threshold.step(threshold_target, sr);
         let ratio = p.smooth_ratio.step(ratio_target, sr);
         let attack = p.smooth_attack.step(attack_target, sr);
-        let release = p.smooth_release.step(release_target, sr);
+        let mut release = p.smooth_release.step(release_target, sr);
         let knee = p.smooth_knee.step(knee_target, sr);
         let makeup = p.smooth_makeup.step(makeup_target, sr);
         let mix = p.smooth_mix.step(mix_target, sr);
+
+        // Program-dependent release: stretches base release by up to 4×
+        // when the slow envelope shows we've been compressing heavily.
+        // The slow envelope itself is a one-pole with a ~200 ms attack
+        // and ~600 ms release on |gr_db|.
+        if auto_rel {
+            release *= 1.0 + 3.0 * p.sustained_gr_env.min(1.0);
+        }
 
         // Detector source — external sidechain if routed, otherwise dry main.
         let (key_l, key_r) = if sc_present {
@@ -401,6 +419,17 @@ fn process_stereo_block(
         let env_db = 20.0 * env.max(1e-9).log10();
         let gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
         if gr_db < *max_gr_db { *max_gr_db = gr_db; }
+
+        // Slow envelope on |gr_db|, normalised to 0..1 over the first 6 dB
+        // of compression. Asymmetric: rises slowly (300 ms), falls slowly
+        // (600 ms) — gives auto-release the program-dependent character.
+        let gr_norm = (-gr_db / 6.0).clamp(0.0, 1.0);
+        let coef = if gr_norm > p.sustained_gr_env {
+            (-1.0 / (0.3 * sr)).exp()
+        } else {
+            (-1.0 / (0.6 * sr)).exp()
+        };
+        p.sustained_gr_env = gr_norm + (p.sustained_gr_env - gr_norm) * coef;
 
         let gain_lin = 10f32.powf((gr_db + makeup) / 20.0);
 

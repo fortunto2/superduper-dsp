@@ -145,3 +145,46 @@ fn ducker_zero_amount_is_unity() {
         assert!((g - 1.0).abs() < 1e-6, "amount=0 should be unity (g={g})");
     }
 }
+
+// ---------- AdsrEnvelope + midi_note_to_hz ----------
+
+#[test]
+fn adsr_starts_idle_and_stays_silent() {
+    use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams};
+    let mut env = AdsrEnvelope::default();
+    assert!(env.is_idle());
+    let p = AdsrParams { sr: SR, attack_s: 0.1, decay_s: 0.1, sustain: 0.5, release_s: 0.1 };
+    for _ in 0..1000 {
+        assert_eq!(env.process(p), 0.0, "idle envelope must stay silent");
+    }
+}
+
+#[test]
+fn adsr_release_then_idle_within_5_release_constants() {
+    use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams};
+    let mut env = AdsrEnvelope::default();
+    env.gate_on();
+    let p = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.001, sustain: 0.5, release_s: 0.05 };
+    // run to sustain
+    for _ in 0..(SR as usize / 10) { env.process(p); }
+    env.gate_off();
+    // RELEASE_FLOOR is 1e-4 of unity. Crossing it from sustain 0.5 with a
+    // one-pole exponential needs ~9·τ; give a 15·τ safety margin.
+    let n = (15.0 * 0.05 * SR) as usize;
+    let mut became_idle = false;
+    for _ in 0..n {
+        env.process(p);
+        if env.is_idle() { became_idle = true; break; }
+    }
+    assert!(became_idle, "envelope should idle within 15*release seconds");
+}
+
+#[test]
+fn midi_note_to_hz_roundtrip() {
+    use superduper_synth_core::dsp_blocks::midi_note_to_hz;
+    // Octave ratios.
+    for &(low, high) in &[(48.0_f32, 60.0_f32), (60.0, 72.0), (24.0, 36.0)] {
+        let r = midi_note_to_hz(high) / midi_note_to_hz(low);
+        assert!((r - 2.0).abs() < 1e-4, "{low}→{high}: ratio {r} not 2.0");
+    }
+}

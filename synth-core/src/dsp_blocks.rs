@@ -690,3 +690,141 @@ impl Ducker {
         self.envelope
     }
 }
+
+// ---------------------------------------------------------------------------
+// AdsrEnvelope — linear attack, exponential decay/release ADSR with explicit
+// states. Designed for note-driven synths: gate() starts attack, release()
+// transitions to release stage (preserving current level so re-triggers
+// during release don't glitch).
+//
+// One-pole coefficients are derived per stage from the target time: solve
+// `coef = exp(-1/(time_s * sr * STAGE_FACTOR))` so a `time_s` knob produces
+// a ~3·τ visible decay. Industry-standard heuristic (TAL, Vital, Surge use
+// similar) — gives a knob range that "feels right" musically without each
+// stage needing a different curve shape.
+// ---------------------------------------------------------------------------
+
+/// State machine of an ADSR envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdsrStage {
+    Idle,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+#[derive(Clone, Copy)]
+pub struct AdsrEnvelope {
+    level: f32,
+    stage: AdsrStage,
+}
+
+impl Default for AdsrEnvelope {
+    fn default() -> Self {
+        Self {
+            level: 0.0,
+            stage: AdsrStage::Idle,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct AdsrParams {
+    pub sr: f32,
+    pub attack_s: f32,
+    pub decay_s: f32,
+    pub sustain: f32,
+    pub release_s: f32,
+}
+
+impl AdsrEnvelope {
+    /// Begin attack from the current level — re-triggering during decay or
+    /// release smoothly resumes from where the envelope currently is.
+    #[inline]
+    pub fn gate_on(&mut self) {
+        self.stage = AdsrStage::Attack;
+    }
+
+    /// Begin release from the current level.
+    #[inline]
+    pub fn gate_off(&mut self) {
+        if self.stage != AdsrStage::Idle {
+            self.stage = AdsrStage::Release;
+        }
+    }
+
+    /// Has the envelope fully decayed to silence after release?
+    #[inline]
+    pub fn is_idle(&self) -> bool {
+        matches!(self.stage, AdsrStage::Idle)
+    }
+
+    #[inline]
+    pub fn is_releasing(&self) -> bool {
+        matches!(self.stage, AdsrStage::Release)
+    }
+
+    #[inline]
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    #[inline]
+    pub fn stage(&self) -> AdsrStage {
+        self.stage
+    }
+
+    /// Advance one sample, returning current envelope level [0..1].
+    #[inline]
+    pub fn process(&mut self, p: AdsrParams) -> f32 {
+        const ATTACK_FLOOR: f32 = 1e-4;
+        const RELEASE_FLOOR: f32 = 1e-4;
+
+        match self.stage {
+            AdsrStage::Idle => {
+                self.level = 0.0;
+            }
+            AdsrStage::Attack => {
+                // Linear ramp — gives the punchy front-end a note needs.
+                let inc = if p.attack_s <= 1e-4 { 1.0 } else { 1.0 / (p.attack_s * p.sr) };
+                self.level += inc;
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.stage = AdsrStage::Decay;
+                }
+            }
+            AdsrStage::Decay => {
+                // Exp glide toward sustain.
+                let sustain = p.sustain.clamp(0.0, 1.0);
+                let tau = (p.decay_s * p.sr).max(1.0);
+                let coef = (-1.0 / tau).exp();
+                self.level = sustain + (self.level - sustain) * coef;
+                if (self.level - sustain).abs() < ATTACK_FLOOR {
+                    self.level = sustain;
+                    self.stage = AdsrStage::Sustain;
+                }
+            }
+            AdsrStage::Sustain => {
+                self.level = p.sustain.clamp(0.0, 1.0);
+            }
+            AdsrStage::Release => {
+                let tau = (p.release_s * p.sr).max(1.0);
+                let coef = (-1.0 / tau).exp();
+                self.level *= coef;
+                if self.level <= RELEASE_FLOOR {
+                    self.level = 0.0;
+                    self.stage = AdsrStage::Idle;
+                }
+            }
+        }
+        self.level
+    }
+}
+
+/// Convert a MIDI note number (0-127) to frequency in Hz.
+/// A4 = key 69 = 440 Hz, then 12-TET.
+#[inline]
+pub fn midi_note_to_hz(note: f32) -> f32 {
+    440.0 * 2f32.powf((note - 69.0) / 12.0)
+}

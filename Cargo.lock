@@ -3332,6 +3332,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-pad"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-reverb"
 version = "0.2.0"
 dependencies = [

@@ -45,6 +45,7 @@ PLUGINS=(
     "superduper-eq|libsuperduper_eq.dylib|SuperDuperEq|co.superduperai.eq"
     "superduper-limiter|libsuperduper_limiter.dylib|SuperDuperLimiter|co.superduperai.limiter"
     "superduper-ambient|libsuperduper_ambient.dylib|SuperDuperAmbient|co.superduperai.ambient"
+    "superduper-pad|libsuperduper_pad.dylib|SuperDuperPad|co.superduperai.pad"
 )
 
 echo "==> Building release binaries..."
@@ -59,7 +60,8 @@ cargo build --release \
     -p superduper-compressor \
     -p superduper-eq \
     -p superduper-limiter \
-    -p superduper-ambient
+    -p superduper-ambient \
+    -p superduper-pad
 
 # ---------------------------------------------------------------------------
 # Bundle each plugin as a .clap (macOS bundle = directory).
@@ -109,7 +111,8 @@ COMBINED_ZIP="$RELEASE_DIR/superduper-dsp-${VERSION}-${PLATFORM}.zip"
 (cd "$BUNDLE_TMP" && zip -qry "$COMBINED_ZIP" \
     SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
     SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
-    SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap)
+    SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
+    SuperDuperPad.clap)
 echo "==> Packaged $COMBINED_ZIP"
 
 # ---------------------------------------------------------------------------

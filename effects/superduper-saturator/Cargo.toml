@@ -1,6 +1,6 @@
 [package]
 name = "superduper-saturator"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Analog warmth — tape / tube / soft-clip saturation with tone tilt"

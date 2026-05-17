@@ -39,15 +39,21 @@ PLUGINS=(
     "superduper-reverb|libsuperduper_reverb.dylib|SuperDuperReverb|co.superduperai.reverb"
     "superduper-supermass|libsuperduper_supermass.dylib|SuperDuperSupermass|co.superduperai.supermass"
     "superduper-spectrum|libsuperduper_spectrum.dylib|SuperDuperSpectrum|co.superduperai.spectrum"
+    "superduper-saturator|libsuperduper_saturator.dylib|SuperDuperSaturator|co.superduperai.saturator"
+    "superduper-delay|libsuperduper_delay.dylib|SuperDuperDelay|co.superduperai.delay"
+    "superduper-compressor|libsuperduper_compressor.dylib|SuperDuperCompressor|co.superduperai.compressor"
 )
 
 echo "==> Building release binaries..."
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
-# Build all three crates in one go so cargo amortises the shared deps.
+# Build all six crates in one go so cargo amortises the shared deps.
 cargo build --release \
     -p superduper-reverb \
     -p superduper-supermass \
-    -p superduper-spectrum
+    -p superduper-spectrum \
+    -p superduper-saturator \
+    -p superduper-delay \
+    -p superduper-compressor
 
 # ---------------------------------------------------------------------------
 # Bundle each plugin as a .clap (macOS bundle = directory).
@@ -95,7 +101,8 @@ done
 # ---------------------------------------------------------------------------
 COMBINED_ZIP="$RELEASE_DIR/superduper-dsp-${VERSION}-${PLATFORM}.zip"
 (cd "$BUNDLE_TMP" && zip -qry "$COMBINED_ZIP" \
-    SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap)
+    SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
+    SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap)
 echo "==> Packaged $COMBINED_ZIP"
 
 # ---------------------------------------------------------------------------

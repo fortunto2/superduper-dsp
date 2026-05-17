@@ -48,7 +48,10 @@ jobs:
           cargo build --release \
             -p superduper-reverb \
             -p superduper-supermass \
-            -p superduper-spectrum
+            -p superduper-spectrum \
+            -p superduper-saturator \
+            -p superduper-delay \
+            -p superduper-compressor
 
       - name: Run tests
         run: |
@@ -56,6 +59,9 @@ jobs:
             -p superduper-reverb \
             -p superduper-supermass \
             -p superduper-spectrum \
+            -p superduper-saturator \
+            -p superduper-delay \
+            -p superduper-compressor \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -68,7 +74,10 @@ jobs:
           for entry in \
               "superduper_reverb|SuperDuperReverb|co.superduperai.reverb" \
               "superduper_supermass|SuperDuperSupermass|co.superduperai.supermass" \
-              "superduper_spectrum|SuperDuperSpectrum|co.superduperai.spectrum"
+              "superduper_spectrum|SuperDuperSpectrum|co.superduperai.spectrum" \
+              "superduper_saturator|SuperDuperSaturator|co.superduperai.saturator" \
+              "superduper_delay|SuperDuperDelay|co.superduperai.delay" \
+              "superduper_compressor|SuperDuperCompressor|co.superduperai.compressor"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -97,7 +106,8 @@ jobs:
               (cd dist/macos && zip -qry "../${name}-${V}-macos-arm64.zip" "${name}.clap")
           done
           (cd dist/macos && zip -qry "../superduper-dsp-${V}-macos-arm64.zip" \
-              SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap)
+              SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
+              SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -147,7 +157,10 @@ jobs:
           cargo build --release `
             -p superduper-reverb `
             -p superduper-supermass `
-            -p superduper-spectrum
+            -p superduper-spectrum `
+            -p superduper-saturator `
+            -p superduper-delay `
+            -p superduper-compressor
 
       - name: Run tests
         run: |
@@ -155,6 +168,9 @@ jobs:
             -p superduper-reverb `
             -p superduper-supermass `
             -p superduper-spectrum `
+            -p superduper-saturator `
+            -p superduper-delay `
+            -p superduper-compressor `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -164,9 +180,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $plugins = @(
-            @{ dll = "superduper_reverb.dll";    name = "SuperDuperReverb" },
-            @{ dll = "superduper_supermass.dll"; name = "SuperDuperSupermass" },
-            @{ dll = "superduper_spectrum.dll";  name = "SuperDuperSpectrum" }
+            @{ dll = "superduper_reverb.dll";     name = "SuperDuperReverb" },
+            @{ dll = "superduper_supermass.dll";  name = "SuperDuperSupermass" },
+            @{ dll = "superduper_spectrum.dll";   name = "SuperDuperSpectrum" },
+            @{ dll = "superduper_saturator.dll";  name = "SuperDuperSaturator" },
+            @{ dll = "superduper_delay.dll";      name = "SuperDuperDelay" },
+            @{ dll = "superduper_compressor.dll"; name = "SuperDuperCompressor" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -217,10 +236,13 @@ jobs:
           body: |
             SuperDuper DSP ${{ github.ref_name }}
 
-            Three CLAP plugins inside:
+            Six CLAP plugins for the vocal chain (and beyond):
             * SuperDuper Reverb — Dattorro plate with sidechain ducking
             * SuperDuper Supermass — Valhalla-style cascade reverb
-            * SuperDuper Spectrum — pass-through analyzer (Spectrum / Spectrogram / Split)
+            * SuperDuper Spectrum — analyzer (Spectrum / Spectrogram / Split)
+            * SuperDuper Saturator — tape / tube / soft-clip warmth
+            * SuperDuper Delay — Lagrange-interp delay, tape-flavoured feedback, ping-pong, sidechain ducking
+            * SuperDuper Compressor — soft-knee, lookahead, sidechain HPF, gain-reduction meter
 
             Download the platform zip below and follow INSTALL.md.
 

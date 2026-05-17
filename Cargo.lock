@@ -3151,7 +3151,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "superduper-compressor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "superduper-delay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -3276,7 +3276,7 @@ dependencies = [
 
 [[package]]
 name = "superduper-reverb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "superduper-saturator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "superduper-spectrum"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -3334,7 +3334,7 @@ dependencies = [
 
 [[package]]
 name = "superduper-supermass"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic_float",
  "baseview",

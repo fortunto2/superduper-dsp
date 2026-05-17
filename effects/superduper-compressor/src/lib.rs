@@ -95,19 +95,30 @@ macro_rules! slog { ($($arg:tt)*) => { $crate::slog_args(format_args!($($arg)*))
 // ---------------------------------------------------------------------------
 
 pub const PARAMS: &[ParamDef] = &[
-    ParamDef { id: 0, name: b"Threshold", min: -60.0, max: 0.0,    default: -18.0, unit: "dB" },
-    ParamDef { id: 1, name: b"Ratio",     min: 1.0,   max: 20.0,   default: 4.0,   unit: ":1" },
-    ParamDef { id: 2, name: b"Attack",    min: 0.1,   max: 100.0,  default: 10.0,  unit: "ms" },
-    ParamDef { id: 3, name: b"Release",   min: 5.0,   max: 1000.0, default: 120.0, unit: "ms" },
-    ParamDef { id: 4, name: b"Knee",      min: 0.0,   max: 18.0,   default: 6.0,   unit: "dB" },
-    ParamDef { id: 5, name: b"Makeup",    min: -12.0, max: 24.0,   default: 0.0,   unit: "dB" },
+    ParamDef { id: 0,  name: b"Threshold", min: -60.0, max: 0.0,    default: -18.0, unit: "dB" },
+    ParamDef { id: 1,  name: b"Ratio",     min: 1.0,   max: 20.0,   default: 4.0,   unit: ":1" },
+    ParamDef { id: 2,  name: b"Attack",    min: 0.1,   max: 100.0,  default: 10.0,  unit: "ms" },
+    ParamDef { id: 3,  name: b"Release",   min: 5.0,   max: 1000.0, default: 120.0, unit: "ms" },
+    ParamDef { id: 4,  name: b"Knee",      min: 0.0,   max: 18.0,   default: 6.0,   unit: "dB" },
+    ParamDef { id: 5,  name: b"Makeup",    min: -12.0, max: 24.0,   default: 0.0,   unit: "dB" },
     // 0 = off, 1 = 80 Hz, 2 = 150 Hz, 3 = 300 Hz
-    ParamDef { id: 6, name: b"SC HPF",    min: 0.0,   max: 3.0,    default: 1.0,   unit: ""   },
-    ParamDef { id: 7, name: b"Mix",       min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+    ParamDef { id: 6,  name: b"SC HPF",    min: 0.0,   max: 3.0,    default: 1.0,   unit: ""   },
+    ParamDef { id: 7,  name: b"Mix",       min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
     // Auto-release tracks how long compression has been sustained and
     // stretches the release accordingly — fast on transients, slower on
     // sustained material. Classic FabFilter Pro-C / Waves SSL behavior.
-    ParamDef { id: 8, name: b"Auto Rel",  min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    ParamDef { id: 8,  name: b"Auto Rel",  min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    // Adjustable lookahead. Capped at 15 ms — beyond that the audible
+    // pre-attenuation outweighs the transient catch. ZLCompressor caps
+    // around 10 ms; we go a touch farther for "brickwall-ish" behavior.
+    ParamDef { id: 9,  name: b"Lookahead", min: 0.0,   max: 15.0,   default: 2.0,   unit: "ms" },
+    // Soft tanh ceiling on the output to catch overshoots after makeup.
+    // 0 dB = effectively off (tanh saturates only at very large inputs).
+    // Negative values progressively clamp peaks toward the chosen ceiling.
+    ParamDef { id: 10, name: b"Ceiling",   min: -12.0, max: 0.0,    default: 0.0,   unit: "dB" },
+    // Stereo coupling: 1.0 = fully linked (max of L/R drives both),
+    // 0.0 = fully independent (each channel gets its own GR).
+    ParamDef { id: 11, name: b"Link",      min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -119,6 +130,9 @@ pub const P_MAKEUP: usize = 5;
 pub const P_SC_HPF: usize = 6;
 pub const P_MIX: usize = 7;
 pub const P_AUTO_REL: usize = 8;
+pub const P_LOOKAHEAD: usize = 9;
+pub const P_CEILING: usize = 10;
+pub const P_LINK: usize = 11;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -135,16 +149,77 @@ fn sc_hpf_hz(idx: u32) -> Option<f32> {
 
 pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 
+/// Length of the visual scope buffer (number of decimated points).
+/// At 1500 Hz update rate (~32-sample hop @ 48 k) this is ~0.7 s of history.
+pub const SCOPE_LEN: usize = 1024;
+
+/// Triple-stream lock-free SPSC ring buffer used for the live oscilloscope:
+/// the audio thread is the sole writer, the GUI is the sole reader. Each
+/// slot stores one decimated sample's input peak, output peak and GR (all
+/// in dBFS / dB respectively). We tolerate tearing — visual glitches are
+/// preferable to taking a Mutex on the audio thread.
+pub struct ScopeBuf {
+    pub in_db: Box<[AtomicF32]>,
+    pub out_db: Box<[AtomicF32]>,
+    pub gr_db: Box<[AtomicF32]>,
+    pub head: std::sync::atomic::AtomicU32,
+    pub written: std::sync::atomic::AtomicU64,
+}
+
+impl ScopeBuf {
+    pub fn new(len: usize) -> Self {
+        let mk = |fill: f32| {
+            (0..len).map(|_| AtomicF32::new(fill)).collect::<Vec<_>>().into_boxed_slice()
+        };
+        Self {
+            in_db: mk(-72.0),
+            out_db: mk(-72.0),
+            gr_db: mk(0.0),
+            head: std::sync::atomic::AtomicU32::new(0),
+            written: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Append one decimated frame. Called from the audio thread.
+    #[inline]
+    pub fn push(&self, in_db: f32, out_db: f32, gr_db: f32) {
+        let len = self.in_db.len();
+        let idx = (self.head.load(Ordering::Relaxed) as usize) % len;
+        self.in_db[idx].store(in_db, Ordering::Relaxed);
+        self.out_db[idx].store(out_db, Ordering::Relaxed);
+        self.gr_db[idx].store(gr_db, Ordering::Relaxed);
+        // Wrap head explicitly so the next write lands at the right slot.
+        let next = ((idx + 1) % len) as u32;
+        self.head.store(next, Ordering::Relaxed);
+        self.written.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read out a chronologically-ordered snapshot. Called from the GUI
+    /// thread (~30 Hz). Mild tearing is OK — visual artifact is one row
+    /// of stale dB values, no audio impact.
+    pub fn snapshot_in_order(&self, out_in: &mut [f32], out_out: &mut [f32], out_gr: &mut [f32]) {
+        let len = self.in_db.len();
+        let head = self.head.load(Ordering::Relaxed) as usize;
+        for i in 0..len.min(out_in.len().min(out_out.len()).min(out_gr.len())) {
+            let src = (head + i) % len;
+            out_in[i] = self.in_db[src].load(Ordering::Relaxed);
+            out_out[i] = self.out_db[src].load(Ordering::Relaxed);
+            out_gr[i] = self.gr_db[src].load(Ordering::Relaxed);
+        }
+    }
+}
+
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
     /// Current gain reduction in dB (always <= 0). Updated each block.
     pub gain_reduction_db: AtomicF32,
-    /// Plugin latency in samples — written by `activate()` once sample
-    /// rate is known, read by the CLAP latency extension's `get()` impl.
-    /// Constant across the active session because our lookahead is fixed
-    /// at compile time.
+    /// Plugin latency in samples — written by `activate()` whenever the
+    /// lookahead knob changes during the session, read by the CLAP
+    /// latency extension's `get()` impl.
     pub latency_samples: std::sync::atomic::AtomicU32,
+    /// Live waveform scope, written by the audio thread + read by GUI.
+    pub scope: ScopeBuf,
 }
 
 pub struct PluginShared {
@@ -159,6 +234,7 @@ impl PluginShared {
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 gain_reduction_db: AtomicF32::new(0.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
+                scope: ScopeBuf::new(SCOPE_LEN),
             }),
         }
     }
@@ -176,7 +252,15 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 // Audio processor
 // ---------------------------------------------------------------------------
 
-const LOOKAHEAD_MS: f32 = 2.0;
+/// Upper bound on the Lookahead knob. Used to size the delay-line capacity
+/// at activate() so we never reallocate from the audio thread when the user
+/// drags the knob upward.
+const MAX_LOOKAHEAD_MS: f32 = 15.0;
+/// Decimation factor for the scope. Audio thread accumulates running peak
+/// for this many samples then pushes one scope frame. 32 samples @ 48 kHz
+/// = 1500 Hz update rate — fast enough that the GUI shows real transient
+/// detail, slow enough that the atomic stores don't dominate runtime.
+const SCOPE_HOP: usize = 32;
 
 pub struct PluginMainThread<'a> {
     shared: &'a PluginShared,
@@ -213,11 +297,24 @@ pub struct PluginAudioProcessor<'a> {
     smooth_knee: SmoothedParam,
     smooth_makeup: SmoothedParam,
     smooth_mix: SmoothedParam,
+    smooth_lookahead: SmoothedParam,
+    smooth_ceiling: SmoothedParam,
+    smooth_link: SmoothedParam,
     /// Used by the GUI meter — peak-hold smoothing so the bar doesn't flicker.
     meter_smooth: f32,
     /// Slow envelope tracking how sustained the current compression is.
     /// Drives the program-dependent release multiplier.
     sustained_gr_env: f32,
+    /// Running scope accumulator — collects peak input / peak output / max
+    /// GR across SCOPE_HOP samples then emits one scope frame.
+    scope_acc_in: f32,
+    scope_acc_out: f32,
+    scope_acc_gr: f32,
+    scope_acc_count: usize,
+    /// Last reported lookahead value (samples). Tracked so we can republish
+    /// the CLAP latency hint to the host whenever the knob moves enough to
+    /// matter — DAW PDC will re-compensate on the next process call.
+    last_lookahead_samples: u32,
     sample_rate: f32,
 }
 
@@ -236,17 +333,19 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
         slog!("activate sr={}", sr);
-        let look_samples = sr * 0.001 * LOOKAHEAD_MS;
-        let cap = (look_samples as usize + 64).next_power_of_two().max(1024);
+        // Size the delay line for the max-knob position so we never have
+        // to re-allocate on the audio thread when the user pushes Lookahead.
+        let max_look_samples = sr * 0.001 * MAX_LOOKAHEAD_MS;
+        let cap = (max_look_samples as usize + 64).next_power_of_two().max(1024);
         let max_frames = audio_config.max_frames_count as usize;
 
-        // Report our latency to the host once we know SR. This is the
-        // amount of delay the lookahead delay-line introduces, in samples.
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
+        let initial_look_ms = load(P_LOOKAHEAD).max(0.0);
+        let initial_look_samples = sr * 0.001 * initial_look_ms;
         shared
             .latency_samples
-            .store(look_samples as u32, Ordering::Relaxed);
+            .store(initial_look_samples as u32, Ordering::Relaxed);
 
-        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
             shared,
             detector: EnvelopeDetector::default(),
@@ -254,7 +353,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             sc_hpf_state_r: 0.0,
             look_l: DelayLine::new(cap),
             look_r: DelayLine::new(cap),
-            lookahead_samples: look_samples,
+            lookahead_samples: initial_look_samples,
             sc_buf_l: vec![0.0; max_frames].into_boxed_slice(),
             sc_buf_r: vec![0.0; max_frames].into_boxed_slice(),
             smooth_threshold: SmoothedParam::new(load(P_THRESHOLD)),
@@ -264,8 +363,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_knee: SmoothedParam::new(load(P_KNEE)),
             smooth_makeup: SmoothedParam::new(load(P_MAKEUP)),
             smooth_mix: SmoothedParam::new(load(P_MIX)),
+            smooth_lookahead: SmoothedParam::new(load(P_LOOKAHEAD)),
+            smooth_ceiling: SmoothedParam::new(load(P_CEILING)),
+            smooth_link: SmoothedParam::new(load(P_LINK)),
             meter_smooth: 0.0,
             sustained_gr_env: 0.0,
+            scope_acc_in: 0.0,
+            scope_acc_out: 0.0,
+            scope_acc_gr: 0.0,
+            scope_acc_count: 0,
+            last_lookahead_samples: initial_look_samples as u32,
             sample_rate: sr,
         })
     }
@@ -288,11 +395,27 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let knee_target = self.shared.params[P_KNEE].load(Ordering::Relaxed);
         let makeup_target = self.shared.params[P_MAKEUP].load(Ordering::Relaxed);
         let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
+        let lookahead_ms_target = self
+            .shared.params[P_LOOKAHEAD].load(Ordering::Relaxed).max(0.0);
+        let ceiling_target = self.shared.params[P_CEILING].load(Ordering::Relaxed);
+        let link_target = self.shared.params[P_LINK].load(Ordering::Relaxed).clamp(0.0, 1.0);
         let sc_hpf_idx = self.shared.params[P_SC_HPF]
             .load(Ordering::Relaxed)
             .round() as u32;
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
         let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
+
+        // Lookahead in samples — clamped to the delay-line capacity (set
+        // for MAX_LOOKAHEAD_MS at activate). Update CLAP latency when the
+        // value moves by >1 sample so DAW PDC stays in sync.
+        let look_samples_target = sr * 0.001 * lookahead_ms_target.min(MAX_LOOKAHEAD_MS);
+        let look_samples_u32 = look_samples_target as u32;
+        if look_samples_u32.abs_diff(self.last_lookahead_samples) > 1 {
+            self.shared
+                .latency_samples
+                .store(look_samples_u32, Ordering::Relaxed);
+            self.last_lookahead_samples = look_samples_u32;
+        }
 
         let mut max_gr_db: f32 = 0.0;
 
@@ -344,6 +467,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     self, l_read, l_write, r_read, r_write, sr,
                     threshold_target, ratio_target, attack_target, release_target,
                     knee_target, makeup_target, mix_target,
+                    lookahead_ms_target, ceiling_target, link_target,
                     sc_hpf_freq, sc_present, auto_rel,
                     &mut max_gr_db,
                 );
@@ -353,17 +477,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     let dry = l_read[i];
                     let (out, gr) = process_sample_mono(
                         &mut self.detector, &mut self.sc_hpf_state_l, sc_hpf_freq,
-                        &mut self.look_l, self.lookahead_samples,
+                        &mut self.look_l,
                         &mut self.smooth_threshold, &mut self.smooth_ratio,
                         &mut self.smooth_attack, &mut self.smooth_release,
                         &mut self.smooth_knee, &mut self.smooth_makeup,
-                        &mut self.smooth_mix,
+                        &mut self.smooth_mix, &mut self.smooth_lookahead,
+                        &mut self.smooth_ceiling,
                         dry, sr,
                         threshold_target, ratio_target, attack_target, release_target,
                         knee_target, makeup_target, mix_target,
+                        lookahead_ms_target, ceiling_target,
                     );
                     l_write[i] = out;
                     if gr < max_gr_db { max_gr_db = gr; }
+                    push_scope(self, dry.abs().max(1e-9), out.abs().max(1e-9), gr);
                 }
             }
         }
@@ -394,10 +521,12 @@ fn process_stereo_block(
     sr: f32,
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
+    lookahead_ms_target: f32, ceiling_target: f32, link_target: f32,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     max_gr_db: &mut f32,
 ) {
     let n = l_read.len().min(r_read.len());
+    let look_max_samples = sr * 0.001 * MAX_LOOKAHEAD_MS;
     for i in 0..n {
         let dry_l = l_read[i];
         let dry_r = r_read[i];
@@ -409,16 +538,16 @@ fn process_stereo_block(
         let knee = p.smooth_knee.step(knee_target, sr);
         let makeup = p.smooth_makeup.step(makeup_target, sr);
         let mix = p.smooth_mix.step(mix_target, sr);
+        let lookahead_ms = p.smooth_lookahead.step(lookahead_ms_target, sr).max(0.0);
+        let ceiling_db = p.smooth_ceiling.step(ceiling_target, sr);
+        let link = p.smooth_link.step(link_target, sr).clamp(0.0, 1.0);
+        let look_samples = (sr * 0.001 * lookahead_ms).min(look_max_samples);
+        p.lookahead_samples = look_samples;
 
-        // Program-dependent release: stretches base release by up to 4×
-        // when the slow envelope shows we've been compressing heavily.
-        // The slow envelope itself is a one-pole with a ~200 ms attack
-        // and ~600 ms release on |gr_db|.
         if auto_rel {
             release *= 1.0 + 3.0 * p.sustained_gr_env.min(1.0);
         }
 
-        // Detector source — external sidechain if routed, otherwise dry main.
         let (mut key_l, mut key_r) = if sc_present {
             (
                 p.sc_buf_l.get(i).copied().unwrap_or(0.0),
@@ -427,13 +556,8 @@ fn process_stereo_block(
         } else {
             (dry_l, dry_r)
         };
-        // SC HPF — single-pole high-pass on the raw signed key signal,
-        // one independent state per channel. Implemented as
-        // `hp = x - lp(x)` with `lp(x) = x*(1-c) + lp_prev*c`, c =
-        // exp(-2π·fc/sr). Has to run before .abs() — otherwise the
-        // filter sees the rectified signal's DC bias and ends up
-        // subtracting a slow mean from the envelope (see issue tracked
-        // in `tests/sc_hpf_repro.rs`).
+        // SC HPF on raw signed audio — see sc_hpf_repro.rs for the
+        // rationale (must precede rectification or it crushes detection).
         if let Some(hp_hz) = sc_hpf_freq {
             let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
             p.sc_hpf_state_l = key_l * (1.0 - coef) + p.sc_hpf_state_l * coef;
@@ -441,16 +565,23 @@ fn process_stereo_block(
             p.sc_hpf_state_r = key_r * (1.0 - coef) + p.sc_hpf_state_r * coef;
             key_r -= p.sc_hpf_state_r;
         }
-        let sc = key_l.abs().max(key_r.abs());
+        // Stereo coupling — `link=1` follows the louder channel (fully
+        // linked), `link=0` would feed each channel its own detector
+        // value (independent). With a single shared detector here we
+        // blend max(|L|,|R|) toward mean(|L|,|R|) as link decreases.
+        // Fully independent per-channel detectors would need two
+        // EnvelopeDetector instances — kept simple for now.
+        let abs_l = key_l.abs();
+        let abs_r = key_r.abs();
+        let max_lr = abs_l.max(abs_r);
+        let mean_lr = (abs_l + abs_r) * 0.5;
+        let sc = max_lr * link + mean_lr * (1.0 - link);
 
         let env = p.detector.process(sc, sr, attack, release);
         let env_db = 20.0 * env.max(1e-9).log10();
         let gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
         if gr_db < *max_gr_db { *max_gr_db = gr_db; }
 
-        // Slow envelope on |gr_db|, normalised to 0..1 over the first 6 dB
-        // of compression. Asymmetric: rises slowly (300 ms), falls slowly
-        // (600 ms) — gives auto-release the program-dependent character.
         let gr_norm = (-gr_db / 6.0).clamp(0.0, 1.0);
         let coef = if gr_norm > p.sustained_gr_env {
             (-1.0 / (0.3 * sr)).exp()
@@ -463,14 +594,54 @@ fn process_stereo_block(
 
         p.look_l.write(dry_l);
         p.look_r.write(dry_r);
-        let delayed_l = p.look_l.read_lagrange3(p.lookahead_samples);
-        let delayed_r = p.look_r.read_lagrange3(p.lookahead_samples);
+        let delayed_l = p.look_l.read_lagrange3(look_samples);
+        let delayed_r = p.look_r.read_lagrange3(look_samples);
 
-        let wet_l = delayed_l * gain_lin;
-        let wet_r = delayed_r * gain_lin;
+        let mut wet_l = delayed_l * gain_lin;
+        let mut wet_r = delayed_r * gain_lin;
 
-        l_write[i] = delayed_l * (1.0 - mix) + wet_l * mix;
-        r_write[i] = delayed_r * (1.0 - mix) + wet_r * mix;
+        // Soft tanh ceiling — when Ceiling is at 0 dB it's transparent
+        // for any signal that fits in unity. Negative ceilings progressively
+        // squeeze peaks: y = ceil_lin * tanh(x / ceil_lin). At |x| ≪ ceiling
+        // the output is the linear input; at large |x| it asymptotes to
+        // ±ceil_lin. Provides the "Clipper" character ZL's plugin shows
+        // on the strip above the waveform.
+        if ceiling_db < -0.05 {
+            let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
+            wet_l = ceil_lin * (wet_l / ceil_lin).tanh();
+            wet_r = ceil_lin * (wet_r / ceil_lin).tanh();
+        }
+
+        let out_l = delayed_l * (1.0 - mix) + wet_l * mix;
+        let out_r = delayed_r * (1.0 - mix) + wet_r * mix;
+        l_write[i] = out_l;
+        r_write[i] = out_r;
+
+        // Scope frame — peak of L/R per channel.
+        let in_peak = dry_l.abs().max(dry_r.abs());
+        let out_peak = out_l.abs().max(out_r.abs());
+        push_scope(p, in_peak, out_peak, gr_db);
+    }
+}
+
+/// Decimating push to the scope ring buffer. Aggregates SCOPE_HOP samples
+/// (taking the peak |x| in / out and the most-negative GR in dB) before
+/// emitting one frame. dB conversions happen here so the GUI just reads
+/// floats out of the ring and renders without per-frame log10 calls.
+#[inline]
+fn push_scope(p: &mut PluginAudioProcessor<'_>, in_lin: f32, out_lin: f32, gr_db: f32) {
+    if in_lin > p.scope_acc_in { p.scope_acc_in = in_lin; }
+    if out_lin > p.scope_acc_out { p.scope_acc_out = out_lin; }
+    if gr_db < p.scope_acc_gr { p.scope_acc_gr = gr_db; }
+    p.scope_acc_count += 1;
+    if p.scope_acc_count >= SCOPE_HOP {
+        let in_db = 20.0 * p.scope_acc_in.max(1e-7).log10();
+        let out_db = 20.0 * p.scope_acc_out.max(1e-7).log10();
+        p.shared.scope.push(in_db, out_db, p.scope_acc_gr);
+        p.scope_acc_in = 0.0;
+        p.scope_acc_out = 0.0;
+        p.scope_acc_gr = 0.0;
+        p.scope_acc_count = 0;
     }
 }
 
@@ -480,7 +651,6 @@ fn process_sample_mono(
     sc_hpf_state: &mut f32,
     sc_hpf_freq: Option<f32>,
     look: &mut DelayLine,
-    lookahead_samples: f32,
     sm_thr: &mut SmoothedParam,
     sm_rat: &mut SmoothedParam,
     sm_atk: &mut SmoothedParam,
@@ -488,9 +658,12 @@ fn process_sample_mono(
     sm_knee: &mut SmoothedParam,
     sm_makeup: &mut SmoothedParam,
     sm_mix: &mut SmoothedParam,
+    sm_look: &mut SmoothedParam,
+    sm_ceil: &mut SmoothedParam,
     dry: f32, sr: f32,
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
+    lookahead_ms_target: f32, ceiling_target: f32,
 ) -> (f32, f32) {
     let threshold = sm_thr.step(threshold_target, sr);
     let ratio = sm_rat.step(ratio_target, sr);
@@ -499,8 +672,10 @@ fn process_sample_mono(
     let knee = sm_knee.step(knee_target, sr);
     let makeup = sm_makeup.step(makeup_target, sr);
     let mix = sm_mix.step(mix_target, sr);
+    let lookahead_ms = sm_look.step(lookahead_ms_target, sr).max(0.0);
+    let ceiling_db = sm_ceil.step(ceiling_target, sr);
+    let look_samples = (sr * 0.001 * lookahead_ms).min(sr * 0.001 * MAX_LOOKAHEAD_MS);
 
-    // SC HPF runs on signed audio before rectification (mirrors stereo path).
     let mut key = dry;
     if let Some(hp_hz) = sc_hpf_freq {
         let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
@@ -513,11 +688,13 @@ fn process_sample_mono(
     let total_db = gr_db + makeup;
     let gain_lin = 10f32.powf(total_db / 20.0);
 
-    // Apply lookahead delay so the gain stage reacts a hair before the
-    // peak arrives — mono path matches the stereo path.
     look.write(dry);
-    let delayed = look.read_lagrange3(lookahead_samples);
-    let wet = delayed * gain_lin;
+    let delayed = look.read_lagrange3(look_samples);
+    let mut wet = delayed * gain_lin;
+    if ceiling_db < -0.05 {
+        let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
+        wet = ceil_lin * (wet / ceil_lin).tanh();
+    }
     (delayed * (1.0 - mix) + wet * mix, gr_db)
 }
 

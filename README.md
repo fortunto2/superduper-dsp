@@ -44,8 +44,11 @@ All thirteen share:
   layout, ASCII section headers, and factory presets.
 - **`[bNNNNN]` build-number suffix** in the display name so you always
   know which build is loaded.
-- **CLAP** format — runs in REAPER, Bitwig, Studio One, FL Studio,
-  MultitrackStudio, etc.
+- **Three formats** — CLAP (REAPER, Bitwig, Studio One, FL Studio,
+  Logic 11+, MultitrackStudio), VST3 (DaVinci Resolve, Cubase,
+  Ableton, FL, Studio One), Audio Unit v2 (Logic Pro, GarageBand,
+  MainStage, any AU host). VST3 + AU are clap-wrapper bridges; they
+  dynamically load the matching `.clap` at runtime.
 - **Automation write** — every GUI knob move shows up in the host's FX
   automation lane, including pad drags, harmonic-bar editing and preset
   picks.
@@ -85,18 +88,63 @@ Delay) is the classic pop-vocal trick:
 
 ## Building from source
 
-Apple Silicon (or Windows / Linux native):
+Prerequisites:
+- Rust stable (`rustup install stable`)
+- Apple Silicon Mac, Windows x64, or Linux for CLAP
+- CMake ≥ 3.21 (for VST3 / AU wrappers, macOS only)
+
+### CLAP only — fast path
 
 ```bash
 # All 13 plugins in one go:
 ./scripts/build_all_bundles.sh
 # Or one plugin at a time:
 ./scripts/build_kubyz_bundle.sh
+./scripts/build_reverb_bundle.sh
+# ...
 ```
 
-Per-plugin scripts compile the dylib, package the .clap bundle and
-install into `~/Library/Audio/Plug-Ins/CLAP/`. The combined
-`scripts/build_release.sh <version>` produces signed zips ready to ship.
+Per-plugin scripts compile the Rust cdylib, package the `.clap`
+bundle (macOS: directory with `Contents/MacOS/` + `Info.plist`,
+Windows: single `.clap` file), ad-hoc sign on macOS, and install into
+`~/Library/Audio/Plug-Ins/CLAP/`.
+
+The combined `scripts/build_release.sh <version>` produces signed
+zips ready to ship.
+
+### CLAP + VST3 + AU — full path (macOS arm64)
+
+```bash
+# 1. CLAP bundles first (the wrappers need them on disk at runtime):
+./scripts/build_all_bundles.sh
+
+# 2. Pull the clap-wrapper submodule + build VST3 + AU wrappers:
+git submodule update --init --recursive
+./scripts/build_wrappers.sh --install
+```
+
+The wrapper script applies local clap-wrapper patches needed for the
+macOS 26 SDK, runs CMake against the submodule, builds 13 × `.vst3` +
+13 × `.component`, and with `--install` drops them into
+`~/Library/Audio/Plug-Ins/VST3/` and `~/Library/Audio/Plug-Ins/Components/`.
+
+VST3 and AU wrappers are pure CLAP loaders — they dynamically `dlopen`
+the matching `.clap` from the system CLAP folder at runtime. Don't
+delete the `.clap` after building the wrapper.
+
+### Running tests
+
+```bash
+cargo test --release --workspace                            # everything
+cargo test --release -p superduper-wave --test mod_matrix_audit -- --nocapture   # e2e WAV audit
+cargo test --release -p superduper-reverb --test spectrum -- --nocapture         # ASCII spectrum
+cargo test --release -p superduper-compressor --test quality_audit -- --nocapture # THD + aliasing
+```
+
+Several plugins ship realistic end-to-end tests that boot the plugin
+through `clack-host`, send MIDI / CC / param events, and write a WAV
+to `/tmp/` for human listening — `afplay /tmp/wave_modmatrix_active.wav`
+on macOS, for example.
 
 ## Standalone runner
 
@@ -127,16 +175,32 @@ cargo run --release -p sdsp-runner -- \
 ## Workspace layout
 
 ```
-sdk/                — CLAP plumbing helpers (ParamDef, apply_param_events, …)
-sdk-build/          — build.rs helper that injects SDSP_BUILD_NUM / DATE
-sdk-macros/         — proc-macro params!{} (M2)
-synth-core/         — shared DSP blocks (Biquad, DelayLine, Ducker,
-                      EnvelopeDetector, …) + analysis (FFT, ASCII
-                      spectrogram, sine sweep frequency response) +
-                      GUI helpers (style, section, param_row, presets)
-effects/superduper-*/   — eight plugins
-tools/sdsp-runner/  — standalone CLAP host
-.github/workflows/  — release CI (macos-14 + windows-latest)
+sdk/                  — CLAP plumbing helpers (ParamDef, apply_param_events,
+                        emit_dirty_param_events, emit_gesture_events,
+                        save/load_simple_state, output_slice, …)
+sdk-build/            — build.rs helper that injects SDSP_BUILD_NUM / DATE
+sdk-macros/           — proc-macro params!{} (M2)
+synth-core/           — shared DSP blocks (Biquad, DelayLine, Ducker,
+                        EnvelopeDetector, SmoothedParam, PadVoice, AdsrEnvelope,
+                        Oversampler2x, SlewLimiter2Pole, …) + analysis
+                        (FFT, ASCII spectrogram, sine sweep, THD/IMD/aliasing
+                        measurement) + GUI helpers (theme, section, param_row,
+                        learn_param_row_g, MidiLearnState, LiveScope,
+                        AbSnapshot, top_bar, ab_init_bar, presets)
+effects/superduper-*/ — 13 plugins (9 effects + 4 instruments)
+cmake/                — plugin_list.cmake (VST3/AU build manifest)
+CMakeLists.txt        — drives the clap-wrapper VST3/AU build
+scripts/
+  build_*_bundle.sh   — per-plugin .clap packagers
+  build_all_bundles.sh — all 13 in one shot
+  build_release.sh    — versioned signed release zips
+  build_wrappers.sh   — VST3 + AU wrappers via clap-wrapper (macOS)
+tools/sdsp-runner/    — standalone CLAP host (effects only, file → cpal)
+tools/clap-wrapper/   — git submodule (free-audio/clap-wrapper)
+tools/clap-wrapper-patches/ — local patches for macOS 26 SDK compat
+tools/kubyz_analyser/ — Python FFT analyser for fitting new Kubyz presets
+.github/workflows/    — release CI (macos-14 builds CLAP + VST3 + AU,
+                        windows-latest builds CLAP only)
 ```
 
 ## License

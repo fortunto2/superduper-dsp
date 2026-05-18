@@ -1,5 +1,21 @@
 # SuperDuper DSP — ТЗ v0.1
 
+> ⚠️ **ARCHIVED — superseded design.**
+>
+> This document describes the original "shell plugin with hot-reloaded
+> dylibs + daemon + MCP server" architecture (commits prior to mid-2026).
+> That design was abandoned because REAPER caches param layouts per
+> `(plugin_id, FX-slot)` in the project file, which made dynamic
+> parameter tables unworkable.
+>
+> The shipping architecture is **one standalone CLAP plugin per effect**
+> (one fixed param table, one stable CLAP id). 13 of those live under
+> `effects/superduper-*/`. See [`README.md`](README.md) for the current
+> picture and [`CLAUDE.md`](CLAUDE.md) for the per-codebase walkthrough.
+>
+> Kept here for historical context only — DO NOT use as guidance for
+> current work.
+
 ## Что это
 
 Headless CLAP-плагин для любого DAW (REAPER, Bitwig, FL Studio) с внешним MCP-сервером. Управление через Claude Code в терминале: Claude пишет Rust DSP-код, плагин компилирует его в native .dylib и горячо подгружает в audio thread.

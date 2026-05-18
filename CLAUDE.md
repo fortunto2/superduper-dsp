@@ -67,6 +67,15 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 - **Live spectrum strip** — log-Hz × dB magnitude plot under the A/B
   bar. Backed by a lock-free `core_gui::LiveScope` ring buffer that
   audio thread pushes into and the GUI samples ~60 Hz for FFT.
+- **Param gestures** (Wave / Kubyz so far) — GUI drag emits
+  `ParamGestureBeginEvent` on `drag_started` and `ParamGestureEndEvent`
+  on `drag_stopped` so DAWs in *touch* or *latch* automation modes
+  see one continuous edit rather than disconnected automation points.
+  Two parallel `[AtomicBool; PARAMS.len()]` arrays (`gesture_begin`,
+  `gesture_end`) wire GUI → audio thread; audio thread calls
+  `sdk::clap_helpers::emit_gesture_events` once per `process()` block,
+  ordered after `emit_dirty_param_events` so the host receives
+  `Begin → Value → End` for each drag.
 - **User file presets** (Kubyz — pattern available for porting) —
   Save/Load buttons → `~/.superduper-dsp/<plugin>/presets/*.json`,
   plain-text and shareable.
@@ -608,6 +617,16 @@ and the CFBundleIdentifier. The script also installs to
     `snapshot`s the last N for the spectrum strip. Inconsistency
     under contention shows as a slight wiggle — fine for a meter,
     much cheaper than a Mutex.
+
+21g. **Param value change ≠ param gesture.** `ParamValueEvent`
+    captures *what* the value is; `ParamGestureBegin/End` captures
+    *that the user is touching the knob*. They're independent — a
+    knob click with no value change still wants Begin/End so the
+    host's touch-automation latch closes correctly. Don't derive
+    gesture state from the dirty bit (which only fires on actual
+    value change); read `slider_resp.drag_started/drag_stopped`
+    from egui directly. `core_gui::learn_param_row_g` /
+    `dirty_param_row_g` handle this for you.
 
 22. **per-plugin quality_audit tests.** Compressor/Saturator/EQ ship a
     `tests/quality_audit.rs` that runs sine-sweep + THD + aliasing

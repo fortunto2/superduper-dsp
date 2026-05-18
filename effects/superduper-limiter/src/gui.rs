@@ -8,7 +8,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_CEILING, P_INPUT, P_LOOKAHEAD, P_RELEASE, P_TRUE_PEAK, PARAMS, SharedParams};
+use crate::{P_CEILING, P_DITHER, P_INPUT, P_LOOKAHEAD, P_RELEASE, P_TRUE_PEAK, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 400;
@@ -87,6 +87,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         core_gui::draw_spectrum_strip(ui, &state.shared.scope, sdsp_scope_rect, 48_000.0);
         }
         draw_gr_meter(ui, &state.shared);
+        ui.add_space(2.0);
+        draw_headroom_meter(ui, &state.shared);
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -106,6 +108,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         .color(core_gui::GREEN).monospace()).clicked() {
                         state.shared.params[P_TRUE_PEAK]
                             .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
+                        state.shared.dirty_params[P_TRUE_PEAK]
+                            .store(true, Ordering::Relaxed);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let on = state.shared.params[P_DITHER].load(Ordering::Relaxed) >= 0.5;
+                    let label = if on { "[X] TPDF dither (±0.5 LSB @ 16b)" } else { "[ ] TPDF dither (±0.5 LSB @ 16b)" };
+                    if ui.selectable_label(on, egui::RichText::new(label)
+                        .color(core_gui::GREEN).monospace()).clicked() {
+                        state.shared.params[P_DITHER]
+                            .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
+                        state.shared.dirty_params[P_DITHER]
+                            .store(true, Ordering::Relaxed);
                     }
                 });
             });
@@ -144,6 +159,37 @@ fn draw_gr_meter(ui: &mut egui::Ui, shared: &crate::SharedParamsInner) {
         egui::Align2::RIGHT_CENTER,
         format!("{:.1} dB GR", display),
         egui::FontId::monospace(11.0),
+        core_gui::GREEN_BRIGHT,
+    );
+}
+
+fn draw_headroom_meter(ui: &mut egui::Ui, shared: &crate::SharedParamsInner) {
+    let headroom = shared.headroom_db.load(Ordering::Relaxed);
+    // 0 dB headroom (limiter engaged hard) → red zone; 6 dB+ → green
+    // zone. Use 6 dB as the "fully open" mark.
+    let display = headroom.clamp(0.0, 6.0);
+    let frac = 1.0 - (display / 6.0);  // brighter as it nears the ceiling
+    let desired = egui::vec2(ui.available_width().min(420.0), 14.0);
+    let (rect, _resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, core_gui::PANEL_BG);
+    painter.rect_stroke(rect, 0.0,
+        egui::Stroke::new(1.0, core_gui::GREEN_FAINT), egui::StrokeKind::Inside);
+    let fill_w = rect.width() * frac;
+    if fill_w > 1.0 {
+        let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
+        // Hot pink-ish phosphor when headroom approaches zero.
+        let warmth = frac;
+        let r = (60.0 + warmth * 195.0) as u8;
+        let g = (180.0 - warmth * 60.0) as u8;
+        let b = (90.0 - warmth * 60.0) as u8;
+        painter.rect_filled(fill_rect, 0.0, egui::Color32::from_rgb(r, g, b));
+    }
+    painter.text(
+        egui::pos2(rect.right() - 6.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        format!("{:.2} dB headroom", headroom),
+        egui::FontId::monospace(10.0),
         core_gui::GREEN_BRIGHT,
     );
 }

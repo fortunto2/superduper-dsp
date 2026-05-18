@@ -90,6 +90,11 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 3, name: b"Lookahead", min: 0.5,   max: 10.0,  default: 3.0,  unit: "ms" },
     // 0 = off, 1 = 4× true-peak detector
     ParamDef { id: 4, name: b"True Peak", min: 0.0,   max: 1.0,   default: 1.0,  unit: ""   },
+    // 0 = off, 1 = TPDF dither at the ceiling (±0.5 LSB @ 16-bit
+    // equivalent). Apply *after* the ceiling clip so the dither sits
+    // at the actual output target and the host's bit-depth reduction
+    // gets a properly randomised quantisation error.
+    ParamDef { id: 5, name: b"Dither",    min: 0.0,   max: 1.0,   default: 0.0,  unit: ""   },
 ];
 
 pub const P_INPUT: usize = 0;
@@ -97,6 +102,7 @@ pub const P_CEILING: usize = 1;
 pub const P_RELEASE: usize = 2;
 pub const P_LOOKAHEAD: usize = 3;
 pub const P_TRUE_PEAK: usize = 4;
+pub const P_DITHER: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Shared params + GR atom for the meter
@@ -113,6 +119,10 @@ pub struct SharedParamsInner {
     pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gain_reduction_db: AtomicF32,
+    /// Distance in dB between the most recent output peak and the
+    /// ceiling. Positive = headroom remaining; near zero = brickwall
+    /// is engaged. Updated each block, read by the GUI for a meter.
+    pub headroom_db: AtomicF32,
     /// Reported to the host via CLAP latency extension for PDC. Set in
     /// `activate()` based on the maximum lookahead the user could dial in
     /// (10 ms) so changing the knob mid-session doesn't break PDC.
@@ -133,6 +143,7 @@ impl PluginShared {
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 gain_reduction_db: AtomicF32::new(0.0),
+                headroom_db: AtomicF32::new(0.3),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
             }),
         }
@@ -225,6 +236,12 @@ pub struct PluginAudioProcessor<'a> {
     smooth_release: SmoothedParam,
     smooth_lookahead: SmoothedParam,
     meter_smooth: f32,
+    /// Two xorshift32 seeds for TPDF dither. Two independent uniform
+    /// streams summed give a triangular probability density — the
+    /// statistical floor that decorrelates quantisation noise from
+    /// signal at the output bit-depth.
+    dither_rng_a: u32,
+    dither_rng_b: u32,
     sample_rate: f32,
 }
 
@@ -261,6 +278,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             look_l: DelayLine::new(cap),
             look_r: DelayLine::new(cap),
             gain_env: 1.0,
+            dither_rng_a: 0x1234_5678,
+            dither_rng_b: 0xABCD_EF01,
             upsampler_l: Upsampler4x::default(),
             upsampler_r: Upsampler4x::default(),
             smooth_input: SmoothedParam::new(load(P_INPUT)),
@@ -293,6 +312,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let release_target = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
         let lookahead_target = self.shared.params[P_LOOKAHEAD].load(Ordering::Relaxed);
         let true_peak_on = self.shared.params[P_TRUE_PEAK].load(Ordering::Relaxed) > 0.5;
+        let dither_on = self.shared.params[P_DITHER].load(Ordering::Relaxed) >= 0.5;
+        // TPDF dither = sum of two uniform RVs; LSB at 16-bit is
+        // 1/32768 of full scale. ±0.5 LSB → amplitude 1/65536.
+        let dither_amp = if dither_on { 1.0 / 65536.0 } else { 0.0 };
 
         let ceiling_lin = 10f32.powf(ceiling_db / 20.0);
         let mut max_gr_db: f32 = 0.0;
@@ -377,8 +400,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 self.look_r.write(xr);
                 let delayed_l = self.look_l.read_lagrange3(look_samples.max(1.0));
                 let delayed_r = self.look_r.read_lagrange3(look_samples.max(1.0));
-                let out_l = (delayed_l * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
-                let out_r = (delayed_r * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
+                let mut out_l = (delayed_l * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
+                let mut out_r = (delayed_r * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
+                if dither_amp > 0.0 {
+                    // xorshift32, two independent → TPDF.
+                    let mut a = self.dither_rng_a; a ^= a << 13; a ^= a >> 17; a ^= a << 5; self.dither_rng_a = a;
+                    let mut b = self.dither_rng_b; b ^= b << 13; b ^= b >> 17; b ^= b << 5; self.dither_rng_b = b;
+                    let u_a = (a as f32) / (u32::MAX as f32) - 0.5;
+                    let u_b = (b as f32) / (u32::MAX as f32) - 0.5;
+                    let tpdf = u_a + u_b;
+                    out_l += tpdf * dither_amp;
+                    out_r += tpdf * dither_amp;
+                }
                 l_write[i] = out_l;
                 r_write[i] = out_r;
                 self.shared.scope.push((out_l + out_r) * 0.5);
@@ -398,6 +431,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         self.shared
             .gain_reduction_db
             .store(self.meter_smooth, Ordering::Relaxed);
+        // Headroom = ceiling - (ceiling × gain_env). With the limiter
+        // engaged the ratio collapses to ceiling × 1 = ceiling and
+        // headroom → 0. When idle gain_env = 1 → effectively no
+        // limiting → headroom = ceiling - input_peak. We approximate
+        // it from the smoothed GR meter: headroom ≈ -(GR_db) since
+        // the ceiling clip caps output magnitude.
+        let headroom = (-self.meter_smooth).max(0.0);
+        self.shared.headroom_db.store(headroom, Ordering::Relaxed);
 
         Ok(ProcessStatus::Continue)
     }
@@ -432,6 +473,11 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        use core::fmt::Write;
+        let pid = id.get() as usize;
+        if pid == P_TRUE_PEAK || pid == P_DITHER {
+            return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {

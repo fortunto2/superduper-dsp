@@ -107,22 +107,22 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Filter", |ui| {
-                core_gui::learn_param_row(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], &state.shared.midi_learn, P_CUTOFF);
-                core_gui::learn_param_row(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE], &state.shared.midi_learn, P_RESONANCE);
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], &state.shared.midi_learn, P_CUTOFF, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE], &state.shared.midi_learn, P_RESONANCE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Motion", |ui| {
-                core_gui::learn_param_row(ui, &state.shared.params[P_MODULATION], &PARAMS[P_MODULATION], &state.shared.dirty_params[P_MODULATION], &state.shared.midi_learn, P_MODULATION);
-                core_gui::learn_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], &state.shared.midi_learn, P_DRIVE);
-                core_gui::learn_param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], &state.shared.midi_learn, P_WIDTH);
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_MODULATION], &PARAMS[P_MODULATION], &state.shared.dirty_params[P_MODULATION], &state.shared.midi_learn, P_MODULATION, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], &state.shared.midi_learn, P_DRIVE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], &state.shared.midi_learn, P_WIDTH, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Envelope", |ui| {
-                core_gui::learn_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], &state.shared.midi_learn, P_ATTACK);
-                core_gui::learn_param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], &state.shared.midi_learn, P_DECAY);
-                core_gui::learn_param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], &state.shared.midi_learn, P_SUSTAIN);
-                core_gui::learn_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], &state.shared.midi_learn, P_RELEASE);
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], &state.shared.midi_learn, P_ATTACK, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], &state.shared.midi_learn, P_DECAY, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], &state.shared.midi_learn, P_SUSTAIN, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], &state.shared.midi_learn, P_RELEASE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::learn_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], &state.shared.midi_learn, P_OUTPUT);
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], &state.shared.midi_learn, P_OUTPUT, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
         });
     });

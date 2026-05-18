@@ -200,9 +200,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Compression", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_THRESHOLD], &PARAMS[P_THRESHOLD], &state.shared.dirty_params[P_THRESHOLD]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_RATIO], &PARAMS[P_RATIO], &state.shared.dirty_params[P_RATIO]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_KNEE], &PARAMS[P_KNEE], &state.shared.dirty_params[P_KNEE]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_THRESHOLD], &PARAMS[P_THRESHOLD], &state.shared.dirty_params[P_THRESHOLD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_THRESHOLD);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_RATIO], &PARAMS[P_RATIO], &state.shared.dirty_params[P_RATIO], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RATIO);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KNEE], &PARAMS[P_KNEE], &state.shared.dirty_params[P_KNEE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KNEE);
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [90.0, 18.0],
@@ -229,10 +229,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
 
             core_gui::section(ui, "Envelope", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_HOLD], &PARAMS[P_HOLD], &state.shared.dirty_params[P_HOLD]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_RANGE], &PARAMS[P_RANGE], &state.shared.dirty_params[P_RANGE]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ATTACK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_HOLD], &PARAMS[P_HOLD], &state.shared.dirty_params[P_HOLD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HOLD);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RELEASE);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_RANGE], &PARAMS[P_RANGE], &state.shared.dirty_params[P_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RANGE);
                 ui.horizontal(|ui| {
                     let on = state.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
                     let label = if on { "[X] auto release" } else { "[ ] auto release" };
@@ -273,17 +273,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                             }
                         });
                 });
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LINK], &PARAMS[P_LINK], &state.shared.dirty_params[P_LINK]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LINK], &PARAMS[P_LINK], &state.shared.dirty_params[P_LINK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LINK);
             });
 
             core_gui::section(ui, "Lookahead", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOKAHEAD);
             });
 
             core_gui::section(ui, "Output", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_MAKEUP], &PARAMS[P_MAKEUP], &state.shared.dirty_params[P_MAKEUP]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING], &state.shared.dirty_params[P_CEILING]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MAKEUP], &PARAMS[P_MAKEUP], &state.shared.dirty_params[P_MAKEUP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MAKEUP);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING], &state.shared.dirty_params[P_CEILING], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CEILING);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [90.0, 18.0],

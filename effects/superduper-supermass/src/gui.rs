@@ -101,17 +101,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         core_gui::draw_spectrum_strip(ui, &state.shared.scope, sdsp_scope_rect, 48_000.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Tone", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_TILT], &PARAMS[P_TILT], &state.shared.dirty_params[P_TILT]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRIVE);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_TILT], &PARAMS[P_TILT], &state.shared.dirty_params[P_TILT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TILT);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
             });
             core_gui::section(ui, "Ducking", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_AMOUNT], &PARAMS[P_DUCK_AMOUNT], &state.shared.dirty_params[P_DUCK_AMOUNT]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_ATTACK], &PARAMS[P_DUCK_ATTACK], &state.shared.dirty_params[P_DUCK_ATTACK]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_RELEASE], &PARAMS[P_DUCK_RELEASE], &state.shared.dirty_params[P_DUCK_RELEASE]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_AMOUNT], &PARAMS[P_DUCK_AMOUNT], &state.shared.dirty_params[P_DUCK_AMOUNT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_AMOUNT);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_ATTACK], &PARAMS[P_DUCK_ATTACK], &state.shared.dirty_params[P_DUCK_ATTACK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_ATTACK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_RELEASE], &PARAMS[P_DUCK_RELEASE], &state.shared.dirty_params[P_DUCK_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_RELEASE);
             });
         });
     });

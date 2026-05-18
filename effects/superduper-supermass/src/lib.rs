@@ -128,6 +128,8 @@ pub struct SharedParamsInner {
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
 }
 
 pub struct PluginShared {
@@ -141,6 +143,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
@@ -243,6 +247,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         apply_param_events(self.shared, events.input);
         superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
             &self.shared.params, &self.shared.dirty_params, events.output);
+        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
+            &self.shared.gesture_begin,
+            &self.shared.gesture_end,
+            events.output,
+        );
 
         let mix = self.shared.params[P_MIX].load(Ordering::Relaxed);
         let width = self.shared.params[P_WIDTH].load(Ordering::Relaxed);

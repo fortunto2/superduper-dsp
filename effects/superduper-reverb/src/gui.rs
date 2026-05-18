@@ -106,20 +106,20 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         core_gui::draw_spectrum_strip(ui, &state.shared.scope, sdsp_scope_rect, 48_000.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Space", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_SIZE], &PARAMS[P_SIZE], &state.shared.dirty_params[P_SIZE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DAMP], &PARAMS[P_DAMP], &state.shared.dirty_params[P_DAMP]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_PREDELAY], &PARAMS[P_PREDELAY], &state.shared.dirty_params[P_PREDELAY]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_MOD], &PARAMS[P_MOD], &state.shared.dirty_params[P_MOD]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_SIZE], &PARAMS[P_SIZE], &state.shared.dirty_params[P_SIZE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_SIZE);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DECAY);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DAMP], &PARAMS[P_DAMP], &state.shared.dirty_params[P_DAMP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DAMP);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PREDELAY], &PARAMS[P_PREDELAY], &state.shared.dirty_params[P_PREDELAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PREDELAY);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MOD], &PARAMS[P_MOD], &state.shared.dirty_params[P_MOD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MOD);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
             });
             core_gui::section(ui, "Ducking", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_AMOUNT], &PARAMS[P_DUCK_AMOUNT], &state.shared.dirty_params[P_DUCK_AMOUNT]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_ATTACK], &PARAMS[P_DUCK_ATTACK], &state.shared.dirty_params[P_DUCK_ATTACK]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DUCK_RELEASE], &PARAMS[P_DUCK_RELEASE], &state.shared.dirty_params[P_DUCK_RELEASE]);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_AMOUNT], &PARAMS[P_DUCK_AMOUNT], &state.shared.dirty_params[P_DUCK_AMOUNT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_AMOUNT);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_ATTACK], &PARAMS[P_DUCK_ATTACK], &state.shared.dirty_params[P_DUCK_ATTACK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_ATTACK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_RELEASE], &PARAMS[P_DUCK_RELEASE], &state.shared.dirty_params[P_DUCK_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_RELEASE);
             });
         });
     });

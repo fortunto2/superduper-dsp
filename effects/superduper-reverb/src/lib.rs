@@ -130,6 +130,8 @@ pub struct SharedParamsInner {
     /// audio thread emits a `ParamValueEvent` to the host on the next
     /// process() so REAPER can record the move into the automation lane.
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
 }
 
 pub struct PluginShared {
@@ -143,6 +145,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
@@ -438,6 +442,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let _ = events.output.try_push(&ev);
             }
         }
+        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
+            &self.shared.gesture_begin,
+            &self.shared.gesture_end,
+            events.output,
+        );
 
         // Periodic param dump so we can see — without REAPER — what we're
         // actually playing through. Every ~22 sec at 48k/512.

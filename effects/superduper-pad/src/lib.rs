@@ -131,6 +131,8 @@ pub struct SharedParamsInner {
     pub scope: superduper_synth_core::gui::LiveScope,
     pub midi_learn: superduper_synth_core::gui::MidiLearnState,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
     /// Live polyphony count for the GUI / metering. Updated each block from
     /// the audio thread (Relaxed store).
     pub active_voices: std::sync::atomic::AtomicU32,
@@ -150,6 +152,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
@@ -627,6 +631,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // record the move into the automation lane.
         superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
             &self.shared.params, &self.shared.dirty_params, events.output);
+        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
+            &self.shared.gesture_begin,
+            &self.shared.gesture_end,
+            events.output,
+        );
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         // Walk the output port. Pad is a generator — we ignore any input

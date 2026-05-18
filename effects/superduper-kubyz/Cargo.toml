@@ -31,3 +31,4 @@ superduper-dsp-sdk-build = { path = "../../sdk-build" }
 [dev-dependencies]
 clack-host = { version = "0.1", features = ["clack-plugin"] }
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "note-ports", "log", "clack-host"] }
+superduper-synth-core = { path = "../../synth-core" }

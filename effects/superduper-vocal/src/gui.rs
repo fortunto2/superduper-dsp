@@ -7,7 +7,7 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::PRESETS;
 use crate::{
     PARAMS, P_CLK_AMT, P_CLK_FLOOR, P_CLK_SENS, P_ESS_AMT, P_ESS_FREQ, P_ESS_RANGE, P_ESS_THR,
-    P_MIX, P_OUTPUT, SharedParams,
+    P_EXT_KEY, P_LO_AMT, P_LO_FREQ, P_LO_THR, P_MIX, P_OUTPUT, SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 560;
@@ -121,6 +121,14 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_FREQ], &PARAMS[P_ESS_FREQ], &state.shared.dirty_params[P_ESS_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_FREQ);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_AMT], &PARAMS[P_ESS_AMT], &state.shared.dirty_params[P_ESS_AMT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_AMT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_RANGE], &PARAMS[P_ESS_RANGE], &state.shared.dirty_params[P_ESS_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_RANGE);
+            });
+            core_gui::section(ui, "Low Band (plosives)", |ui| {
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LO_THR], &PARAMS[P_LO_THR], &state.shared.dirty_params[P_LO_THR], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LO_THR);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LO_FREQ], &PARAMS[P_LO_FREQ], &state.shared.dirty_params[P_LO_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LO_FREQ);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LO_AMT], &PARAMS[P_LO_AMT], &state.shared.dirty_params[P_LO_AMT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LO_AMT);
+            });
+            core_gui::section(ui, "Sidechain", |ui| {
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_EXT_KEY], &PARAMS[P_EXT_KEY], &state.shared.dirty_params[P_EXT_KEY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_EXT_KEY);
             });
             core_gui::section(ui, "De-Clicker", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_CLK_SENS], &PARAMS[P_CLK_SENS], &state.shared.dirty_params[P_CLK_SENS], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CLK_SENS);

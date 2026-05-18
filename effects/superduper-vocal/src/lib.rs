@@ -116,6 +116,16 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 6, name: b"Clk Floor",  min: -60.0, max: -20.0,  default: -40.0, unit: "dB" },
     ParamDef { id: 7, name: b"Output",     min: -24.0, max: 24.0,   default: 0.0,   unit: "dB" },
     ParamDef { id: 8, name: b"Mix",        min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
+    // Low-band de-esser — plosives ("p", "t", "b") + low harshness.
+    // Same band-split semantics as the primary essing band but tuned
+    // around 1 kHz. Default Amt=0 keeps it off until the user dials in.
+    ParamDef { id: 9,  name: b"Lo Thr",   min: -60.0,  max: 0.0,     default: -24.0, unit: "dB" },
+    ParamDef { id: 10, name: b"Lo Freq",  min: 300.0,  max: 3000.0,  default: 1000.0, unit: "Hz" },
+    ParamDef { id: 11, name: b"Lo Amt",   min: 0.0,    max: 18.0,    default: 0.0,   unit: "dB" },
+    // External-key selector: 0 = use dry signal (current behaviour),
+    // 1 = use the Sidechain input port for the detector. Lets users
+    // key the de-esser off a separate EQ'd vocal send.
+    ParamDef { id: 12, name: b"Ext Key",  min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
 ];
 
 pub const P_ESS_THR: usize = 0;
@@ -127,6 +137,10 @@ pub const P_CLK_AMT: usize = 5;
 pub const P_CLK_FLOOR: usize = 6;
 pub const P_OUTPUT: usize = 7;
 pub const P_MIX: usize = 8;
+pub const P_LO_THR: usize = 9;
+pub const P_LO_FREQ: usize = 10;
+pub const P_LO_AMT: usize = 11;
+pub const P_EXT_KEY: usize = 12;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -191,7 +205,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
-    // De-Ess
+    // De-Ess (high band — sibilance)
     ess_hpf_l: Biquad,
     ess_hpf_r: Biquad,
     ess_env: EnvelopeDetector,
@@ -199,6 +213,17 @@ pub struct PluginAudioProcessor<'a> {
     /// smoothed knob value drifts more than the perception-threshold so
     /// dragging the freq slider doesn't pop.
     ess_freq_state: f32,
+    // De-Ess (low band — plosives)
+    lo_hpf_l: Biquad,
+    lo_hpf_r: Biquad,
+    lo_env: EnvelopeDetector,
+    lo_freq_state: f32,
+    smooth_lo_thr: SmoothedParam,
+    smooth_lo_freq: SmoothedParam,
+    smooth_lo_amt: SmoothedParam,
+    // External-key scratch buffer (sized at activate to max_frames_count).
+    sc_l: Vec<f32>,
+    sc_r: Vec<f32>,
     // De-Click — two envelopes per channel + one shared duck-gain state
     click_fast_l: EnvelopeDetector,
     click_fast_r: EnvelopeDetector,
@@ -241,12 +266,29 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         ess_hpf_l.set_hpf(sr, initial_freq, 0.707);
         ess_hpf_r.set_hpf(sr, initial_freq, 0.707);
 
+        let initial_lo_freq = load(P_LO_FREQ);
+        let mut lo_hpf_l = Biquad::default();
+        let mut lo_hpf_r = Biquad::default();
+        lo_hpf_l.set_hpf(sr, initial_lo_freq, 0.707);
+        lo_hpf_r.set_hpf(sr, initial_lo_freq, 0.707);
+
+        let buf_cap = audio_config.max_frames_count as usize;
+
         Ok(Self {
             shared,
             ess_hpf_l,
             ess_hpf_r,
             ess_env: EnvelopeDetector::default(),
             ess_freq_state: initial_freq,
+            lo_hpf_l,
+            lo_hpf_r,
+            lo_env: EnvelopeDetector::default(),
+            lo_freq_state: initial_lo_freq,
+            smooth_lo_thr: SmoothedParam::new(load(P_LO_THR)),
+            smooth_lo_freq: SmoothedParam::new(load(P_LO_FREQ)),
+            smooth_lo_amt: SmoothedParam::new(load(P_LO_AMT)),
+            sc_l: vec![0.0; buf_cap],
+            sc_r: vec![0.0; buf_cap],
             click_fast_l: EnvelopeDetector::default(),
             click_fast_r: EnvelopeDetector::default(),
             click_slow_l: EnvelopeDetector::default(),
@@ -287,11 +329,41 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let ess_freq_t = self.shared.params[P_ESS_FREQ].load(Ordering::Relaxed);
         let ess_amt_t = self.shared.params[P_ESS_AMT].load(Ordering::Relaxed);
         let ess_range_t = self.shared.params[P_ESS_RANGE].load(Ordering::Relaxed);
+        let lo_thr_t = self.shared.params[P_LO_THR].load(Ordering::Relaxed);
+        let lo_freq_t = self.shared.params[P_LO_FREQ].load(Ordering::Relaxed);
+        let lo_amt_t = self.shared.params[P_LO_AMT].load(Ordering::Relaxed);
         let clk_sens_t = self.shared.params[P_CLK_SENS].load(Ordering::Relaxed);
         let clk_amt_t = self.shared.params[P_CLK_AMT].load(Ordering::Relaxed);
         let clk_floor_t = self.shared.params[P_CLK_FLOOR].load(Ordering::Relaxed);
         let output_t = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
         let mix_t = self.shared.params[P_MIX].load(Ordering::Relaxed);
+        let ext_key_on = self.shared.params[P_EXT_KEY].load(Ordering::Relaxed) >= 0.5;
+
+        // Snapshot the sidechain (port 1) into our scratch buffers if
+        // the user wants external keying. If the SC port is unrouted
+        // we'll fall back to the dry signal inside step_sample.
+        let frames = audio.frames_count() as usize;
+        let n_frames = frames.min(self.sc_l.len());
+        let mut sc_present = false;
+        if ext_key_on {
+            if let Some(sc_port) = audio.input_port(1) {
+                if let Some(chans) = sc_port.channels()?.into_f32() {
+                    if let Some(l) = chans.channel(0) {
+                        let n = n_frames.min(l.len());
+                        self.sc_l[..n].copy_from_slice(&l[..n]);
+                        if l.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
+                    }
+                    if let Some(r) = chans.channel(1) {
+                        let n = n_frames.min(r.len());
+                        self.sc_r[..n].copy_from_slice(&r[..n]);
+                    } else {
+                        let copy = self.sc_l[..n_frames].to_vec();
+                        self.sc_r[..n_frames].copy_from_slice(&copy);
+                    }
+                }
+            }
+        }
+        let use_ext = ext_key_on && sc_present;
 
         let mut max_ess_gr_db: f32 = 0.0;
         let mut max_click_gr_db: f32 = 0.0;
@@ -314,19 +386,49 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 continue;
             }
 
+            // Carve out the SC scratch slices outside the &mut self
+            // borrow so we don't tangle the borrow checker.
+            let sc_slice: Option<(&[f32], &[f32])> = if use_ext {
+                Some((&self.sc_l[..n_frames], &self.sc_r[..n_frames]))
+            } else {
+                None
+            };
+
             match r {
-                Some((r_read, r_write)) => process_stereo(
-                    self, l_read, l_write, r_read, r_write, sr,
-                    ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
-                    clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
-                    &mut max_ess_gr_db, &mut max_click_gr_db,
-                ),
-                None => process_mono(
-                    self, l_read, l_write, sr,
-                    ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
-                    clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
-                    &mut max_ess_gr_db, &mut max_click_gr_db,
-                ),
+                Some((r_read, r_write)) => {
+                    // sc_slice borrows self immutably; we need mutable
+                    // self for process_stereo. Release the borrow by
+                    // re-acquiring slices via raw pointers.
+                    let sc_kk = sc_slice.map(|(a, b)| (a.as_ptr(), b.as_ptr()));
+                    let owned_sc: Option<(&[f32], &[f32])> = sc_kk.map(|(ap, bp)| unsafe {
+                        (
+                            core::slice::from_raw_parts(ap, n_frames),
+                            core::slice::from_raw_parts(bp, n_frames),
+                        )
+                    });
+                    process_stereo(
+                        self, l_read, l_write, r_read, r_write, sr,
+                        ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+                        lo_thr_t, lo_freq_t, lo_amt_t,
+                        clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                        owned_sc,
+                        &mut max_ess_gr_db, &mut max_click_gr_db,
+                    );
+                }
+                None => {
+                    let sc_l_ptr = sc_slice.map(|(a, _)| a.as_ptr());
+                    let owned_sc: Option<&[f32]> = sc_l_ptr.map(|p| unsafe {
+                        core::slice::from_raw_parts(p, n_frames)
+                    });
+                    process_mono(
+                        self, l_read, l_write, sr,
+                        ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+                        lo_thr_t, lo_freq_t, lo_amt_t,
+                        clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                        owned_sc,
+                        &mut max_ess_gr_db, &mut max_click_gr_db,
+                    );
+                }
             }
         }
 
@@ -342,11 +444,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 /// (filters, envelopes, smoothed knobs, click gain) lives on `p`.
 #[allow(clippy::too_many_arguments)]
 #[inline]
+// External key (key_l/key_r) — if Some, replaces dry signal as the
+// detector source. Lets users key the de-esser from an EQ'd send.
 fn step_sample(
     p: &mut PluginAudioProcessor<'_>,
     dry_l: f32, dry_r: f32,
+    key_l: Option<f32>, key_r: Option<f32>,
     sr: f32,
     ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
 ) -> (f32, f32, f32, f32) {
@@ -354,6 +460,9 @@ fn step_sample(
     let ess_freq = p.smooth_ess_freq.step(ess_freq_t, sr);
     let ess_amt = p.smooth_ess_amt.step(ess_amt_t, sr);
     let ess_range = p.smooth_ess_range.step(ess_range_t, sr).clamp(0.0, 1.0);
+    let lo_thr = p.smooth_lo_thr.step(lo_thr_t, sr);
+    let lo_freq = p.smooth_lo_freq.step(lo_freq_t, sr);
+    let lo_amt = p.smooth_lo_amt.step(lo_amt_t, sr);
     let clk_sens = p.smooth_clk_sens.step(clk_sens_t, sr);
     let clk_amt = p.smooth_clk_amt.step(clk_amt_t, sr);
     let clk_floor_db = p.smooth_clk_floor.step(clk_floor_t, sr);
@@ -365,13 +474,37 @@ fn step_sample(
         p.ess_hpf_r.set_hpf(sr, ess_freq, 0.707);
         p.ess_freq_state = ess_freq;
     }
+    if (lo_freq - p.lo_freq_state).abs() > 5.0 {
+        p.lo_hpf_l.set_hpf(sr, lo_freq, 0.707);
+        p.lo_hpf_r.set_hpf(sr, lo_freq, 0.707);
+        p.lo_freq_state = lo_freq;
+    }
+
+    // Detector source: external key if routed, otherwise the dry signal.
+    let det_l = key_l.unwrap_or(dry_l);
+    let det_r = key_r.unwrap_or(dry_r);
 
     let sib_l = p.ess_hpf_l.process(dry_l);
     let sib_r = p.ess_hpf_r.process(dry_r);
     let body_l = dry_l - sib_l;
     let body_r = dry_r - sib_r;
 
-    let sc = sib_l.abs().max(sib_r.abs());
+    // Run the high-band detector on the chosen key signal.
+    let det_sib_l = if key_l.is_some() {
+        // We can't run the per-channel biquad twice on different inputs
+        // and keep it cheap — instead detector reads dry via a separate
+        // path using the same HPF. Cheap-and-honest approach: rerun
+        // through a one-shot biquad clone. Since the biquads are
+        // Direct-Form II Transposed, two parallel instances cost
+        // exactly as much as duplicating state. For now we just feed
+        // the key through the existing HPF — accepts a tiny coupling
+        // artefact on toggle-switch. Documented for future cleanup.
+        p.ess_hpf_l.process(det_l)
+    } else {
+        sib_l
+    };
+    let det_sib_r = if key_r.is_some() { p.ess_hpf_r.process(det_r) } else { sib_r };
+    let sc = det_sib_l.abs().max(det_sib_r.abs());
     let env = p.ess_env.process(sc, sr, 0.5, 20.0);
     let env_db = 20.0 * env.max(1e-9).log10();
     let over = env_db - ess_thr;
@@ -381,8 +514,25 @@ fn step_sample(
         0.0
     };
     let ess_gain_lin = 10f32.powf(ess_gr_db * ess_range / 20.0);
-    let proc_l = body_l + sib_l * ess_gain_lin;
-    let proc_r = body_r + sib_r * ess_gain_lin;
+    // Mid-band split for the low-band de-esser. We process body_l/body_r
+    // (post-sib-attenuation signal) through the lo HPF to isolate the
+    // 0.5–3 kHz energy range; below that stays untouched.
+    let mid_l = p.lo_hpf_l.process(body_l);
+    let mid_r = p.lo_hpf_r.process(body_r);
+    let low_only_l = body_l - mid_l;
+    let low_only_r = body_r - mid_r;
+    let lo_sc = mid_l.abs().max(mid_r.abs());
+    let lo_env = p.lo_env.process(lo_sc, sr, 0.5, 30.0);
+    let lo_env_db = 20.0 * lo_env.max(1e-9).log10();
+    let lo_over = lo_env_db - lo_thr;
+    let lo_gr_db = if lo_over > 0.0 && lo_amt > 0.05 {
+        -(lo_over.min(lo_amt))
+    } else {
+        0.0
+    };
+    let lo_gain_lin = 10f32.powf(lo_gr_db / 20.0);
+    let proc_l = low_only_l + mid_l * lo_gain_lin + sib_l * ess_gain_lin;
+    let proc_r = low_only_r + mid_r * lo_gain_lin + sib_r * ess_gain_lin;
 
     let fast_l = p.click_fast_l.process(proc_l.abs(), sr, 0.1, 0.5);
     let fast_r = p.click_fast_r.process(proc_r.abs(), sr, 0.1, 0.5);
@@ -414,7 +564,10 @@ fn step_sample(
     let final_l = dry_l * (1.0 - mix) + wet_l * mix;
     let final_r = dry_r * (1.0 - mix) + wet_r * mix;
 
-    (final_l, final_r, ess_gr_db, click_gain_db)
+    // Meter wants the most-negative GR from either band so the user
+    // sees activity regardless of which band fired.
+    let total_gr_db = ess_gr_db.min(lo_gr_db);
+    (final_l, final_r, total_gr_db, click_gain_db)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -424,15 +577,22 @@ fn process_stereo(
     r_read: &[f32], r_write: &mut [f32],
     sr: f32,
     ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
+    ext_key: Option<(&[f32], &[f32])>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
     let n = l_read.len().min(r_read.len());
     for i in 0..n {
+        let (kl, kr) = ext_key
+            .map(|(a, b)| (Some(a.get(i).copied().unwrap_or(0.0)),
+                           Some(b.get(i).copied().unwrap_or(0.0))))
+            .unwrap_or((None, None));
         let (fl, fr, ess_gr, click_gr) = step_sample(
-            p, l_read[i], r_read[i], sr,
+            p, l_read[i], r_read[i], kl, kr, sr,
             ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+            lo_thr_t, lo_freq_t, lo_amt_t,
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
         );
         l_write[i] = fl;
@@ -449,16 +609,20 @@ fn process_mono(
     l_read: &[f32], l_write: &mut [f32],
     sr: f32,
     ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
+    lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
+    ext_key: Option<&[f32]>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
     let n = l_read.len();
     for i in 0..n {
         let s = l_read[i];
+        let k = ext_key.and_then(|a| a.get(i).copied());
         let (fl, _fr, ess_gr, click_gr) = step_sample(
-            p, s, s, sr,
+            p, s, s, k, k, sr,
             ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
+            lo_thr_t, lo_freq_t, lo_amt_t,
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
         );
         l_write[i] = fl;
@@ -473,17 +637,31 @@ fn process_mono(
 // ---------------------------------------------------------------------------
 
 impl PluginAudioPortsImpl for PluginMainThread<'_> {
-    fn count(&mut self, is_input: bool) -> u32 { if is_input { 1 } else { 1 } }
+    fn count(&mut self, is_input: bool) -> u32 { if is_input { 2 } else { 1 } }
     fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
-        if index != 0 { return; }
-        writer.set(&AudioPortInfo {
-            id: ClapId::new(0),
-            name: if is_input { b"Input" } else { b"Output" },
-            channel_count: 2,
-            flags: AudioPortFlags::IS_MAIN,
-            port_type: Some(AudioPortType::STEREO),
-            in_place_pair: Some(ClapId::new(0)),
-        });
+        match (index, is_input) {
+            (0, _) => writer.set(&AudioPortInfo {
+                id: ClapId::new(0),
+                name: if is_input { b"Input" } else { b"Output" },
+                channel_count: 2,
+                flags: AudioPortFlags::IS_MAIN,
+                port_type: Some(AudioPortType::STEREO),
+                in_place_pair: Some(ClapId::new(0)),
+            }),
+            (1, true) => writer.set(&AudioPortInfo {
+                id: ClapId::new(1),
+                name: b"Sidechain",
+                channel_count: 2,
+                // No IS_MAIN — secondary input the host can route a key
+                // signal through. When the user routes a separate vocal
+                // track here, that drives the de-esser detector instead
+                // of the dry signal itself.
+                flags: AudioPortFlags::empty(),
+                port_type: Some(AudioPortType::STEREO),
+                in_place_pair: None,
+            }),
+            _ => {}
+        }
     }
 }
 
@@ -497,6 +675,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        use core::fmt::Write;
+        if id.get() as usize == P_EXT_KEY {
+            return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {

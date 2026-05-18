@@ -355,6 +355,13 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             ui.add_space(12.0);
             ui.weak("drag bars to scribble harmonics  ·  click = set");
         });
+        core_gui::ab_init_bar(
+            ui,
+            &state.shared.ab_snapshot,
+            &state.shared.params,
+            PARAMS,
+            &state.shared.dirty_params,
+        );
         ui.add_space(4.0);
 
         // Harmonic bars editor — top of the window, ~180 px tall.

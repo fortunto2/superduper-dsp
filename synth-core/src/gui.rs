@@ -20,6 +20,118 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use atomic_float::AtomicF32;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
+/// A/B snapshot pair — each slot is a frozen copy of every param.
+/// `current` points at which slot the user is editing right now.
+#[derive(Default)]
+pub struct AbSnapshot {
+    pub a: std::sync::Mutex<Vec<f32>>,
+    pub b: std::sync::Mutex<Vec<f32>>,
+    pub current_is_b: std::sync::atomic::AtomicBool,
+}
+
+impl AbSnapshot {
+    pub fn new(n: usize) -> Self {
+        Self {
+            a: std::sync::Mutex::new(vec![0.0; n]),
+            b: std::sync::Mutex::new(vec![0.0; n]),
+            current_is_b: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+/// Snapshot the live params into the currently-inactive slot (A or B,
+/// whichever the user isn't editing), then flip `current_is_b`. Drives
+/// the standard "copy A → B" pattern in DAW plugin UIs.
+pub fn ab_copy_to_other(
+    snap: &AbSnapshot,
+    params: &[AtomicF32],
+    dirty: &[AtomicBool],
+) {
+    let was_b = snap.current_is_b.load(Ordering::Relaxed);
+    let target = if was_b { &snap.a } else { &snap.b };
+    let mut t = target.lock().unwrap();
+    if t.len() != params.len() {
+        t.resize(params.len(), 0.0);
+    }
+    for (i, atom) in params.iter().enumerate() {
+        t[i] = atom.load(Ordering::Relaxed);
+    }
+    // Don't actually swap which slot we're on — A→B means copy, user
+    // stays on A. Use `ab_swap` for the actual swap.
+    let _ = dirty;
+}
+
+/// Swap A↔B: snapshot live into current, then load the other slot back
+/// into the live params. Raises dirty on every param so REAPER records
+/// the switch into automation.
+pub fn ab_swap(snap: &AbSnapshot, params: &[AtomicF32], dirty: &[AtomicBool]) {
+    let was_b = snap.current_is_b.load(Ordering::Relaxed);
+    let current = if was_b { &snap.b } else { &snap.a };
+    let other = if was_b { &snap.a } else { &snap.b };
+    // Save live into current slot.
+    {
+        let mut c = current.lock().unwrap();
+        if c.len() != params.len() {
+            c.resize(params.len(), 0.0);
+        }
+        for (i, atom) in params.iter().enumerate() {
+            c[i] = atom.load(Ordering::Relaxed);
+        }
+    }
+    // Load other slot into live + mark every param dirty.
+    let o = other.lock().unwrap();
+    for (i, atom) in params.iter().enumerate() {
+        if let Some(v) = o.get(i).copied() {
+            atom.store(v, Ordering::Relaxed);
+            if let Some(d) = dirty.get(i) {
+                d.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    snap.current_is_b.store(!was_b, Ordering::Relaxed);
+}
+
+/// Restore every param to its declared default. Marks every param dirty
+/// so REAPER records the init.
+pub fn init_params(params: &[AtomicF32], defs: &[ParamDef], dirty: &[AtomicBool]) {
+    for (i, atom) in params.iter().enumerate() {
+        if let Some(def) = defs.get(i) {
+            atom.store(def.default as f32, Ordering::Relaxed);
+        }
+        if let Some(d) = dirty.get(i) {
+            d.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Render an A/B/Copy/Init row. Returns nothing — buttons act on the
+/// shared state passed in.
+pub fn ab_init_bar(
+    ui: &mut egui::Ui,
+    snap: &AbSnapshot,
+    params: &[AtomicF32],
+    defs: &[ParamDef],
+    dirty: &[AtomicBool],
+) {
+    ui.horizontal(|ui| {
+        let on_b = snap.current_is_b.load(Ordering::Relaxed);
+        let a_label = if on_b { "A" } else { "[A]" };
+        let b_label = if on_b { "[B]" } else { "B" };
+        if ui.button(a_label).clicked() && on_b {
+            ab_swap(snap, params, dirty);
+        }
+        if ui.button(b_label).clicked() && !on_b {
+            ab_swap(snap, params, dirty);
+        }
+        if ui.button("copy →").on_hover_text("copy current to the other slot").clicked() {
+            ab_copy_to_other(snap, params, dirty);
+        }
+        if ui.button("init").on_hover_text("reset every param to its default").clicked() {
+            init_params(params, defs, dirty);
+        }
+    });
+}
+
 /// Same as [`param_row`] but also raises a dirty flag whenever the user
 /// changes the value, so the audio thread can emit a CLAP `ParamValue`
 /// event into the host's output queue. That tells the DAW (REAPER /

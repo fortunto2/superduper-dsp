@@ -101,6 +101,7 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 7, name: b"Sustain",    min: 0.0,  max: 1.0,     default: 0.8,    unit: ""      },
     ParamDef { id: 8, name: b"Release",    min: 0.01, max: 8.0,     default: 1.5,    unit: "s"     },
     ParamDef { id: 9, name: b"Output",     min: -36.0, max: 6.0,    default: -8.0,   unit: "dB"    },
+    ParamDef { id: 10, name: b"Bend Range", min: 0.0,  max: 24.0,    default: 2.0,    unit: "ST"    },
 ];
 
 pub const P_CUTOFF: usize = 0;
@@ -113,6 +114,7 @@ pub const P_DECAY: usize = 6;
 pub const P_SUSTAIN: usize = 7;
 pub const P_RELEASE: usize = 8;
 pub const P_OUTPUT: usize = 9;
+pub const P_BEND_RANGE: usize = 10;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -129,6 +131,9 @@ pub struct SharedParamsInner {
     /// Live polyphony count for the GUI / metering. Updated each block from
     /// the audio thread (Relaxed store).
     pub active_voices: std::sync::atomic::AtomicU32,
+    /// Live pitch-bend in semitones (signed). Set by MIDI 0xE0, read by
+    /// the audio thread when computing voice frequency.
+    pub pitch_bend_st: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -143,6 +148,7 @@ impl PluginShared {
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_voices: std::sync::atomic::AtomicU32::new(0),
+                pitch_bend_st: AtomicF32::new(0.0),
             }),
         }
     }
@@ -383,6 +389,17 @@ impl<'a> PluginAudioProcessor<'a> {
             0x80 => {
                 self.release_voice(Match::Specific(key as u16), Match::All);
             }
+            // Pitch bend (status 0xE0). 14-bit value, 8192 = center,
+            // mapped to ±BendRange semitones.
+            0xe0 => {
+                let raw = (key as i32) | ((raw_velocity as i32) << 7);
+                let centered = raw - 8192;
+                let normalised = (centered as f32) / 8191.0;
+                let range = self.shared.params[P_BEND_RANGE].load(Ordering::Relaxed);
+                self.shared
+                    .pitch_bend_st
+                    .store(normalised * range, Ordering::Relaxed);
+            }
             // All notes off (CC 123).
             0xb0 if key == 123 => {
                 self.release_voice(Match::All, Match::All);
@@ -390,6 +407,35 @@ impl<'a> PluginAudioProcessor<'a> {
             // All sound off (CC 120) — hard cut.
             0xb0 if key == 120 => {
                 self.choke_voice(Match::All, Match::All);
+            }
+            // Expressive CC mapping. Stored directly (no dirty flag) so
+            // the plugin doesn't echo CC into the FX automation lane —
+            // CC moves stay in the MIDI clip.
+            //   CC  1 ModWheel    → Modulation depth (cents)
+            //   CC 11 Expression  → Drive
+            //   CC 71 Resonance   → Resonance
+            //   CC 74 Brightness  → Cutoff (log-mapped)
+            0xb0 => {
+                let v = raw_velocity as f32 / 127.0;
+                let lin = |idx: usize, frac: f32| {
+                    let def = &PARAMS[idx];
+                    let val = def.min as f32 + frac * (def.max - def.min) as f32;
+                    self.shared.params[idx].store(val, Ordering::Relaxed);
+                };
+                let log_cutoff = |frac: f32| {
+                    let def = &PARAMS[P_CUTOFF];
+                    let lo = (def.min as f32).ln();
+                    let hi = (def.max as f32).ln();
+                    let hz = (lo + frac * (hi - lo)).exp();
+                    self.shared.params[P_CUTOFF].store(hz, Ordering::Relaxed);
+                };
+                match key {
+                    1 => lin(P_MODULATION, v),
+                    11 => lin(P_DRIVE, v),
+                    71 => lin(P_RESONANCE, v),
+                    74 => log_cutoff(v),
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -470,7 +516,7 @@ impl<'a> PluginAudioProcessor<'a> {
                 // bandlimited signal — no truncation discontinuity.
                 if v.choke_remaining > 0 {
                     let fade = (v.choke_remaining as f32) / (v.choke_total as f32);
-                    let base_hz = midi_note_to_hz(v.key as f32);
+                    let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
                     let l_hz = base_hz * 2f32.powf(-width * 0.5 / 1200.0);
                     let r_hz = base_hz * 2f32.powf(width * 0.5 / 1200.0);
                     let pl = PadParams {
@@ -498,7 +544,7 @@ impl<'a> PluginAudioProcessor<'a> {
                     v.key = NOTE_FREE;
                     continue;
                 }
-                let base_hz = midi_note_to_hz(v.key as f32);
+                let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
                 let l_hz = base_hz * 2f32.powf(-width * 0.5 / 1200.0);
                 let r_hz = base_hz * 2f32.powf(width * 0.5 / 1200.0);
 

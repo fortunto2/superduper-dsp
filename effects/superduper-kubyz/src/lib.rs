@@ -82,6 +82,9 @@ pub const PARAMS: &[ParamDef] = &[
     // sound around the stereo field. Combine with a circle for a
     // surround-style rotation, or with a line for ping-pong.
     ParamDef { id: 15, name: b"Mouth Stereo", min: 0.0, max: 1.0,   default: 0.0,    unit: ""   },
+    // Pitch-bend range in semitones — applied symmetrically (±N ST).
+    // 2 ST is the General MIDI default; 12 ST = whole octave bend.
+    ParamDef { id: 16, name: b"Bend Range",   min: 0.0, max: 24.0,  default: 2.0,    unit: "ST" },
 ];
 
 pub const P_F1: usize = 0;
@@ -100,6 +103,7 @@ pub const P_MOUTH_SHAPE: usize = 12;
 pub const P_MOUTH_RATE: usize = 13;
 pub const P_MOUTH_DEPTH: usize = 14;
 pub const P_MOUTH_STEREO: usize = 15;
+pub const P_BEND_RANGE: usize = 16;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -128,6 +132,13 @@ pub struct SharedParamsInner {
     /// turns each `true` into a `ParamValueEvent` in the host's output
     /// queue so REAPER records the move into the automation lane.
     pub dirty_params: [AtomicBool; PARAMS.len()],
+    /// Live pitch-bend in semitones (signed). Updated by MIDI 0xE0
+    /// pitch-bend events and consumed by the audio thread when computing
+    /// each voice's frequency.
+    pub pitch_bend_st: AtomicF32,
+    /// A/B snapshot pair — two memorised states of every CLAP param.
+    /// User flips between them to compare tweaks without losing either.
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
 }
 
 pub struct PluginShared {
@@ -162,6 +173,8 @@ impl PluginShared {
                 formant_gain: Mutex::new(init.formant.gain),
                 mouth_phase: AtomicF32::new(0.0),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
+                pitch_bend_st: AtomicF32::new(0.0),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
             }),
         }
     }
@@ -352,6 +365,19 @@ impl<'a> PluginAudioProcessor<'a> {
                 }
             }
             0x80 => self.release_voice(Match::Specific(key as u16), Match::All),
+            // Pitch bend — 14-bit value (LSB | MSB << 7), 8192 = center.
+            // Normalise to ±1 then scale by the user's Bend Range param
+            // (semitones). Live value sits in shared.pitch_bend_st so the
+            // audio thread sees it without an extra Mutex round-trip.
+            0xe0 => {
+                let raw = (key as i32) | ((raw_velocity as i32) << 7);
+                let centered = raw - 8192;
+                let normalised = (centered as f32) / 8191.0;
+                let range = self.shared.params[P_BEND_RANGE].load(Ordering::Relaxed);
+                self.shared
+                    .pitch_bend_st
+                    .store(normalised * range, Ordering::Relaxed);
+            }
             0xb0 if key == 123 => self.release_voice(Match::All, Match::All),
             0xb0 if key == 120 => self.choke_voice(Match::All, Match::All),
             // Expressive MIDI CC mapping. NOTE: these intentionally write
@@ -475,7 +501,8 @@ impl<'a> PluginAudioProcessor<'a> {
                     continue;
                 }
                 let tongue_st = self.shared.params[P_TONGUE_ST].load(Ordering::Relaxed);
-                let root = midi_note_to_hz(v.key as f32 + tongue_st);
+                let bend_st = self.shared.pitch_bend_st.load(Ordering::Relaxed);
+                let root = midi_note_to_hz(v.key as f32 + tongue_st + bend_st);
                 let params = KubyzParams {
                     sr,
                     root_hz: root,

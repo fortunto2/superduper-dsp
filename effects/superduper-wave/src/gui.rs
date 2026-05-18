@@ -564,6 +564,13 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             state.selected_node = None;
         }
 
+        core_gui::ab_init_bar(
+            ui,
+            &state.shared.ab_snapshot,
+            &state.shared.params,
+            PARAMS,
+            &state.shared.dirty_params,
+        );
         let active = state.shared.active_voices.load(Ordering::Relaxed);
         ui.horizontal(|ui| {
             ui.label(format!("Voices: {active} / {}", crate::VOICE_COUNT));

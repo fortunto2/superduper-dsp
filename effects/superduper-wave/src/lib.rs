@@ -83,6 +83,7 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 21, name: b"LFO Depth",  min: 0.0,    max: 1.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 22, name: b"LFO Shape",  min: 0.0,    max: 3.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 23, name: b"LFO Dest",   min: 0.0,    max: 2.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 24, name: b"Bend Range", min: 0.0,    max: 24.0,    default: 2.0,    unit: "ST"   },
 ];
 
 pub const P_WT_POS: usize = 0;
@@ -109,6 +110,7 @@ pub const P_LFO_RATE: usize = 20;
 pub const P_LFO_DEPTH: usize = 21;
 pub const P_LFO_SHAPE: usize = 22;
 pub const P_LFO_DEST: usize = 23;
+pub const P_BEND_RANGE: usize = 24;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -143,6 +145,9 @@ pub struct SharedParamsInner {
     /// whether to seed its nodes from the preset formula or from
     /// existing custom data.
     pub active_preset: AtomicU32,
+    /// Live pitch-bend in semitones (signed). Set by MIDI 0xE0.
+    pub pitch_bend_st: AtomicF32,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
 }
 
 pub struct PluginShared {
@@ -164,6 +169,8 @@ impl PluginShared {
                 pending_swap: AtomicBool::new(false),
                 wavetable: Mutex::new((frame_a, frame_b)),
                 active_preset: AtomicU32::new(0),
+                pitch_bend_st: AtomicF32::new(0.0),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
             }),
         }
     }
@@ -383,8 +390,55 @@ impl<'a> PluginAudioProcessor<'a> {
                 }
             }
             0x80 => self.release_voice(Match::Specific(key as u16), Match::All),
+            // Pitch bend — 14-bit value (LSB | MSB << 7), 8192 = center,
+            // scaled by Bend Range param into semitones.
+            0xe0 => {
+                let raw = (key as i32) | ((raw_velocity as i32) << 7);
+                let centered = raw - 8192;
+                let normalised = (centered as f32) / 8191.0;
+                let range = self.shared.params[P_BEND_RANGE].load(Ordering::Relaxed);
+                self.shared
+                    .pitch_bend_st
+                    .store(normalised * range, Ordering::Relaxed);
+            }
             0xb0 if key == 123 => self.release_voice(Match::All, Match::All),
             0xb0 if key == 120 => self.choke_voice(Match::All, Match::All),
+            // Expressive CC mapping.
+            //   CC  1 ModWheel    → LFO Depth (instant wobble)
+            //   CC 11 Expression  → Cutoff (log)
+            //   CC 71 Resonance   → Resonance
+            //   CC 74 Brightness  → WT Pos
+            0xb0 => {
+                let v = raw_velocity as f32 / 127.0;
+                let lin = |idx: usize, frac: f32| {
+                    let def = &PARAMS[idx];
+                    let val = def.min as f32 + frac * (def.max - def.min) as f32;
+                    self.shared.params[idx].store(val, Ordering::Relaxed);
+                };
+                let log_cutoff = |frac: f32| {
+                    let def = &PARAMS[P_CUTOFF];
+                    let lo = (def.min as f32).ln();
+                    let hi = (def.max as f32).ln();
+                    let hz = (lo + frac * (hi - lo)).exp();
+                    self.shared.params[P_CUTOFF].store(hz, Ordering::Relaxed);
+                };
+                match key {
+                    1 => lin(P_LFO_DEPTH, v),
+                    11 => log_cutoff(v),
+                    71 => lin(P_RESONANCE, v),
+                    74 => lin(P_WT_POS, v),
+                    _ => {}
+                }
+            }
+            // Channel aftertouch (status 0xD0) — single-byte pressure
+            // value in data[1]. Map to LFO Depth for live timbral
+            // pressure when keyboard supports it.
+            0xd0 => {
+                let pressure = key as f32 / 127.0;
+                let def = &PARAMS[P_LFO_DEPTH];
+                let val = def.min as f32 + pressure * (def.max - def.min) as f32;
+                self.shared.params[P_LFO_DEPTH].store(val, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -476,7 +530,8 @@ impl<'a> PluginAudioProcessor<'a> {
                 self.fade_pos = (self.fade_pos + self.fade_inc).min(1.0);
                 let fade_pos = self.fade_pos;
 
-                let base_hz = midi_note_to_hz(v.key as f32);
+                let base_hz =
+                    midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
                 let params = WaveParams {
                     sr,
                     root_hz: base_hz,

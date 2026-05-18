@@ -20,6 +20,24 @@ index ee78eb8..d3c0a6a 100644
                  EXCLUDE_FROM_ALL TRUE
                  DOWNLOAD_ONLY TRUE
                  SOURCE_DIR cpm/AudioUnitSDK
+diff --git a/cmake/shared_prologue.cmake b/cmake/shared_prologue.cmake
+index f9e5b94..c1140d7 100644
+--- a/cmake/shared_prologue.cmake
++++ b/cmake/shared_prologue.cmake
+@@ -73,6 +73,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND (NOT (CMAKE_CXX_COMPILER_FRONTE
+     else()
+         message(STATUS "clap-wrapper: Warnings are Errors")
+         target_compile_options(clap-wrapper-compile-options INTERFACE -Werror)
++        # AudioUnitSDK 1.4.0 + Apple Clang 21 / macOS 26 SDK: the SDK
++        # uses GNU statement expressions inside macros and lacks
++        # `noexcept` on some nonblocking-attributed functions. Both are
++        # innocuous; downgrade them from -Werror so we can build.
++        target_compile_options(clap-wrapper-compile-options INTERFACE
++                -Wno-error=gnu-statement-expression-from-macro-expansion
++                -Wno-error=perf-constraint-implies-noexcept)
+     endif()
+     if ("${CMAKE_CXX_STANDARD}" GREATER_EQUAL 20)
+         message(STATUS "clap-wrapper: Turning off char8_t c++20 changes")
 diff --git a/src/detail/clap/mac_helpers.mm b/src/detail/clap/mac_helpers.mm
 index 279d5c0..f8bac06 100644
 --- a/src/detail/clap/mac_helpers.mm

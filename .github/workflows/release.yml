@@ -138,7 +138,7 @@ jobs:
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
-      - name: Build VST3 wrappers
+      - name: Build VST3 + AU wrappers
         env:
           V: ${{ steps.ver.outputs.version }}
         shell: bash
@@ -153,7 +153,8 @@ jobs:
           # CMake configure + build. The script handles patch application
           # idempotently and picks the right SDK if available.
           bash scripts/build_wrappers.sh
-          mkdir -p dist/vst3
+
+          mkdir -p dist/vst3 dist/au
           for vst3 in build-wrappers/SuperDuper*.vst3; do
               [[ -d "$vst3" ]] || continue
               name="$(basename "$vst3" .vst3)"
@@ -161,8 +162,16 @@ jobs:
               codesign --force --sign - --deep "dist/vst3/${name}.vst3" || true
               (cd dist/vst3 && zip -qry "../${name}-${V}-macos-arm64-vst3.zip" "${name}.vst3")
           done
+          for au in build-wrappers/SuperDuper*.component; do
+              [[ -d "$au" ]] || continue
+              name="$(basename "$au" .component)"
+              cp -R "$au" "dist/au/${name}.component"
+              codesign --force --sign - --deep "dist/au/${name}.component" || true
+              (cd dist/au && zip -qry "../${name}-${V}-macos-arm64-au.zip" "${name}.component")
+          done
           (cd dist/vst3 && zip -qry "../superduper-dsp-${V}-macos-arm64-vst3.zip" SuperDuper*.vst3)
-          (cd dist && shasum -a 256 *vst3*.zip >> SHA256SUMS-macos.txt)
+          (cd dist/au && zip -qry "../superduper-dsp-${V}-macos-arm64-au.zip" SuperDuper*.component)
+          (cd dist && shasum -a 256 *vst3*.zip *au*.zip >> SHA256SUMS-macos.txt)
 
       - name: Upload artifact (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -331,7 +340,8 @@ jobs:
 
             **Plugin formats:**
             - **CLAP** (`*-macos-arm64.zip`, `*-windows-x64.zip`) — native CLAP hosts (REAPER, Bitwig, …).
-            - **VST3** (`*-macos-arm64-vst3.zip`) — wrapped via clap-wrapper for DaVinci, Cubase, Ableton, FL, Studio One, Logic 11+.
+            - **VST3** (`*-macos-arm64-vst3.zip`) — wrapped via clap-wrapper for DaVinci, Cubase, Ableton, FL, Studio One.
+            - **Audio Unit v2** (`*-macos-arm64-au.zip`) — wrapped via clap-wrapper for Logic Pro and any AU host.
 
             Install: download the platform zip and follow `INSTALL.md`.
 
@@ -341,7 +351,9 @@ jobs:
             ```bash
             xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/SuperDuper*.clap
             xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/SuperDuper*.vst3
+            xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/SuperDuper*.component
             ```
 
-            > VST3 wrappers dynamically load the matching `.clap` from
-            > `~/Library/Audio/Plug-Ins/CLAP/`. Install both zips.
+            > VST3 and AU wrappers dynamically load the matching `.clap` from
+            > `~/Library/Audio/Plug-Ins/CLAP/`. Always install the CLAP zip
+            > alongside the wrapper one.

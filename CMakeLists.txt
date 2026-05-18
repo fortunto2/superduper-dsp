@@ -31,11 +31,14 @@ project(superduper-dsp-wrappers
     DESCRIPTION "VST3/AUv2 wrappers around the SuperDuper DSP CLAP plugins"
 )
 
-# clap-wrapper uses C++17 features (nested namespace). When it's a
-# subdirectory the top-level `set(CMAKE_CXX_STANDARD 17)` from its own
-# CMakeLists doesn't fire, so we set it here. Required, otherwise
-# `-Werror,-Wc++17-extensions` blows up on every wrapper.
-set(CMAKE_CXX_STANDARD 17)
+# clap-wrapper uses C++17 features (nested namespace) and Apple's
+# AudioUnitSDK 1.4.0 uses C++20 features (std::span, `requires`). Set
+# 20 globally — VST3 SDK + clap-wrapper happily compile against 20 too.
+# When clap-wrapper is a subdirectory the top-level
+# `set(CMAKE_CXX_STANDARD 17)` from its own CMakeLists doesn't fire,
+# so we set it here. Required, otherwise `-Werror,-Wc++17-extensions`
+# blows up on every wrapper and AudioUnitSDK fails at `std::span`.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # clap-wrapper enables Objective-C / Objective-C++ when it's the top-level
@@ -51,13 +54,15 @@ endif()
 # pin them manually — both worse than a one-time CPM fetch.
 option(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES "Auto-download VST3 SDK + CLAP headers via CPM" ON)
 option(SDSP_WRAPPERS_INSTALL_LOCAL "Copy built wrappers into ~/Library/Audio/Plug-Ins" OFF)
-# AUv2 is off by default — Apple's AudioUnitSDK currently fails to
-# compile against the macOS 26 SDK (libcpp template specialisation
-# regression). VST3 already covers DaVinci / Cubase / Ableton / FL /
-# Reason / Studio One / Logic 11. Once upstream
-# https://github.com/apple/AudioUnitSDK gets a fix, flip this back to
-# ON on Apple platforms. Override with -DCLAP_WRAPPER_BUILD_AUV2=ON.
-option(CLAP_WRAPPER_BUILD_AUV2 "Also build AUv2 components alongside VST3" OFF)
+# AUv2 builds against AudioUnitSDK 1.4.0 + macOS 26 SDK when CMake is
+# given C++23 (`std::span`, `std::expected`, `requires`) and the two
+# `-Wno-error=…` patches in our clap-wrapper patches file are applied.
+# Set ON on Apple, OFF elsewhere.
+if (APPLE)
+    option(CLAP_WRAPPER_BUILD_AUV2 "Also build AUv2 components alongside VST3" ON)
+else()
+    option(CLAP_WRAPPER_BUILD_AUV2 "Also build AUv2 components alongside VST3" OFF)
+endif()
 
 # Pull in clap-wrapper as a regular subdirectory. PROJECT_IS_TOP_LEVEL
 # is false inside the subdirectory so its `top_level_default.cmake`

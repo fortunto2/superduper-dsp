@@ -57,20 +57,11 @@ if [ -d "$PATCH_DIR" ]; then
     done
 fi
 
-# macOS 26 SDK ships with a libc++ that's stricter about atomic copy
-# semantics + missing template specialisations in AudioUnitSDK. Prefer
-# the 15.x SDK if installed alongside.
-SYSROOT_FLAG=""
-if [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk" ]; then
-    SYSROOT_FLAG="-DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
-fi
-
 echo "==> configuring CMake in ${BUILD_DIR}"
 cmake -B "$BUILD_DIR" -S "$ROOT" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON \
-    -DSDSP_WRAPPERS_INSTALL_LOCAL="$INSTALL_LOCAL" \
-    ${SYSROOT_FLAG}
+    -DSDSP_WRAPPERS_INSTALL_LOCAL="$INSTALL_LOCAL"
 
 echo "==> building wrappers"
 cmake --build "$BUILD_DIR" --config Release --parallel

@@ -758,19 +758,30 @@ If no sidechain is routed, both ducker key signals fall back to dry input
 ## VST3 / AUv2 wrappers via clap-wrapper
 
 CLAP works in REAPER / Bitwig / Studio One / Logic 11+ natively. For
-DaVinci Resolve, Cubase, FL Studio, Ableton (≤ 12.0), and Logic ≤ 10
-we ship VST3 wrappers built by `free-audio/clap-wrapper`. AUv2 is
-staged but **off by default** — Apple's AudioUnitSDK currently fails
-to compile against the macOS 26 SDK (libcpp template specialisation
-regression). Flip `-DCLAP_WRAPPER_BUILD_AUV2=ON` once upstream lands a
-fix.
+DaVinci Resolve, Cubase, FL Studio, Ableton (≤ 12.0), Logic Pro, and
+any AU host we ship VST3 and Audio Unit v2 wrappers built by
+`free-audio/clap-wrapper`. Both VST3 and AUv2 are ON by default on
+Apple platforms.
 
 Mechanics:
 - `tools/clap-wrapper` is a git submodule. After clone:
   `git submodule update --init --recursive`.
 - `tools/clap-wrapper-patches/*.patch` — local patches needed for the
-  macOS 26 SDK + VST3 SDK pin. `scripts/build_wrappers.sh` applies them
-  idempotently (`git apply --check` first).
+  macOS 26 SDK. `scripts/build_wrappers.sh` applies them idempotently
+  (`git apply --check` first). The patches:
+  - `mac_helpers.mm`: `CFStringGetCString` needs `char*`, not const
+    from `std::string::data()` — use `std::vector<char>`.
+  - `fixedqueue.h`: explicitly delete copy/move ctors so libc++'s new
+    diagnostic about atomic copy doesn't reject the implicit synth.
+  - `base_sdks.cmake`: pin VST3 SDK to 3.7.6 + AudioUnitSDK to 1.4.0.
+  - `shared_prologue.cmake`: downgrade
+    `-Wgnu-statement-expression-from-macro-expansion` and
+    `-Wperf-constraint-implies-noexcept` from `-Werror` so the
+    AudioUnitSDK headers compile under Apple Clang 21.
+- Root `CMakeLists.txt` sets `CMAKE_CXX_STANDARD 23` — AudioUnitSDK
+  1.4.0 uses `std::span` (C++20), `std::expected` (C++23), and the
+  `requires` clause (C++20). VST3 SDK and clap-wrapper itself compile
+  fine against C++23 too.
 - `CMakeLists.txt` + `cmake/plugin_list.cmake` is the single source of
   truth: each row maps the Rust crate → wrapper output name (must
   match the `.clap` bundle basename exactly so clap-wrapper's

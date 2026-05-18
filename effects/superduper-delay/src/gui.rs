@@ -6,7 +6,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DRIVE, P_FEEDBACK, P_MIX, P_MODE, P_TIME, P_TONE, P_WIDTH, PARAMS, SharedParams};
+use crate::{P_DRIVE, P_FEEDBACK, P_MIX, P_MODE, P_TIME, P_TIME_DIV, P_TIME_SYNC, P_TONE, P_WIDTH, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 380;
@@ -102,6 +102,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Time", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME], &PARAMS[P_TIME], &state.shared.dirty_params[P_TIME], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME_SYNC], &PARAMS[P_TIME_SYNC], &state.shared.dirty_params[P_TIME_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME_SYNC);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME_DIV], &PARAMS[P_TIME_DIV], &state.shared.dirty_params[P_TIME_DIV], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME_DIV);
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [90.0, 18.0],

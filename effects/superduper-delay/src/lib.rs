@@ -129,6 +129,13 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 7, name: b"Duck Amount",  min: 0.0,    max: 24.0,   default: 0.0,   unit: "dB" },
     ParamDef { id: 8, name: b"Duck Attack",  min: 1.0,    max: 200.0,  default: 5.0,   unit: "ms" },
     ParamDef { id: 9, name: b"Duck Release", min: 10.0,   max: 1000.0, default: 200.0, unit: "ms" },
+    // Tempo sync — when on, Time is computed from host BPM × Time Div.
+    // Width still operates as a ms offset on top of the synced base.
+    ParamDef { id: 10, name: b"Time Sync", min: 0.0, max: 1.0,  default: 0.0, unit: "" },
+    // 0 = 1/1, 1 = 1/2d, 2 = 1/2, 3 = 1/2t, 4 = 1/4, 5 = 1/4d, 6 = 1/4t,
+    // 7 = 1/8, 8 = 1/8d, 9 = 1/8t, 10 = 1/16, 11 = 1/16t — same enum
+    // shape as Wave LFO Div / Kubyz Mouth Div for consistency.
+    ParamDef { id: 11, name: b"Time Div",  min: 0.0, max: 11.0, default: 7.0, unit: "" },
 ];
 
 pub const P_TIME: usize = 0;
@@ -141,6 +148,8 @@ pub const P_MODE: usize = 6;
 pub const P_DUCK_AMOUNT: usize = 7;
 pub const P_DUCK_ATTACK: usize = 8;
 pub const P_DUCK_RELEASE: usize = 9;
+pub const P_TIME_SYNC: usize = 10;
+pub const P_TIME_DIV: usize = 11;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -156,6 +165,9 @@ pub struct SharedParamsInner {
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    /// Host transport BPM — updated from TransportEvent so Time can run
+    /// in sync mode at a musical division (1/4, 1/8 etc.).
+    pub host_bpm: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -171,6 +183,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
@@ -229,6 +242,15 @@ pub struct PluginAudioProcessor<'a> {
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
     superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events);
+    // Also capture host BPM out of the transport stream so tempo-sync
+    // mode tracks tempo changes inside a block.
+    for event in events {
+        if let Some(core) = event.as_core_event() {
+            if let clack_plugin::events::spaces::CoreEventSpace::Transport(t) = core {
+                shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
@@ -291,7 +313,19 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        let time_ms = self.shared.params[P_TIME].load(Ordering::Relaxed);
+        // Tempo sync: if Time Sync is on, derive ms from host BPM × Time Div
+        // (musical note value). Width still operates as a ms offset on top.
+        let time_sync = self.shared.params[P_TIME_SYNC]
+            .load(Ordering::Relaxed) >= 0.5;
+        let time_ms = if time_sync {
+            let div = self.shared.params[P_TIME_DIV]
+                .load(Ordering::Relaxed) as u32;
+            let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+            let hz = superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm);
+            (1000.0 / hz.max(0.5)).clamp(1.0, 2000.0)
+        } else {
+            self.shared.params[P_TIME].load(Ordering::Relaxed)
+        };
         let width_ms = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
         let target_l = time_ms * 0.001 * sr;
         let target_r = (time_ms + width_ms).max(1.0) * 0.001 * sr;
@@ -545,6 +579,13 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        use core::fmt::Write;
+        if id.get() as usize == P_TIME_DIV {
+            return write!(w, "{}", superduper_synth_core::dsp_blocks::sync_division_label(v.round() as u32));
+        }
+        if id.get() as usize == P_TIME_SYNC {
+            return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {

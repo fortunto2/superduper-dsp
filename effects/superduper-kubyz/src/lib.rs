@@ -140,6 +140,8 @@ pub struct SharedParamsInner {
     /// turns each `true` into a `ParamValueEvent` in the host's output
     /// queue so REAPER records the move into the automation lane.
     pub dirty_params: [AtomicBool; PARAMS.len()],
+    pub gesture_begin: [AtomicBool; PARAMS.len()],
+    pub gesture_end: [AtomicBool; PARAMS.len()],
     /// Live pitch-bend in semitones (signed). Updated by MIDI 0xE0
     /// pitch-bend events and consumed by the audio thread when computing
     /// each voice's frequency.
@@ -189,6 +191,8 @@ impl PluginShared {
                 formant_gain: Mutex::new(init.formant.gain),
                 mouth_phase: AtomicF32::new(0.0),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| AtomicBool::new(false)),
                 pitch_bend_st: AtomicF32::new(0.0),
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
@@ -667,6 +671,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let _ = events.output.try_push(&ev);
             }
         }
+        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
+            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         for mut port_pair in &mut audio {

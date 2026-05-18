@@ -6,7 +6,9 @@ use atomic_float::AtomicF32;
 use clack_common::events::Pckn;
 use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::params::{ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter};
-use clack_plugin::events::event_types::ParamValueEvent;
+use clack_plugin::events::event_types::{
+    ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+};
 use clack_plugin::events::io::OutputEvents;
 use clack_plugin::prelude::{ChannelPair, InputEvents};
 use std::ffi::CStr;
@@ -220,6 +222,37 @@ pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32]
             None
         }
         ChannelPair::InputOnly(_) => None,
+    }
+}
+
+/// Emit `ParamGestureBeginEvent` / `ParamGestureEndEvent` for every flag
+/// the GUI set since the previous block. Pair with `emit_dirty_param_events`
+/// — call this immediately after it, so the ordering inside the host's
+/// event stream is `Begin → Value → End` even within a single process
+/// block (each event is timestamped sample 0 and CLAP preserves insertion
+/// order for equal time stamps).
+///
+/// Why this matters: hosts in *touch* or *latch* automation modes only
+/// record while a gesture is open. Without the begin/end markers a knob
+/// drag looks like a sequence of disconnected automation points the host
+/// can't distinguish from external sample-and-hold modulation.
+pub fn emit_gesture_events(
+    begin: &[AtomicBool],
+    end: &[AtomicBool],
+    output: &mut OutputEvents,
+) {
+    debug_assert_eq!(begin.len(), end.len());
+    for (i, flag) in begin.iter().enumerate() {
+        if flag.swap(false, SyncOrdering::AcqRel) {
+            let ev = ParamGestureBeginEvent::new(0, ClapId::new(i as u32));
+            let _ = output.try_push(&ev);
+        }
+    }
+    for (i, flag) in end.iter().enumerate() {
+        if flag.swap(false, SyncOrdering::AcqRel) {
+            let ev = ParamGestureEndEvent::new(0, ClapId::new(i as u32));
+            let _ = output.try_push(&ev);
+        }
     }
 }
 

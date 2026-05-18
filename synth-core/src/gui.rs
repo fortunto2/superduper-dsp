@@ -171,6 +171,89 @@ pub fn learn_param_row(
     });
 }
 
+/// Same as `learn_param_row` but also fires CLAP gesture begin/end events.
+/// Use in plugins that opted-in to gesture reporting — Wave / Kubyz so far.
+pub fn learn_param_row_g(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+    learn: &MidiLearnState,
+    param_idx: usize,
+    gesture: GestureBridge<'_>,
+) {
+    let name = std::str::from_utf8(def.name)
+        .unwrap_or("?")
+        .trim_end_matches('\0');
+    let learning = learn.is_learning(param_idx);
+    let bound_cc = {
+        let m = learn.mappings.lock();
+        m.iter().find_map(|(&cc, &idx)| (idx == param_idx).then_some(cc))
+    };
+
+    let label_text = if learning {
+        format!("{name}  · LEARN")
+    } else if let Some(cc) = bound_cc {
+        format!("{name}  · CC{cc}")
+    } else {
+        name.to_string()
+    };
+
+    let response = ui.horizontal(|ui| {
+        let colour = if learning { GREEN_BRIGHT } else { GREEN };
+        let label_resp = ui.add_sized(
+            [120.0, 18.0],
+            egui::Label::new(
+                egui::RichText::new(&label_text).color(colour).monospace(),
+            )
+            .sense(egui::Sense::click()),
+        );
+        let mut value = atom.load(Ordering::Relaxed);
+        let slider = egui::Slider::new(&mut value, (def.min as f32)..=(def.max as f32))
+            .show_value(true)
+            .clamping(egui::SliderClamping::Always)
+            .suffix(if def.unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", def.unit)
+            });
+        let slider_resp = ui.add(slider);
+        if slider_resp.drag_started() {
+            if let Some(b) = gesture.begin.get(param_idx) {
+                b.store(true, Ordering::Relaxed);
+            }
+        }
+        if slider_resp.changed() {
+            atom.store(value, Ordering::Relaxed);
+            dirty.store(true, Ordering::Relaxed);
+        }
+        if slider_resp.drag_stopped() {
+            if let Some(e) = gesture.end.get(param_idx) {
+                e.store(true, Ordering::Relaxed);
+            }
+        }
+        label_resp.union(slider_resp)
+    });
+    response.inner.context_menu(|ui| {
+        if ui.button("MIDI Learn (assign next CC)").clicked() {
+            learn.arm(param_idx);
+            ui.close_menu();
+        }
+        if bound_cc.is_some() {
+            if ui.button("Clear MIDI mapping").clicked() {
+                learn.clear_for_param(param_idx);
+                ui.close_menu();
+            }
+        }
+        if learning {
+            if ui.button("Cancel learn").clicked() {
+                learn.cancel();
+                ui.close_menu();
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Live oscilloscope — a tiny lock-free ring buffer for the audio thread
 // to deposit recent samples in, and the GUI to read for visualisation.
@@ -568,6 +651,69 @@ pub fn dirty_param_row(
     if (after - before).abs() > 1e-9 {
         dirty.store(true, Ordering::Relaxed);
     }
+}
+
+/// Bridge to the audio thread for emitting CLAP gesture begin/end events.
+/// Holds two parallel flag arrays — one for "user just started dragging",
+/// one for "user just released". Audio thread swaps both during `process()`
+/// and pushes the appropriate events into the host's output queue.
+///
+/// The GUI doesn't care about the audio thread's read pattern — it only
+/// needs to flip the bit on `drag_started` / `drag_stopped`. The audio
+/// thread holds the only consumer view.
+#[derive(Copy, Clone)]
+pub struct GestureBridge<'a> {
+    pub begin: &'a [AtomicBool],
+    pub end: &'a [AtomicBool],
+}
+
+/// Same as `dirty_param_row` but also fires CLAP gesture begin/end events
+/// when the user touches and releases the slider. Inlines the slider so we
+/// can read `drag_started` / `drag_stopped` — those fire even on a no-op
+/// click, which is exactly the semantic CLAP touch automation expects.
+pub fn dirty_param_row_g(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+    gesture: GestureBridge<'_>,
+    param_idx: usize,
+) {
+    ui.horizontal(|ui| {
+        let name = std::str::from_utf8(def.name)
+            .unwrap_or("?")
+            .trim_end_matches('\0');
+        ui.add_sized(
+            [120.0, 18.0],
+            egui::Label::new(
+                egui::RichText::new(name).color(GREEN).monospace(),
+            ),
+        );
+        let mut value = atom.load(Ordering::Relaxed);
+        let slider = egui::Slider::new(&mut value, (def.min as f32)..=(def.max as f32))
+            .show_value(true)
+            .clamping(egui::SliderClamping::Always)
+            .suffix(if def.unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", def.unit)
+            });
+        let resp = ui.add(slider);
+        if resp.drag_started() {
+            if let Some(b) = gesture.begin.get(param_idx) {
+                b.store(true, Ordering::Relaxed);
+            }
+        }
+        if resp.changed() {
+            atom.store(value, Ordering::Relaxed);
+            dirty.store(true, Ordering::Relaxed);
+        }
+        if resp.drag_stopped() {
+            if let Some(e) = gesture.end.get(param_idx) {
+                e.store(true, Ordering::Relaxed);
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

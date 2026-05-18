@@ -132,6 +132,8 @@ pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: AtomicBool,
     pub dirty_params: [AtomicBool; PARAMS.len()],
+    pub gesture_begin: [AtomicBool; PARAMS.len()],
+    pub gesture_end: [AtomicBool; PARAMS.len()],
     pub active_voices: AtomicU32,
     /// Live polyphony index — written by GUI on preset pick, read by audio
     /// thread once per process() to swap the wavetable handles.
@@ -173,6 +175,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| AtomicBool::new(false)),
                 active_voices: AtomicU32::new(0),
                 pending_preset: AtomicU32::new(u32::MAX),
                 pending_swap: AtomicBool::new(false),
@@ -698,6 +702,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // record the move into the automation lane.
         superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
             &self.shared.params, &self.shared.dirty_params, events.output);
+        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
+            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
         self.maybe_swap_wavetable();
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);

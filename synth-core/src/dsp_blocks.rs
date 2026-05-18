@@ -421,6 +421,22 @@ impl Biquad {
         self.z2 = 0.0;
     }
 
+    /// Evaluate |H(ω)| in dB at the given frequency. Pure analytical —
+    /// reads only the cached coefficients, no internal state. Useful
+    /// for drawing an EQ curve in the GUI alongside the live spectrum.
+    pub fn magnitude_db_at(&self, freq_hz: f32, sr: f32) -> f32 {
+        let omega = core::f32::consts::TAU * freq_hz / sr.max(1.0);
+        let (s1, c1) = omega.sin_cos();
+        let (s2, c2) = (2.0 * omega).sin_cos();
+        let num_re = self.b0 + self.b1 * c1 + self.b2 * c2;
+        let num_im = -self.b1 * s1 - self.b2 * s2;
+        let den_re = 1.0 + self.a1 * c1 + self.a2 * c2;
+        let den_im = -self.a1 * s1 - self.a2 * s2;
+        let num_sq = num_re * num_re + num_im * num_im;
+        let den_sq = den_re * den_re + den_im * den_im;
+        10.0 * (num_sq / den_sq.max(1e-20)).max(1e-20).log10()
+    }
+
     /// Configure as a peaking EQ (band-pass shelf). `gain_db` ∈ [-N, +N]
     /// (positive = boost, negative = cut). `q` controls bandwidth: 0.7 ≈
     /// one octave, 4-6 = narrow surgical cut.

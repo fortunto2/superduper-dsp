@@ -124,6 +124,8 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    pub scope: superduper_synth_core::gui::LiveScope,
     /// Per-param dirty flag — GUI sets it on user-driven change; the
     /// audio thread emits a `ParamValueEvent` to the host on the next
     /// process() so REAPER can record the move into the automation lane.
@@ -141,6 +143,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
         }
     }

@@ -633,8 +633,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             &state.shared.dirty_params,
         );
         let (scope_rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
-        core_gui::draw_scope(ui, &state.shared.scope, scope_rect, 512);
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 80.0), egui::Sense::hover());
+        core_gui::draw_spectrum_strip(ui, &state.shared.scope, scope_rect, 48_000.0);
         let active = state.shared.active_voices.load(Ordering::Relaxed);
         ui.horizontal(|ui| {
             ui.label(format!("Voices: {active} / {}", crate::VOICE_COUNT));

@@ -97,6 +97,96 @@ pub fn draw_scope(ui: &mut egui::Ui, scope: &LiveScope, rect: egui::Rect, sample
     }
 }
 
+/// Live magnitude-spectrum strip — log-frequency X-axis, dB Y-axis.
+/// Far more informative on synths than the raw waveform: you see exactly
+/// which harmonics are loud, where the filter is, and how unison spread
+/// pulls the partials into clusters.
+pub fn draw_spectrum_strip(
+    ui: &mut egui::Ui,
+    scope: &LiveScope,
+    rect: egui::Rect,
+    sr: f32,
+) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, PANEL_BG);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, GREEN_FAINT),
+        egui::epaint::StrokeKind::Outside,
+    );
+    // FFT size — must be a power of two; 1024 covers 20 Hz – 20 kHz with
+    // ~47 Hz bin width which is more than enough for a visualiser.
+    const FFT_N: usize = 1024;
+    let mut buf = vec![0.0_f32; FFT_N];
+    scope.snapshot(&mut buf);
+    // Skip the FFT cost when the signal is silent (zero RMS) — saves
+    // 60 Hz × 1024-point FFTs on inactive plugins.
+    let rms: f32 = (buf.iter().map(|x| x * x).sum::<f32>() / FFT_N as f32).sqrt();
+    if rms < 1e-5 {
+        // Just paint a dim baseline and bail.
+        let y = rect.bottom() - 4.0;
+        painter.line_segment(
+            [egui::pos2(rect.left() + 2.0, y), egui::pos2(rect.right() - 2.0, y)],
+            egui::Stroke::new(1.0, GREEN_FAINT),
+        );
+        return;
+    }
+    let mag_db = crate::analysis::magnitude_spectrum_db(&buf);
+
+    // X axis maps log frequency (20 Hz .. 20 kHz) onto rect.left..right.
+    // Y axis maps -80 dB .. 0 dB onto rect.bottom..top.
+    let f_min = 20.0_f32;
+    let f_max = 20_000.0_f32.min(sr * 0.5);
+    let db_min = -80.0_f32;
+    let db_max = 0.0_f32;
+    let to_x = |freq: f32| {
+        let f = freq.max(f_min);
+        rect.left()
+            + ((f.ln() - f_min.ln()) / (f_max.ln() - f_min.ln())) * rect.width()
+    };
+    let to_y = |db: f32| {
+        let db = db.clamp(db_min, db_max);
+        rect.bottom() - ((db - db_min) / (db_max - db_min)) * rect.height()
+    };
+
+    // Faint grid — log-decade lines at 100 / 1000 / 10000 Hz.
+    for &g in &[100.0_f32, 1000.0, 10000.0] {
+        let x = to_x(g);
+        if x > rect.left() + 1.0 && x < rect.right() - 1.0 {
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(0.5, GREEN_FAINT),
+            );
+        }
+    }
+    // -40 dB line for reference.
+    let mid_y = to_y(-40.0);
+    painter.line_segment(
+        [egui::pos2(rect.left(), mid_y), egui::pos2(rect.right(), mid_y)],
+        egui::Stroke::new(0.5, GREEN_FAINT),
+    );
+
+    // Polyline over the bins (skip DC bin 0 — log scale doesn't reach 0).
+    let n_bins = mag_db.len();
+    let mut prev: Option<egui::Pos2> = None;
+    for bin in 1..n_bins {
+        let freq = bin as f32 * sr / (FFT_N as f32);
+        if freq < f_min {
+            continue;
+        }
+        if freq > f_max {
+            break;
+        }
+        let db = mag_db[bin];
+        let pt = egui::pos2(to_x(freq), to_y(db));
+        if let Some(p) = prev {
+            painter.line_segment([p, pt], egui::Stroke::new(1.0, GREEN_BRIGHT));
+        }
+        prev = Some(pt);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // User file-presets — save/load arbitrary parameter snapshots to
 // ~/.superduper-dsp/<plugin>/presets/<name>.json. Plugins call into

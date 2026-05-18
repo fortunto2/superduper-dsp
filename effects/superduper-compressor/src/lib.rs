@@ -237,6 +237,7 @@ impl ScopeBuf {
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     /// Current gain reduction in dB (always <= 0). Updated each block.
     pub gain_reduction_db: AtomicF32,
@@ -259,6 +260,7 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 gain_reduction_db: AtomicF32::new(0.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
                 scope: ScopeBuf::new(SCOPE_LEN),

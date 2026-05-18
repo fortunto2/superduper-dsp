@@ -112,6 +112,8 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    pub scope: superduper_synth_core::gui::LiveScope,
 }
 
 pub struct PluginShared {
@@ -124,6 +126,8 @@ impl PluginShared {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
         }
     }

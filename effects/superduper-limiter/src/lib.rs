@@ -107,6 +107,8 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    pub scope: superduper_synth_core::gui::LiveScope,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gain_reduction_db: AtomicF32,
     /// Reported to the host via CLAP latency extension for PDC. Set in
@@ -124,6 +126,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
                 gain_reduction_db: AtomicF32::new(0.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
             }),

@@ -127,6 +127,8 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    pub scope: superduper_synth_core::gui::LiveScope,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     /// Live polyphony count for the GUI / metering. Updated each block from
     /// the audio thread (Relaxed store).
@@ -147,6 +149,8 @@ impl PluginShared {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
                 active_voices: std::sync::atomic::AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
             }),

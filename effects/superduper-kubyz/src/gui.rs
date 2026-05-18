@@ -369,10 +369,11 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             PARAMS,
             &state.shared.dirty_params,
         );
-        // Live oscilloscope strip — fed by the audio thread, no params.
+        // Live spectrum strip — log frequency, dB magnitude. More
+        // informative than a raw waveform for synth work.
         let (scope_rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::hover());
-        core_gui::draw_scope(ui, &state.shared.scope, scope_rect, 512);
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 80.0), egui::Sense::hover());
+        core_gui::draw_spectrum_strip(ui, &state.shared.scope, scope_rect, 48_000.0);
         ui.add_space(4.0);
 
         // Harmonic bars editor — top of the window, ~180 px tall.

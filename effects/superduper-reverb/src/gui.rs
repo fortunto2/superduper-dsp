@@ -11,8 +11,8 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DAMP, P_DECAY, P_DUCK_AMOUNT, P_DUCK_ATTACK, P_DUCK_RELEASE, P_MIX, P_MOD,
-            P_PREDELAY, P_SIZE, P_WIDTH, PARAMS, SharedParams};
+use crate::{P_DAMP, P_DECAY, P_DUCK_AMOUNT, P_DUCK_ATTACK, P_DUCK_RELEASE, P_FREEZE, P_MIX,
+            P_MOD, P_PD_DIV, P_PD_SYNC, P_PREDELAY, P_SIZE, P_WIDTH, PARAMS, SharedParams};
 
 // Compact-by-default. Fits REAPER's FX window without forcing the user to
 // drag-resize. Mono 12 px + tight spacing makes this enough for 10 params.
@@ -110,7 +110,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DECAY);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DAMP], &PARAMS[P_DAMP], &state.shared.dirty_params[P_DAMP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DAMP);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_PREDELAY], &PARAMS[P_PREDELAY], &state.shared.dirty_params[P_PREDELAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PREDELAY);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PD_SYNC], &PARAMS[P_PD_SYNC], &state.shared.dirty_params[P_PD_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PD_SYNC);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PD_DIV], &PARAMS[P_PD_DIV], &state.shared.dirty_params[P_PD_DIV], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PD_DIV);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MOD], &PARAMS[P_MOD], &state.shared.dirty_params[P_MOD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MOD);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_FREEZE], &PARAMS[P_FREEZE], &state.shared.dirty_params[P_FREEZE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_FREEZE);
             });
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);

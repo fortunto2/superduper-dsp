@@ -98,6 +98,12 @@ const PARAMS: &[ParamDef] = &[
     ParamDef { id: 7, name: b"Duck Amount",   min: 0.0, max: 24.0, default: 0.0, unit: "dB" },
     ParamDef { id: 8, name: b"Duck Attack",   min: 1.0, max: 200.0, default: 5.0, unit: "ms" },
     ParamDef { id: 9, name: b"Duck Release",  min: 10.0, max: 1000.0, default: 150.0, unit: "ms" },
+    // Pre-delay tempo sync — if on, Pre-Delay is computed from host BPM × PD Div.
+    ParamDef { id: 10, name: b"PD Sync",      min: 0.0, max: 1.0,  default: 0.0, unit: "" },
+    ParamDef { id: 11, name: b"PD Div",       min: 0.0, max: 11.0, default: 10.0, unit: "" },
+    // Freeze toggle — when on, decay → ∞ and input is muted into the tank.
+    // The existing tail keeps recirculating with no damping loss.
+    ParamDef { id: 12, name: b"Freeze",       min: 0.0, max: 1.0,  default: 0.0, unit: "" },
 ];
 
 pub const P_SIZE: usize = 0;
@@ -110,6 +116,9 @@ pub const P_MIX: usize = 6;
 pub const P_DUCK_AMOUNT: usize = 7;
 pub const P_DUCK_ATTACK: usize = 8;
 pub const P_DUCK_RELEASE: usize = 9;
+pub const P_PD_SYNC: usize = 10;
+pub const P_PD_DIV: usize = 11;
+pub const P_FREEZE: usize = 12;
 
 
 // ===========================================================================
@@ -132,6 +141,7 @@ pub struct SharedParamsInner {
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub host_bpm: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -149,6 +159,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
+                host_bpm: AtomicF32::new(120.0),
             }),
         }
     }
@@ -248,6 +259,7 @@ fn stereo_process(
     duck_attack_ms: f32,
     duck_release_ms: f32,
     bypassed: bool,
+    freeze: bool,
     scope: &superduper_synth_core::gui::LiveScope,
 ) {
     // Resolve each channel into (read_slice, write_slice). For InPlace we
@@ -311,7 +323,12 @@ fn stereo_process(
                 key_l, key_l, sr,
                 duck_amount_db, duck_attack_ms, duck_release_ms,
             );
-            let (wl, _) = state.process_sample(dry, dry, p);
+            // Freeze: mute dry → tank so the existing tail recirculates
+            // without being overwritten by new input. The dry-blend in
+            // the output mix still uses the live dry sample so the user
+            // hears what they're playing on top of the held tail.
+            let tank_in = if freeze { 0.0 } else { dry };
+            let (wl, _) = state.process_sample(tank_in, tank_in, p);
             let final_out = dry * (1.0 - mix) + (wl * width * duck_gain) * mix;
             *o = final_out;
             scope.push(final_out);
@@ -361,7 +378,8 @@ fn stereo_process(
             duck_amount_db, duck_attack_ms, duck_release_ms,
         );
 
-        let (wl, wr) = state.process_sample(dl, dr, p);
+        let (tank_in_l, tank_in_r) = if freeze { (0.0, 0.0) } else { (dl, dr) };
+        let (wl, wr) = state.process_sample(tank_in_l, tank_in_r, p);
         let mono_w = (wl + wr) * 0.5;
         let final_wl = wl * width + mono_w * (1.0 - width);
         let final_wr = wr * width + mono_w * (1.0 - width);
@@ -376,6 +394,13 @@ fn stereo_process(
 /// Thin wrapper around the shared CLAP helper that takes our typed PluginShared.
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
     superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events);
+    for event in events {
+        if let Some(core) = event.as_core_event() {
+            if let clack_plugin::events::spaces::CoreEventSpace::Transport(t) = core {
+                shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
@@ -468,9 +493,26 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
 
         let size_target = self.shared.params[P_SIZE].load(Ordering::Relaxed);
-        let decay_target = self.shared.params[P_DECAY].load(Ordering::Relaxed);
+        let freeze_on = self.shared.params[P_FREEZE].load(Ordering::Relaxed) >= 0.5;
+        // Freeze raises decay to its cap (effectively infinite tail) and
+        // mutes input into the tank below. We don't disable damping — a
+        // pure-reflective infinite tail goes harsh fast; some HF rolloff
+        // keeps the freeze musical (Lexicon-style Hold mode).
+        let raw_decay = self.shared.params[P_DECAY].load(Ordering::Relaxed);
+        let decay_target = if freeze_on { 0.99 } else { raw_decay };
         let damp_target = self.shared.params[P_DAMP].load(Ordering::Relaxed);
-        let predelay_target = self.shared.params[P_PREDELAY].load(Ordering::Relaxed);
+        // Pre-delay tempo sync: if PD Sync is on, pre-delay = note ms
+        // derived from host BPM × PD Div (same musical-division enum
+        // shape as Delay's Time Div).
+        let pd_sync_on = self.shared.params[P_PD_SYNC].load(Ordering::Relaxed) >= 0.5;
+        let predelay_target = if pd_sync_on {
+            let div = self.shared.params[P_PD_DIV].load(Ordering::Relaxed) as u32;
+            let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+            let hz = superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm);
+            (1000.0 / hz.max(0.5)).clamp(0.0, 200.0)
+        } else {
+            self.shared.params[P_PREDELAY].load(Ordering::Relaxed)
+        };
         let mod_target = self.shared.params[P_MOD].load(Ordering::Relaxed);
         let width = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
         let mix = self.shared.params[P_MIX].load(Ordering::Relaxed);
@@ -549,6 +591,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 duck_attack,
                 duck_release,
                 bypassed,
+                freeze_on,
                 &self.shared.scope,
             );
         }
@@ -608,6 +651,15 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> core::fmt::Result {
+        use core::fmt::Write;
+        let pid = param_id.get() as usize;
+        if pid == P_PD_DIV {
+            return write!(writer, "{}",
+                superduper_synth_core::dsp_blocks::sync_division_label(value.round() as u32));
+        }
+        if pid == P_PD_SYNC || pid == P_FREEZE {
+            return write!(writer, "{}", if value >= 0.5 { "On" } else { "Off" });
+        }
         ParamDef::write_display(PARAMS, param_id, value, writer)
     }
 

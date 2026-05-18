@@ -23,6 +23,7 @@ members = [
     "effects/superduper-wave",
     "effects/superduper-kubyz",
     "effects/superduper-chorus",
+    "effects/superduper-drum",
     "tools/sdsp-runner",
 ]
 

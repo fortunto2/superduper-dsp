@@ -1,26 +1,40 @@
 # SuperDuper DSP
 
-Open-source CLAP plugin suite — a full vocal-chain in eight focused effects
-written in Rust. Custom egui-based GUIs with a retro phosphor-green theme,
-factory presets, and sidechain ducking across the family.
+Open-source CLAP plugin suite — 13 focused effects and synths written in
+Rust. Full vocal-chain, two original synths (wavetable bass + jaw-harp
+physical model), custom egui-based GUIs with a retro phosphor-green
+theme, factory presets, sidechain ducking, automation write, MIDI CC /
+pitch-bend, tempo sync, and CLAP state persistence across the family.
 
 [**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
 
 ## The plugins
 
+### Effects
+
 | Plugin | Use | Highlights |
 |---|---|---|
 | **EQ** | tone shaping | 3-band parametric (low shelf + mid peak + high shelf) + HP/LP. RBJ biquad math. |
-| **Compressor** | dynamics | Soft-knee feed-forward, peak+LP detector, 2 ms lookahead, sidechain HPF, **external sidechain** port, live GR meter. |
-| **Saturator** | warmth | Tape / Tube / Soft-tanh curves with Tone tilt and DC blocker. |
+| **Compressor** | dynamics | Soft-knee feed-forward, peak+LP detector, 2 ms lookahead, sidechain HPF, external sidechain port, Clean / Pump / Smooth curves, oversampled ceiling clipper, live GR meter + oscilloscope. |
+| **Saturator** | warmth | Tape / Tube / Soft-tanh with Tone tilt + 2×/4× polyphase oversampling. |
 | **Delay** | rhythm/space | 3rd-order Lagrange interpolation, tape-style feedback saturation, Stereo / Ping-Pong / Slap modes, sidechain ducking. |
-| **Reverb** | space | Dattorro figure-of-eight plate with modulated allpasses, cross-feedback, sidechain ducking. |
+| **Reverb** | space | Dattorro figure-of-eight plate with modulated allpasses, Lagrange-3 fractional taps for click-free SIZE sweeps. Sidechain ducking. |
 | **Supermass** | wash | Valhalla-style cascade (reverb → stereo chorus → reverb, 28 s tail), sidechain ducking. |
 | **Limiter** | mastering | Lookahead brickwall with 4× true-peak detection on a sidechain upsampler, live GR meter. |
 | **Spectrum** | metering | Pass-through analyzer — Spectrum / Spectrogram / Split view, three colour palettes. |
+| **Vocal** | restoration | Split-band de-esser + ratio-detector de-clicker tuned for rap/spoken word. |
 
-All eight share:
+### Instruments
+
+| Plugin | Use | Highlights |
+|---|---|---|
+| **Pad** | polyphonic pad | 8-voice MIDI synth, TPT/ZDF SVF + tanh, click-free voice steal, soft-fade choke, MIDI CC + pitch-bend. |
+| **Ambient** | autonomous drone | No-input chord-drone generator. |
+| **Wave** | wavetable bass / lead | Mouse-editable curve (sharp / smooth nodes via Catmull-Rom, RDP simplify, Undo/Redo), mip-mapped anti-aliasing, unison + sub + noise + filter env + LFO with 3 destinations + tempo sync, MIDI CC + pitch-bend + aftertouch. |
+| **Kubyz** | jaw-harp / khomus | 16-harmonic additive + 3-band bandpass formant + interactive IPA vowel pad + animated mouth trajectory (Circle / Sine / Figure-8 / Triangle / Line) with stereo motion + tempo-sync Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets + tools/kubyz_analyser for fitting your own. |
+
+All thirteen share:
 
 - **Sidechain ports** wherever it makes sense (Reverb, Supermass, Delay,
   Saturator, Compressor). Classic use case — route plugin on an aux/send,
@@ -32,6 +46,19 @@ All eight share:
   know which build is loaded.
 - **CLAP** format — runs in REAPER, Bitwig, Studio One, FL Studio,
   MultitrackStudio, etc.
+- **Automation write** — every GUI knob move shows up in the host's FX
+  automation lane, including pad drags, harmonic-bar editing and preset
+  picks.
+- **CLAP state extension** — project save / FX-chain preset round-trips
+  all params + bypass; Wave preserves the drawn frame_a curve, Kubyz
+  preserves the 16 harmonics + formant bandwidths/gains.
+- **A/B compare + Initialize** — standard DAW workflow with the four-
+  button bar in every plugin.
+- **Live spectrum strip** — log Hz × dB magnitude under the A/B bar.
+- **Pitch bend + MIDI CC** (synths only) for live expressive control
+  without touching the automation lane.
+- **Tempo sync** — Wave LFO Rate and Kubyz Mouth Rate lock to host BPM
+  with musical divisions (1/1 ↔ 1/16t, dotted + triplet).
 
 ## Quick start
 
@@ -61,19 +88,14 @@ Delay) is the classic pop-vocal trick:
 Apple Silicon (or Windows / Linux native):
 
 ```bash
-cargo build --release \
-    -p superduper-reverb \
-    -p superduper-supermass \
-    -p superduper-spectrum \
-    -p superduper-saturator \
-    -p superduper-delay \
-    -p superduper-compressor \
-    -p superduper-eq \
-    -p superduper-limiter
+# All 13 plugins in one go:
+./scripts/build_all_bundles.sh
+# Or one plugin at a time:
+./scripts/build_kubyz_bundle.sh
 ```
 
-Per-plugin install scripts under `scripts/` build the .clap bundle and
-drop it into `~/Library/Audio/Plug-Ins/CLAP/` on macOS. The combined
+Per-plugin scripts compile the dylib, package the .clap bundle and
+install into `~/Library/Audio/Plug-Ins/CLAP/`. The combined
 `scripts/build_release.sh <version>` produces signed zips ready to ship.
 
 ## Standalone runner

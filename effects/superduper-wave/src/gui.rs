@@ -268,6 +268,21 @@ struct GuiState {
     /// True after the user has actively edited — used to decide whether
     /// to overwrite the curve when they pick a new preset.
     user_edited: bool,
+    /// Undo / redo stacks for the curve editor. Each entry is a full
+    /// CurveNodes snapshot (cheap — typically ≤ 32 nodes). Cap at 64
+    /// entries to keep memory bounded.
+    history: Vec<CurveNodes>,
+    redo: Vec<CurveNodes>,
+}
+
+const HISTORY_CAP: usize = 64;
+
+fn push_history(state: &mut GuiState) {
+    state.history.push(state.nodes.clone());
+    if state.history.len() > HISTORY_CAP {
+        state.history.remove(0);
+    }
+    state.redo.clear();
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -292,6 +307,8 @@ pub fn open_window<P: HasRawWindowHandle>(
         preview_b: vec![0.0; WT_SIZE],
         preview_for_preset: None,
         edit_mode: false,
+        history: Vec::with_capacity(HISTORY_CAP),
+        redo: Vec::new(),
         nodes: CurveNodes::default(),
         dragging_node: None,
         selected_node: None,
@@ -422,7 +439,11 @@ fn draw_wave_canvas(
     let pointer_hover = response.hover_pos();
     let node_radius = 6.0_f32;
 
-    // Hit-test for drag/select on press.
+    // Hit-test for drag/select on press. Capture an undo snapshot at the
+    // beginning of every potentially-mutating gesture (drag, add, delete).
+    if response.drag_started() {
+        push_history(state);
+    }
     if response.drag_started() || response.clicked() {
         if let Some(p) = pointer_hover {
             let mut best: Option<(usize, f32)> = None;
@@ -468,6 +489,7 @@ fn draw_wave_canvas(
     let secondary_click = ui.input(|i| i.pointer.secondary_clicked());
 
     if primary_double {
+        push_history(state);
         if let Some(p) = pointer_hover {
             let mut too_close = false;
             for n in &state.nodes.pts {
@@ -486,6 +508,7 @@ fn draw_wave_canvas(
         }
     }
     if secondary_click {
+        push_history(state);
         if let Some(p) = pointer_hover {
             let mut victim: Option<usize> = None;
             for (i, n) in state.nodes.pts.iter().enumerate() {
@@ -547,6 +570,44 @@ fn draw_wave_canvas(
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     refresh_preview(state);
 
+    // Undo / Redo — Ctrl/Cmd-Z / Ctrl-Shift-Z (or Ctrl-Y).
+    let action = ctx.input(|i| {
+        if i.modifiers.command && i.key_pressed(egui::Key::Z) {
+            if i.modifiers.shift {
+                Some(false) // redo
+            } else {
+                Some(true) // undo
+            }
+        } else if i.modifiers.command && i.key_pressed(egui::Key::Y) {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    let mut history_changed = false;
+    match action {
+        Some(true) => {
+            if let Some(prev) = state.history.pop() {
+                state.redo.push(state.nodes.clone());
+                state.nodes = prev;
+                history_changed = true;
+            }
+        }
+        Some(false) => {
+            if let Some(next) = state.redo.pop() {
+                state.history.push(state.nodes.clone());
+                state.nodes = next;
+                history_changed = true;
+            }
+        }
+        None => {}
+    }
+    if history_changed {
+        let table = state.nodes.render();
+        let mip = mip_from_table(table.as_ref());
+        push_custom_frame_a(&state.shared, mip);
+    }
+
     egui::CentralPanel::default().show(ctx, |ui| {
         if let Some(i) = core_gui::top_bar(
             ui,
@@ -571,6 +632,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             PARAMS,
             &state.shared.dirty_params,
         );
+        let (scope_rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
+        core_gui::draw_scope(ui, &state.shared.scope, scope_rect, 512);
         let active = state.shared.active_voices.load(Ordering::Relaxed);
         ui.horizontal(|ui| {
             ui.label(format!("Voices: {active} / {}", crate::VOICE_COUNT));

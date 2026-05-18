@@ -148,6 +148,7 @@ pub struct SharedParamsInner {
     /// Live pitch-bend in semitones (signed). Set by MIDI 0xE0.
     pub pitch_bend_st: AtomicF32,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    pub scope: superduper_synth_core::gui::LiveScope,
 }
 
 pub struct PluginShared {
@@ -171,6 +172,7 @@ impl PluginShared {
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
         }
     }
@@ -591,8 +593,11 @@ impl<'a> PluginAudioProcessor<'a> {
 
             let voice_scale = 0.5_f32;
             let out_lin = 10f32.powf(output_db / 20.0);
-            out_l[i] = mix_l * voice_scale * out_lin;
-            out_r[i] = mix_r * voice_scale * out_lin;
+            let final_l = mix_l * voice_scale * out_lin;
+            let final_r = mix_r * voice_scale * out_lin;
+            out_l[i] = final_l;
+            out_r[i] = final_r;
+            self.shared.scope.push((final_l + final_r) * 0.5);
         }
     }
 

@@ -139,6 +139,9 @@ pub struct SharedParamsInner {
     /// A/B snapshot pair — two memorised states of every CLAP param.
     /// User flips between them to compare tweaks without losing either.
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
+    /// Live oscilloscope ring buffer — audio thread pushes the L/R-summed
+    /// output, GUI draws the last ~512 samples.
+    pub scope: superduper_synth_core::gui::LiveScope,
 }
 
 pub struct PluginShared {
@@ -175,6 +178,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 pitch_bend_st: AtomicF32::new(0.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
+                scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
         }
     }
@@ -557,8 +561,13 @@ impl<'a> PluginAudioProcessor<'a> {
             // as the dry stereo path when pan = 0 (equal-power compensation).
             let panned_l = mono * pan_l * core::f32::consts::SQRT_2;
             let panned_r = mono * pan_r * core::f32::consts::SQRT_2;
-            out_l[i] = raw_l * (1.0 - mouth_stereo) + panned_l * mouth_stereo;
-            out_r[i] = raw_r * (1.0 - mouth_stereo) + panned_r * mouth_stereo;
+            let final_l = raw_l * (1.0 - mouth_stereo) + panned_l * mouth_stereo;
+            let final_r = raw_r * (1.0 - mouth_stereo) + panned_r * mouth_stereo;
+            out_l[i] = final_l;
+            out_r[i] = final_r;
+            // Feed the live oscilloscope with the mono mix-down so the GUI
+            // can show what the listener hears.
+            self.shared.scope.push((final_l + final_r) * 0.5);
         }
         // Write the advanced phase back so the GUI can read where the
         // cursor should sit right now.

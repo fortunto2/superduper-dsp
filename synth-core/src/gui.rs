@@ -21,6 +21,83 @@ use atomic_float::AtomicF32;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
 // ---------------------------------------------------------------------------
+// Live oscilloscope — a tiny lock-free ring buffer for the audio thread
+// to deposit recent samples in, and the GUI to read for visualisation.
+// Per-slot atomic so we never need a Mutex: audio thread bumps `head`
+// and stores into the slot; GUI walks backwards from head reading the
+// snapshot. Inconsistencies under load look like a slight wiggle, not
+// like dropouts — perfectly acceptable for a meter.
+// ---------------------------------------------------------------------------
+
+pub struct LiveScope {
+    pub buf: Box<[AtomicF32]>,
+    pub head: std::sync::atomic::AtomicUsize,
+}
+
+impl LiveScope {
+    pub fn new(capacity: usize) -> Self {
+        let buf: Vec<AtomicF32> = (0..capacity).map(|_| AtomicF32::new(0.0)).collect();
+        Self {
+            buf: buf.into_boxed_slice(),
+            head: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    /// Audio-thread: push one sample (mono). Lock-free.
+    #[inline]
+    pub fn push(&self, x: f32) {
+        let cap = self.buf.len();
+        if cap == 0 {
+            return;
+        }
+        let h = self.head.fetch_add(1, Ordering::Relaxed) % cap;
+        self.buf[h].store(x, Ordering::Relaxed);
+    }
+    /// GUI-thread: copy the last `out.len()` samples in chronological order.
+    pub fn snapshot(&self, out: &mut [f32]) {
+        let cap = self.buf.len();
+        if cap == 0 || out.is_empty() {
+            return;
+        }
+        let head = self.head.load(Ordering::Relaxed);
+        let start = head.wrapping_sub(out.len());
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = self.buf[start.wrapping_add(i) % cap].load(Ordering::Relaxed);
+        }
+    }
+}
+
+/// Render the live scope inside `rect` — green polyline + centre line.
+pub fn draw_scope(ui: &mut egui::Ui, scope: &LiveScope, rect: egui::Rect, samples: usize) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, PANEL_BG);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(1.0, GREEN_FAINT),
+        egui::epaint::StrokeKind::Outside,
+    );
+    let centre_y = rect.center().y;
+    painter.line_segment(
+        [egui::pos2(rect.left(), centre_y), egui::pos2(rect.right(), centre_y)],
+        egui::Stroke::new(0.5, GREEN_FAINT),
+    );
+    let mut buf = vec![0.0_f32; samples];
+    scope.snapshot(&mut buf);
+    let half_h = rect.height() * 0.45;
+    let step_x = rect.width() / (samples.saturating_sub(1).max(1) as f32);
+    let mut prev: Option<egui::Pos2> = None;
+    for (i, v) in buf.iter().copied().enumerate() {
+        let x = rect.left() + i as f32 * step_x;
+        let y = centre_y - v.clamp(-1.5, 1.5) * half_h;
+        let pt = egui::pos2(x, y);
+        if let Some(p) = prev {
+            painter.line_segment([p, pt], egui::Stroke::new(1.0, GREEN_BRIGHT));
+        }
+        prev = Some(pt);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // User file-presets — save/load arbitrary parameter snapshots to
 // ~/.superduper-dsp/<plugin>/presets/<name>.json. Plugins call into
 // these helpers from their GUI; the JSON format is intentionally simple

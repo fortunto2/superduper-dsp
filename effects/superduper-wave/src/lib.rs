@@ -33,6 +33,8 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
     PluginParams,
 };
+use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use parking_lot::Mutex;
@@ -800,6 +802,66 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLAP state — saves params + the user-drawn frame_a so a project reload
+// brings back exactly what the user designed (without this REAPER loses
+// the curve and the active preset).
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WaveState {
+    version: u32,
+    params: Vec<f32>,
+    bypass: bool,
+    /// Currently-loaded frame_a samples (full bandwidth, level 0). On
+    /// reload we re-build the mip pyramid from this — no need to store
+    /// every mip level.
+    frame_a: Vec<f32>,
+    /// Active preset index — informational, helps the GUI restore the
+    /// dropdown selection.
+    active_preset: u32,
+}
+
+const WAVE_STATE_VERSION: u32 = 1;
+
+impl PluginStateImpl for PluginMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let guard = self.shared.wavetable.lock();
+        let frame_a: Vec<f32> = guard.0.levels[0].iter().copied().collect();
+        drop(guard);
+        let state = WaveState {
+            version: WAVE_STATE_VERSION,
+            params: self.shared.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+            bypass: self.shared.bypass.load(Ordering::Relaxed),
+            frame_a,
+            active_preset: self.shared.active_preset.load(Ordering::Relaxed),
+        };
+        serde_json::to_writer(output, &state)
+            .map_err(|_| PluginError::Message("state JSON write error"))
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let state: WaveState = serde_json::from_reader(input)
+            .map_err(|_| PluginError::Message("state JSON read error"))?;
+        if state.version != WAVE_STATE_VERSION {
+            return Err(PluginError::Message("state version mismatch"));
+        }
+        for (i, v) in state.params.iter().enumerate() {
+            if let Some(slot) = self.shared.params.get(i) {
+                slot.store(*v, Ordering::Relaxed);
+            }
+        }
+        self.shared.bypass.store(state.bypass, Ordering::Relaxed);
+        // Rebuild mip pyramid from the saved frame_a, then swap atomically.
+        if state.frame_a.len() == osc::WT_SIZE {
+            let new_a = osc::mip_from_table(&state.frame_a);
+            push_custom_frame_a(&self.shared, new_a);
+        }
+        self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
     Window as ClapGuiWindow,
@@ -879,6 +941,7 @@ impl Plugin for SuperDuperWave {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
+            .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>();
     }
 }

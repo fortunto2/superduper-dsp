@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clack-plugin = "0.1"
-clack-extensions = { version = "0.1", features = ["params", "audio-ports", "gui", "latency", "clack-plugin", "raw-window-handle_05"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "state", "gui", "latency", "clack-plugin", "raw-window-handle_05"] }
 clack-common = "0.1"
 atomic_float = "1"
 parking_lot = "0.12"
@@ -28,5 +28,5 @@ superduper-dsp-sdk-build = { path = "../../sdk-build" }
 
 [dev-dependencies]
 clack-host = { version = "0.1", features = ["clack-plugin"] }
-clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "clack-host"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "state", "log", "clack-host"] }
 superduper-synth-core = { path = "../../synth-core" }

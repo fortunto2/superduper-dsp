@@ -31,6 +31,9 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
     PluginParams,
 };
+use clack_common::stream::{InputStream, OutputStream};
+use clack_extensions::state::{PluginState, PluginStateImpl};
+
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
@@ -431,6 +434,30 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLAP state — params + bypass through the shared SDK helper. Without this
+// REAPER drops everything when saving the project / FX chain preset.
+// ---------------------------------------------------------------------------
+
+impl PluginStateImpl for PluginMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        superduper_dsp_sdk::clap_helpers::save_simple_state(
+            &self.shared.params,
+            self.shared.bypass.load(std::sync::atomic::Ordering::Relaxed),
+            output,
+        )
+    }
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let bypass = superduper_dsp_sdk::clap_helpers::load_simple_state(
+            &self.shared.params,
+            input,
+        )?;
+        self.shared.bypass.store(bypass, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+
 use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
     Window as ClapGuiWindow,
@@ -505,6 +532,7 @@ impl Plugin for SuperDuperLimiter {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
+            .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
             .register::<clack_extensions::latency::PluginLatency>();
     }

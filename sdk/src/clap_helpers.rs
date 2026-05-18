@@ -116,6 +116,56 @@ pub fn apply_param_events(params: &[AtomicF32], events: &InputEvents) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Simple CLAP state save/load — for plugins whose entire persistent state
+// is just (params + bypass). Each plugin still has to implement
+// `PluginStateImpl` (we can't do that from a helper because it needs
+// access to the plugin's concrete Shared), but the JSON encode/decode is
+// shared so we only get one schema version to manage.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SimpleState {
+    pub version: u32,
+    pub params: Vec<f32>,
+    pub bypass: bool,
+}
+
+pub const SIMPLE_STATE_VERSION: u32 = 1;
+
+pub fn save_simple_state(
+    params: &[AtomicF32],
+    bypass: bool,
+    output: &mut clack_common::stream::OutputStream,
+) -> Result<(), clack_plugin::plugin::PluginError> {
+    let state = SimpleState {
+        version: SIMPLE_STATE_VERSION,
+        params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+        bypass,
+    };
+    serde_json::to_writer(output, &state)
+        .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON write error"))
+}
+
+pub fn load_simple_state(
+    params: &[AtomicF32],
+    input: &mut clack_common::stream::InputStream,
+) -> Result<bool, clack_plugin::plugin::PluginError> {
+    let state: SimpleState = serde_json::from_reader(input)
+        .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON read error"))?;
+    if state.version != SIMPLE_STATE_VERSION {
+        return Err(clack_plugin::plugin::PluginError::Message(
+            "state version mismatch",
+        ));
+    }
+    for (i, v) in state.params.iter().enumerate() {
+        if let Some(slot) = params.get(i) {
+            slot.store(*v, Ordering::Relaxed);
+        }
+    }
+    Ok(state.bypass)
+}
+
 /// Push a `ParamValueEvent` into the host's output queue for every dirty
 /// parameter, then clear the bit. Lets GUI-driven changes show up in the
 /// host's automation lane — without this, knob moves made in the plugin

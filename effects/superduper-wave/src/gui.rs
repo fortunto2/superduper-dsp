@@ -722,26 +722,26 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Oscillator", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_WT_POS], &PARAMS[P_WT_POS], &state.shared.dirty_params[P_WT_POS]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_UNISON], &PARAMS[P_UNISON], &state.shared.dirty_params[P_UNISON]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DETUNE], &PARAMS[P_DETUNE], &state.shared.dirty_params[P_DETUNE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_SUB], &PARAMS[P_SUB], &state.shared.dirty_params[P_SUB]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_WT_POS], &PARAMS[P_WT_POS], &state.shared.dirty_params[P_WT_POS], &state.shared.midi_learn, P_WT_POS);
+                core_gui::learn_param_row(ui, &state.shared.params[P_UNISON], &PARAMS[P_UNISON], &state.shared.dirty_params[P_UNISON], &state.shared.midi_learn, P_UNISON);
+                core_gui::learn_param_row(ui, &state.shared.params[P_DETUNE], &PARAMS[P_DETUNE], &state.shared.dirty_params[P_DETUNE], &state.shared.midi_learn, P_DETUNE);
+                core_gui::learn_param_row(ui, &state.shared.params[P_SUB], &PARAMS[P_SUB], &state.shared.dirty_params[P_SUB], &state.shared.midi_learn, P_SUB);
             });
             core_gui::section(ui, "Mix", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_NOISE], &PARAMS[P_NOISE], &state.shared.dirty_params[P_NOISE]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_NOISE], &PARAMS[P_NOISE], &state.shared.dirty_params[P_NOISE], &state.shared.midi_learn, P_NOISE);
             });
             core_gui::section(ui, "Filter", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FILTER_MODE], &PARAMS[P_FILTER_MODE], &state.shared.dirty_params[P_FILTER_MODE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], &state.shared.midi_learn, P_CUTOFF);
+                core_gui::learn_param_row(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE], &state.shared.midi_learn, P_RESONANCE);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FILTER_MODE], &PARAMS[P_FILTER_MODE], &state.shared.dirty_params[P_FILTER_MODE], &state.shared.midi_learn, P_FILTER_MODE);
+                core_gui::learn_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], &state.shared.midi_learn, P_DRIVE);
             });
             core_gui::section(ui, "Filter Envelope", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FENV_AMOUNT], &PARAMS[P_FENV_AMOUNT], &state.shared.dirty_params[P_FENV_AMOUNT]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FENV_A], &PARAMS[P_FENV_A], &state.shared.dirty_params[P_FENV_A]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FENV_D], &PARAMS[P_FENV_D], &state.shared.dirty_params[P_FENV_D]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FENV_S], &PARAMS[P_FENV_S], &state.shared.dirty_params[P_FENV_S]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_FENV_R], &PARAMS[P_FENV_R], &state.shared.dirty_params[P_FENV_R]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FENV_AMOUNT], &PARAMS[P_FENV_AMOUNT], &state.shared.dirty_params[P_FENV_AMOUNT], &state.shared.midi_learn, P_FENV_AMOUNT);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FENV_A], &PARAMS[P_FENV_A], &state.shared.dirty_params[P_FENV_A], &state.shared.midi_learn, P_FENV_A);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FENV_D], &PARAMS[P_FENV_D], &state.shared.dirty_params[P_FENV_D], &state.shared.midi_learn, P_FENV_D);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FENV_S], &PARAMS[P_FENV_S], &state.shared.dirty_params[P_FENV_S], &state.shared.midi_learn, P_FENV_S);
+                core_gui::learn_param_row(ui, &state.shared.params[P_FENV_R], &PARAMS[P_FENV_R], &state.shared.dirty_params[P_FENV_R], &state.shared.midi_learn, P_FENV_R);
             });
             core_gui::section(ui, "LFO 1", |ui| {
                 let shape_idx = state.shared.params[P_LFO_SHAPE]
@@ -753,10 +753,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     shape_label(shape_idx),
                     dest_label(dest_idx)
                 ));
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_SHAPE], &PARAMS[P_LFO_SHAPE], &state.shared.dirty_params[P_LFO_SHAPE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DEST], &PARAMS[P_LFO_DEST], &state.shared.dirty_params[P_LFO_DEST]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_RATE], &PARAMS[P_LFO_RATE], &state.shared.dirty_params[P_LFO_RATE]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DEPTH], &PARAMS[P_LFO_DEPTH], &state.shared.dirty_params[P_LFO_DEPTH]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_SHAPE], &PARAMS[P_LFO_SHAPE], &state.shared.dirty_params[P_LFO_SHAPE], &state.shared.midi_learn, P_LFO_SHAPE);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_DEST], &PARAMS[P_LFO_DEST], &state.shared.dirty_params[P_LFO_DEST], &state.shared.midi_learn, P_LFO_DEST);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_RATE], &PARAMS[P_LFO_RATE], &state.shared.dirty_params[P_LFO_RATE], &state.shared.midi_learn, P_LFO_RATE);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_DEPTH], &PARAMS[P_LFO_DEPTH], &state.shared.dirty_params[P_LFO_DEPTH], &state.shared.midi_learn, P_LFO_DEPTH);
                 let sync_on = state.shared.params[P_LFO_SYNC]
                     .load(Ordering::Relaxed)
                     >= 0.5;
@@ -770,17 +770,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 } else {
                     "sync:  off  ·  free Hz".to_string()
                 });
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_SYNC], &PARAMS[P_LFO_SYNC], &state.shared.dirty_params[P_LFO_SYNC]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DIV], &PARAMS[P_LFO_DIV], &state.shared.dirty_params[P_LFO_DIV]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_SYNC], &PARAMS[P_LFO_SYNC], &state.shared.dirty_params[P_LFO_SYNC], &state.shared.midi_learn, P_LFO_SYNC);
+                core_gui::learn_param_row(ui, &state.shared.params[P_LFO_DIV], &PARAMS[P_LFO_DIV], &state.shared.dirty_params[P_LFO_DIV], &state.shared.midi_learn, P_LFO_DIV);
             });
             core_gui::section(ui, "Amp Envelope", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN]);
-                core_gui::dirty_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], &state.shared.midi_learn, P_ATTACK);
+                core_gui::learn_param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], &state.shared.midi_learn, P_DECAY);
+                core_gui::learn_param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], &state.shared.midi_learn, P_SUSTAIN);
+                core_gui::learn_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], &state.shared.midi_learn, P_RELEASE);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::dirty_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT]);
+                core_gui::learn_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], &state.shared.midi_learn, P_OUTPUT);
                 // Anti-alias as a checkbox so it's obvious + accessible
                 // without typing — still backed by the param so the host
                 // can automate and remember it.

@@ -21,6 +21,157 @@ use atomic_float::AtomicF32;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
 // ---------------------------------------------------------------------------
+// MIDI Learn — bind any MIDI CC to any plugin param at runtime via a
+// right-click context menu, instead of needing a hard-coded CC table.
+//
+// Storage: per-plugin `MidiLearnState` sitting on `Shared`.  GUI
+// thread arms a learn by storing the target param index into `pending`;
+// the audio thread's `handle_cc()` consumes the next CC, stores the
+// mapping, and clears `pending`.  Subsequent CC events look up the
+// mapping table and write directly into the param atomic.
+// ---------------------------------------------------------------------------
+
+pub struct MidiLearnState {
+    /// CC number 0..=127 → param index.
+    pub mappings: parking_lot::Mutex<std::collections::HashMap<u8, usize>>,
+    /// Currently-pending learn target.  `-1` = idle; `>=0` = arm: next CC
+    /// will bind to that param index.
+    pub pending: std::sync::atomic::AtomicI32,
+}
+
+impl Default for MidiLearnState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MidiLearnState {
+    pub fn new() -> Self {
+        Self {
+            mappings: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            pending: std::sync::atomic::AtomicI32::new(-1),
+        }
+    }
+    /// Process an incoming CC event. Returns:
+    /// - `Some(idx)` if this CC is bound to a param — caller writes the
+    ///   normalised value into that param atomic.
+    /// - `None` if the CC was consumed by a pending Learn (don't apply
+    ///   the value), OR if the CC has no mapping (caller may fall back
+    ///   to a hardcoded mapping table or ignore it).
+    pub fn handle_cc(&self, cc: u8) -> Option<usize> {
+        let pending = self.pending.load(Ordering::Relaxed);
+        if pending >= 0 {
+            self.mappings.lock().insert(cc, pending as usize);
+            self.pending.store(-1, Ordering::Relaxed);
+            return None;
+        }
+        self.mappings.lock().get(&cc).copied()
+    }
+    pub fn arm(&self, param_idx: usize) {
+        self.pending.store(param_idx as i32, Ordering::Relaxed);
+    }
+    pub fn cancel(&self) {
+        self.pending.store(-1, Ordering::Relaxed);
+    }
+    pub fn clear_for_param(&self, param_idx: usize) {
+        self.mappings.lock().retain(|_, v| *v != param_idx);
+    }
+    pub fn is_learning(&self, param_idx: usize) -> bool {
+        self.pending.load(Ordering::Relaxed) == param_idx as i32
+    }
+    /// Snapshot the mappings as a (cc, param_idx) pair vec — for state
+    /// serialisation and Restore.
+    pub fn snapshot(&self) -> Vec<(u8, usize)> {
+        let m = self.mappings.lock();
+        let mut out: Vec<(u8, usize)> = m.iter().map(|(&k, &v)| (k, v)).collect();
+        out.sort_by_key(|(cc, _)| *cc);
+        out
+    }
+    pub fn replace(&self, pairs: &[(u8, usize)]) {
+        let mut m = self.mappings.lock();
+        m.clear();
+        for &(cc, idx) in pairs {
+            m.insert(cc, idx);
+        }
+    }
+}
+
+/// Param row with right-click "MIDI Learn" + "Clear MIDI" entries.
+/// Same drag behaviour as `dirty_param_row`; the only difference is the
+/// context menu and a tiny status badge if this param is currently
+/// armed for Learn.
+pub fn learn_param_row(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+    learn: &MidiLearnState,
+    param_idx: usize,
+) {
+    let before = atom.load(Ordering::Relaxed);
+    let name = std::str::from_utf8(def.name)
+        .unwrap_or("?")
+        .trim_end_matches('\0');
+    let learning = learn.is_learning(param_idx);
+    let bound_cc = {
+        let m = learn.mappings.lock();
+        m.iter().find_map(|(&cc, &idx)| (idx == param_idx).then_some(cc))
+    };
+
+    let label_text = if learning {
+        format!("{name}  · LEARN")
+    } else if let Some(cc) = bound_cc {
+        format!("{name}  · CC{cc}")
+    } else {
+        name.to_string()
+    };
+
+    let response = ui.horizontal(|ui| {
+        let colour = if learning { GREEN_BRIGHT } else { GREEN };
+        let label_resp = ui.add_sized(
+            [120.0, 18.0],
+            egui::Label::new(
+                egui::RichText::new(&label_text).color(colour).monospace(),
+            )
+            .sense(egui::Sense::click()),
+        );
+        let mut value = before;
+        let slider = egui::Slider::new(&mut value, (def.min as f32)..=(def.max as f32))
+            .show_value(true)
+            .clamping(egui::SliderClamping::Always)
+            .suffix(if def.unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", def.unit)
+            });
+        let slider_resp = ui.add(slider);
+        if slider_resp.changed() {
+            atom.store(value, Ordering::Relaxed);
+            dirty.store(true, Ordering::Relaxed);
+        }
+        label_resp.union(slider_resp)
+    });
+    response.inner.context_menu(|ui| {
+        if ui.button("MIDI Learn (assign next CC)").clicked() {
+            learn.arm(param_idx);
+            ui.close_menu();
+        }
+        if bound_cc.is_some() {
+            if ui.button("Clear MIDI mapping").clicked() {
+                learn.clear_for_param(param_idx);
+                ui.close_menu();
+            }
+        }
+        if learning {
+            if ui.button("Cancel learn").clicked() {
+                learn.cancel();
+                ui.close_menu();
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Live oscilloscope — a tiny lock-free ring buffer for the audio thread
 // to deposit recent samples in, and the GUI to read for visualisation.
 // Per-slot atomic so we never need a Mutex: audio thread bumps `head`

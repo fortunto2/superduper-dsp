@@ -13,6 +13,7 @@ fundsp = "0.23"
 realfft = "3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+parking_lot = { version = "0.12", optional = true }
 
 # GUI helpers are opt-in (every effect plugin enables them via
 # `superduper-synth-core = { path = "...", features = ["gui"] }`).
@@ -23,4 +24,4 @@ superduper-dsp-sdk = { path = "../sdk", optional = true }
 
 [features]
 default = []
-gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk"]
+gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lot"]

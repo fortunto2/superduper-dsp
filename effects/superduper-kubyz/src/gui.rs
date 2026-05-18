@@ -16,13 +16,14 @@ use crate::trajectory::MouthShape;
 /// the param's dirty bit — the audio thread then emits a ParamValueEvent
 /// to the host so REAPER's automation lane captures the move.
 fn dirty_param_row(ui: &mut egui::Ui, shared: &SharedParams, idx: usize) {
-    let atom = &shared.params[idx];
-    let before = atom.load(Ordering::Relaxed);
-    core_gui::param_row(ui, atom, &PARAMS[idx]);
-    let after = atom.load(Ordering::Relaxed);
-    if (after - before).abs() > 1e-9 {
-        shared.dirty_params[idx].store(true, Ordering::Relaxed);
-    }
+    core_gui::learn_param_row(
+        ui,
+        &shared.params[idx],
+        &PARAMS[idx],
+        &shared.dirty_params[idx],
+        &shared.midi_learn,
+        idx,
+    );
 }
 
 // ---------------------------------------------------------------------------

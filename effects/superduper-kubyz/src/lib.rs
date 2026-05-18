@@ -153,6 +153,8 @@ pub struct SharedParamsInner {
     /// Live oscilloscope ring buffer — audio thread pushes the L/R-summed
     /// output, GUI draws the last ~512 samples.
     pub scope: superduper_synth_core::gui::LiveScope,
+    /// Right-click → MIDI Learn map (CC → param idx).
+    pub midi_learn: superduper_synth_core::gui::MidiLearnState,
 }
 
 pub struct PluginShared {
@@ -191,6 +193,7 @@ impl PluginShared {
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
+                midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
             }),
         }
     }
@@ -409,18 +412,24 @@ impl<'a> PluginAudioProcessor<'a> {
             //   CC 74 Brightness  → F2   (front / back)
             0xb0 => {
                 let v = raw_velocity as f32 / 127.0;
-                let map = |idx: usize, frac: f32| {
+                let map_to = |idx: usize, frac: f32| {
                     let def = &PARAMS[idx];
                     let val = def.min as f32 + frac * (def.max - def.min) as f32;
                     self.shared.params[idx].store(val, Ordering::Relaxed);
                 };
-                match key {
-                    1 => map(P_MOUTH_DEPTH, v),
-                    2 => map(P_MOUTH_STEREO, v),
-                    11 => map(P_F1, v),
-                    74 => map(P_F2, v),
-                    71 => map(P_F3, v),
-                    _ => {}
+                // User Learn mappings win over the hardcoded defaults
+                // (and a pending Learn consumes the CC without applying).
+                if let Some(idx) = self.shared.midi_learn.handle_cc(key) {
+                    map_to(idx, v);
+                } else {
+                    match key {
+                        1 => map_to(P_MOUTH_DEPTH, v),
+                        2 => map_to(P_MOUTH_STEREO, v),
+                        11 => map_to(P_F1, v),
+                        74 => map_to(P_F2, v),
+                        71 => map_to(P_F3, v),
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -808,9 +817,14 @@ struct KubyzState {
     formant_bw: [f32; 3],
     formant_gain: [f32; 3],
     bypass: bool,
+    /// MIDI Learn map as (cc, param_idx) pairs. Default = empty (no
+    /// user-learned bindings). Optional in JSON for backward compat
+    /// with v1 saves.
+    #[serde(default)]
+    midi_learn: Vec<(u8, usize)>,
 }
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 impl PluginStateImpl for PluginMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
@@ -825,6 +839,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
             formant_bw: *self.shared.formant_bw.lock(),
             formant_gain: *self.shared.formant_gain.lock(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
+            midi_learn: self.shared.midi_learn.snapshot(),
         };
         serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON error"))
     }
@@ -832,7 +847,9 @@ impl PluginStateImpl for PluginMainThread<'_> {
     fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
         let state: KubyzState = serde_json::from_reader(input)
             .map_err(|_| PluginError::Message("state JSON error"))?;
-        if state.version != STATE_VERSION {
+        // Accept v1 (no midi_learn) AND the current v2 — the field has
+        // serde(default) so v1 JSONs deserialise with an empty map.
+        if state.version != STATE_VERSION && state.version != 1 {
             return Err(PluginError::Message("state version mismatch"));
         }
         for (i, v) in state.params.iter().enumerate() {
@@ -848,6 +865,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
         *self.shared.formant_bw.lock() = state.formant_bw;
         *self.shared.formant_gain.lock() = state.formant_gain;
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
+        self.shared.midi_learn.replace(&state.midi_learn);
         Ok(())
     }
 }

@@ -156,6 +156,7 @@ pub struct SharedParamsInner {
     pub host_bpm: AtomicF32,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
+    pub midi_learn: superduper_synth_core::gui::MidiLearnState,
 }
 
 pub struct PluginShared {
@@ -181,6 +182,7 @@ impl PluginShared {
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
+                midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
             }),
         }
     }
@@ -432,12 +434,16 @@ impl<'a> PluginAudioProcessor<'a> {
                     let hz = (lo + frac * (hi - lo)).exp();
                     self.shared.params[P_CUTOFF].store(hz, Ordering::Relaxed);
                 };
-                match key {
-                    1 => lin(P_LFO_DEPTH, v),
-                    11 => log_cutoff(v),
-                    71 => lin(P_RESONANCE, v),
-                    74 => lin(P_WT_POS, v),
-                    _ => {}
+                if let Some(idx) = self.shared.midi_learn.handle_cc(key) {
+                    lin(idx, v);
+                } else {
+                    match key {
+                        1 => lin(P_LFO_DEPTH, v),
+                        11 => log_cutoff(v),
+                        71 => lin(P_RESONANCE, v),
+                        74 => lin(P_WT_POS, v),
+                        _ => {}
+                    }
                 }
             }
             // Channel aftertouch (status 0xD0) — single-byte pressure

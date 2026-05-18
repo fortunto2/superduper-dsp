@@ -129,6 +129,7 @@ pub struct SharedParamsInner {
     pub bypass: std::sync::atomic::AtomicBool,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
+    pub midi_learn: superduper_synth_core::gui::MidiLearnState,
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     /// Live polyphony count for the GUI / metering. Updated each block from
     /// the audio thread (Relaxed store).
@@ -151,6 +152,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
+                midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
                 active_voices: std::sync::atomic::AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
             }),
@@ -433,12 +435,16 @@ impl<'a> PluginAudioProcessor<'a> {
                     let hz = (lo + frac * (hi - lo)).exp();
                     self.shared.params[P_CUTOFF].store(hz, Ordering::Relaxed);
                 };
-                match key {
-                    1 => lin(P_MODULATION, v),
-                    11 => lin(P_DRIVE, v),
-                    71 => lin(P_RESONANCE, v),
-                    74 => log_cutoff(v),
-                    _ => {}
+                if let Some(idx) = self.shared.midi_learn.handle_cc(key) {
+                    lin(idx, v);
+                } else {
+                    match key {
+                        1 => lin(P_MODULATION, v),
+                        11 => lin(P_DRIVE, v),
+                        71 => lin(P_RESONANCE, v),
+                        74 => log_cutoff(v),
+                        _ => {}
+                    }
                 }
             }
             _ => {}

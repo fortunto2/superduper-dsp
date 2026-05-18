@@ -15,3 +15,6 @@
 
 # Daemon runtime socket
 /tmp/superduper-dsp.sock
+
+# clap-wrapper CMake build outputs
+build-wrappers/

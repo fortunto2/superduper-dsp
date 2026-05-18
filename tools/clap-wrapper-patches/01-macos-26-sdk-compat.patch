@@ -1,0 +1,66 @@
+diff --git a/cmake/base_sdks.cmake b/cmake/base_sdks.cmake
+index ee78eb8..d3c0a6a 100644
+--- a/cmake/base_sdks.cmake
++++ b/cmake/base_sdks.cmake
+@@ -103,7 +103,7 @@ function(guarantee_vst3sdk)
+         CPMAddPackage(
+                 NAME "vst3sdk"
+                 GITHUB_REPOSITORY "steinbergmedia/vst3sdk"
+-                GIT_TAG "v3.8.0_build_66"
++                GIT_TAG "v3.7.6_build_18"
+                 # GIT_TAG "v3.7.6_build_18"
+                 EXCLUDE_FROM_ALL TRUE
+                 DOWNLOAD_ONLY TRUE
+@@ -231,7 +231,7 @@ function(guarantee_auv2sdk)
+         CPMAddPackage(
+                 NAME "AudioUnitSDK"
+                 GITHUB_REPOSITORY "apple/AudioUnitSDK"
+-                GIT_TAG "AudioUnitSDK-1.1.0"
++                GIT_TAG "AudioUnitSDK-1.4.0"
+                 EXCLUDE_FROM_ALL TRUE
+                 DOWNLOAD_ONLY TRUE
+                 SOURCE_DIR cpm/AudioUnitSDK
+diff --git a/src/detail/clap/mac_helpers.mm b/src/detail/clap/mac_helpers.mm
+index 279d5c0..f8bac06 100644
+--- a/src/detail/clap/mac_helpers.mm
++++ b/src/detail/clap/mac_helpers.mm
+@@ -100,15 +100,13 @@ Timo Kaluza (defiantnerd)
+     return std::string();
+   }
+ 
+-  std::string result;
+-
+   CFIndex length = CFStringGetLength(aString);
+   CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+-  result.reserve(maxSize);
++  std::vector<char> buf(maxSize, 0);
+ 
+-  if (CFStringGetCString(aString, result.data(), maxSize, kCFStringEncodingUTF8))
++  if (CFStringGetCString(aString, buf.data(), maxSize, kCFStringEncodingUTF8))
+   {
+-    return result;
++    return std::string(buf.data());
+   }
+ 
+   return std::string();
+diff --git a/src/detail/shared/fixedqueue.h b/src/detail/shared/fixedqueue.h
+index ac7ddd1..1e36657 100644
+--- a/src/detail/shared/fixedqueue.h
++++ b/src/detail/shared/fixedqueue.h
+@@ -10,6 +10,16 @@ template <typename T, uint32_t Q>
+ class fixedqueue
+ {
+  public:
++  fixedqueue() = default;
++  // libc++ on macOS 26 SDK refuses to implicitly synth a copy ctor for a
++  // class with atomic members; mark them deleted (the queue isn't
++  // meaningfully copyable anyway) so any host code that accidentally
++  // tries gets a clear diagnostic instead of an obscure SFINAE failure.
++  fixedqueue(const fixedqueue &) = delete;
++  fixedqueue &operator=(const fixedqueue &) = delete;
++  fixedqueue(fixedqueue &&) = delete;
++  fixedqueue &operator=(fixedqueue &&) = delete;
++
+   inline void push(const T &val)
+   {
+     push(&val);

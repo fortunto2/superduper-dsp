@@ -16,7 +16,7 @@ clack-common = "0.1"
 atomic_float = "1"
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 superduper-dsp-sdk = { path = "../../sdk" }
 superduper-synth-core = { path = "../../synth-core", features = ["gui"] }
 

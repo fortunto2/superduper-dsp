@@ -73,6 +73,9 @@ struct GuiState {
     applied_size: (u32, u32),
     selected_preset: Option<usize>,
     preset_names: Vec<&'static str>,
+    user_preset_name: String,
+    user_presets: Vec<std::path::PathBuf>,
+    selected_user_preset: Option<usize>,
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -88,6 +91,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         gl_config: Some(Default::default()),
     };
     let preset_names: Vec<&'static str> = presets().iter().map(|p| p.name).collect();
+    let user_presets = core_gui::list_user_presets("kubyz");
     let state = GuiState {
         shared,
         resize,
@@ -95,6 +99,9 @@ pub fn open_window<P: HasRawWindowHandle>(
         // Match the Shared default — Bashkir Kubyz.
         selected_preset: Some(1),
         preset_names,
+        user_preset_name: String::new(),
+        user_presets,
+        selected_user_preset: None,
     };
     EguiWindow::open_parented(
         parent,

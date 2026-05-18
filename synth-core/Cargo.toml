@@ -11,6 +11,8 @@ name = "superduper_synth_core"
 [dependencies]
 fundsp = "0.23"
 realfft = "3.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # GUI helpers are opt-in (every effect plugin enables them via
 # `superduper-synth-core = { path = "...", features = ["gui"] }`).

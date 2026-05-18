@@ -20,6 +20,107 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use atomic_float::AtomicF32;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
+// ---------------------------------------------------------------------------
+// User file-presets — save/load arbitrary parameter snapshots to
+// ~/.superduper-dsp/<plugin>/presets/<name>.json. Plugins call into
+// these helpers from their GUI; the JSON format is intentionally simple
+// (just the param vector + optional extra section for plugin-specific
+// blobs the simple_state helper can't serialise alone).
+// ---------------------------------------------------------------------------
+
+/// Folder where a plugin keeps its user presets. Auto-created on first save.
+pub fn user_preset_dir(plugin_slug: &str) -> std::path::PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    home.join(".superduper-dsp")
+        .join(plugin_slug)
+        .join("presets")
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct UserPreset {
+    pub version: u32,
+    pub name: String,
+    pub params: Vec<f32>,
+    /// Optional plugin-specific blob (Wave's frame_a curve, Kubyz harmonics,
+    /// etc) — serialised as opaque JSON so each plugin can stash its own
+    /// shape without breaking the shared loader.
+    #[serde(default)]
+    pub extra: serde_json::Value,
+}
+
+pub const USER_PRESET_VERSION: u32 = 1;
+
+pub fn save_user_preset(
+    plugin_slug: &str,
+    name: &str,
+    params: &[AtomicF32],
+    extra: serde_json::Value,
+) -> std::io::Result<std::path::PathBuf> {
+    let dir = user_preset_dir(plugin_slug);
+    std::fs::create_dir_all(&dir)?;
+    // Sanitise the filename — keep ASCII alphanum + `-` + `_` + spaces.
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '_' }
+        })
+        .collect();
+    let trimmed = safe.trim();
+    let final_name = if trimmed.is_empty() { "preset" } else { trimmed };
+    let path = dir.join(format!("{final_name}.json"));
+    let preset = UserPreset {
+        version: USER_PRESET_VERSION,
+        name: final_name.to_string(),
+        params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+        extra,
+    };
+    let file = std::fs::File::create(&path)?;
+    serde_json::to_writer_pretty(file, &preset)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    Ok(path)
+}
+
+pub fn list_user_presets(plugin_slug: &str) -> Vec<std::path::PathBuf> {
+    let dir = user_preset_dir(plugin_slug);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return out };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("json") {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
+pub fn load_user_preset(
+    path: &std::path::Path,
+    params: &[AtomicF32],
+    dirty: &[AtomicBool],
+) -> std::io::Result<UserPreset> {
+    let file = std::fs::File::open(path)?;
+    let preset: UserPreset = serde_json::from_reader(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    if preset.version != USER_PRESET_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "preset version mismatch",
+        ));
+    }
+    for (i, v) in preset.params.iter().enumerate() {
+        if let Some(atom) = params.get(i) {
+            atom.store(*v, Ordering::Relaxed);
+            if let Some(d) = dirty.get(i) {
+                d.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    Ok(preset)
+}
+
 /// A/B snapshot pair — each slot is a frozen copy of every param.
 /// `current` points at which slot the user is editing right now.
 #[derive(Default)]

@@ -7,8 +7,8 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::{presets, N_HARMONICS};
 use crate::{
     apply_preset, write_param, PARAMS, P_ATTACK, P_BRIGHT, P_DECAY, P_F1, P_F2, P_F3,
-    P_MOUTH_DEPTH, P_MOUTH_RATE, P_MOUTH_SHAPE, P_OUTPUT, P_RELEASE, P_SUSTAIN, P_TONGUE_ST,
-    P_VEL_SHIFT, P_VOX_MIX, SharedParams,
+    P_MOUTH_DEPTH, P_MOUTH_RATE, P_MOUTH_SHAPE, P_MOUTH_STEREO, P_OUTPUT, P_RELEASE, P_SUSTAIN,
+    P_TONGUE_ST, P_VEL_SHIFT, P_VOX_MIX, SharedParams,
 };
 use crate::trajectory::MouthShape;
 
@@ -428,6 +428,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 dirty_param_row(ui, &state.shared, P_MOUTH_SHAPE);
                 dirty_param_row(ui, &state.shared, P_MOUTH_RATE);
                 dirty_param_row(ui, &state.shared, P_MOUTH_DEPTH);
+                dirty_param_row(ui, &state.shared, P_MOUTH_STEREO);
             });
             core_gui::section(ui, "Timbre", |ui| {
                 dirty_param_row(ui, &state.shared, P_BRIGHT);

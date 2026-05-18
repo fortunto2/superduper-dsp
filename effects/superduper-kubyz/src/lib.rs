@@ -75,6 +75,11 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 12, name: b"Mouth Shp",min: 0.0,    max: 4.0,    default: 0.0,    unit: ""   },
     ParamDef { id: 13, name: b"Mouth Rate", min: 0.05, max: 20.0,   default: 1.5,    unit: "Hz" },
     ParamDef { id: 14, name: b"Mouth Dep", min: 0.0,   max: 1.0,    default: 0.0,    unit: ""   },
+    // Trajectory X position as an equal-power pan. 0 = formant stereo
+    // only (cursor moves in mono), 1 = the cursor literally pans the
+    // sound around the stereo field. Combine with a circle for a
+    // surround-style rotation, or with a line for ping-pong.
+    ParamDef { id: 15, name: b"Mouth Stereo", min: 0.0, max: 1.0,   default: 0.0,    unit: ""   },
 ];
 
 pub const P_F1: usize = 0;
@@ -92,6 +97,7 @@ pub const P_TONGUE_ST: usize = 11;
 pub const P_MOUTH_SHAPE: usize = 12;
 pub const P_MOUTH_RATE: usize = 13;
 pub const P_MOUTH_DEPTH: usize = 14;
+pub const P_MOUTH_STEREO: usize = 15;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -401,6 +407,9 @@ impl<'a> PluginAudioProcessor<'a> {
         );
         let mouth_rate = self.shared.params[P_MOUTH_RATE].load(Ordering::Relaxed);
         let mouth_depth = self.shared.params[P_MOUTH_DEPTH].load(Ordering::Relaxed).clamp(0.0, 1.0);
+        let mouth_stereo = self.shared.params[P_MOUTH_STEREO]
+            .load(Ordering::Relaxed)
+            .clamp(0.0, 1.0);
         // Formant excursion in Hz at depth=1. Tuned so a circle on the
         // pad covers roughly a half-octave around the centre — audible
         // without leaping clean across the vowel space on every cycle.
@@ -479,8 +488,27 @@ impl<'a> PluginAudioProcessor<'a> {
             }
             let voice_scale = 0.5_f32;
             let out_lin = 10f32.powf(output_db / 20.0);
-            out_l[i] = mix_l * voice_scale * out_lin;
-            out_r[i] = mix_r * voice_scale * out_lin;
+            let raw_l = mix_l * voice_scale * out_lin;
+            let raw_r = mix_r * voice_scale * out_lin;
+
+            // Trajectory-driven panner. Crossfade between the formant's
+            // native stereo (stereo=0, voices keep their L/R formant
+            // colour) and a mono-summed signal panned by the cursor's
+            // X position (stereo=1, the sound rides the trajectory
+            // around the stereo field). At full depth/stereo, a Circle
+            // trajectory produces a continuous L↔R rotation; a Line
+            // gives ping-pong; Sine = horizontal wash.
+            let pan = (tx * mouth_depth).clamp(-1.0, 1.0);
+            let angle = (pan + 1.0) * core::f32::consts::PI * 0.25;
+            let pan_l = angle.cos();
+            let pan_r = angle.sin();
+            let mono = (raw_l + raw_r) * 0.5;
+            // sqrt(2) makes the pan-only path land at the same loudness
+            // as the dry stereo path when pan = 0 (equal-power compensation).
+            let panned_l = mono * pan_l * core::f32::consts::SQRT_2;
+            let panned_r = mono * pan_r * core::f32::consts::SQRT_2;
+            out_l[i] = raw_l * (1.0 - mouth_stereo) + panned_l * mouth_stereo;
+            out_r[i] = raw_r * (1.0 - mouth_stereo) + panned_r * mouth_stereo;
         }
         // Write the advanced phase back so the GUI can read where the
         // cursor should sit right now.

@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 11 plugins (8 effects + 3 instruments)
+## Current state — 13 plugins (9 effects + 4 instruments)
 
 **Effects (audio-in, audio-out):**
 
@@ -35,9 +35,59 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 - **superduper-ambient** — autonomous chord-drone generator (no MIDI input).
 - **superduper-pad** — polyphonic MIDI synth, 8-voice PadVoice pool +
   per-voice ADSR + TPT/ZDF SVF, click-free voice steal.
+- **superduper-wave** *(new)* — wavetable bass/lead synth with
+  mouse-editable curve (sharp/smooth nodes + Catmull-Rom, RDP simplify),
+  mip-mapped anti-aliasing pyramid, per-voice unison + sub + noise +
+  filter envelope + LFO with 3 destinations + tempo-sync LFO + Undo/Redo
+  for the curve editor.
+- **superduper-kubyz** *(new)* — physical-model jaw-harp / khomus.
+  16-harmonic additive engine + 3-band bandpass formant + interactive
+  IPA vowel pad + animated mouth trajectory (Circle / Sine / Figure-8 /
+  Triangle / Line) + stereo motion from the trajectory + tempo-sync
+  Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets.
 
-All eleven ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+All thirteen ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
+
+**Cross-cutting features now in every plugin:**
+
+- **Automation write** — GUI knob moves emit `ParamValueEvent` to the
+  host on the next `process()` block so REAPER / Bitwig / Studio One
+  record them into FX automation lanes. Driven by a
+  `dirty_params: [AtomicBool; PARAMS.len()]` array; GUI marks dirty,
+  audio thread flushes via `sdk::clap_helpers::emit_dirty_param_events`.
+- **CLAP state extension** — params + bypass round-trip through
+  `Save FX chain preset…` and project save. Wave/Kubyz additionally
+  persist their custom data (Wave: drawn frame_a curve; Kubyz: 16
+  harmonic amplitudes + formant_bw / formant_gain). JSON-versioned
+  via `sdk::clap_helpers::save_simple_state` / `load_simple_state`.
+- **A/B compare + Initialize** — every plugin has the standard 4-button
+  bar (A / B / copy → / init) under the preset combo via
+  `core_gui::ab_init_bar` + `AbSnapshot`.
+- **Live spectrum strip** — log-Hz × dB magnitude plot under the A/B
+  bar. Backed by a lock-free `core_gui::LiveScope` ring buffer that
+  audio thread pushes into and the GUI samples ~60 Hz for FFT.
+- **User file presets** (Kubyz — pattern available for porting) —
+  Save/Load buttons → `~/.superduper-dsp/<plugin>/presets/*.json`,
+  plain-text and shareable.
+
+**Synth-specific now in Pad / Wave / Kubyz:**
+
+- **MIDI Pitch Bend** (status 0xE0). 14-bit value, 8192 center, scaled
+  by per-plugin `Bend Range` param (default 2 ST).
+- **MIDI CC mapping** — expressive control without an automation lane.
+  CC writes go directly into param atomics without raising the dirty
+  flag so the plugin doesn't echo CC back to the FX envelope and cause
+  a feedback loop.
+  - Pad: CC 1 / 11 / 71 / 74 → Modulation / Drive / Resonance / Cutoff (log)
+  - Wave: CC 1 / 11 / 71 / 74 → LFO Depth / Cutoff / Resonance / WT Pos
+    plus channel Aftertouch → LFO Depth.
+  - Kubyz: CC 1 / 2 / 11 / 71 / 74 → Mouth Depth / Mouth Stereo /
+    F1 / F3 / F2.
+
+**Tempo sync** in Kubyz Mouth Rate + Wave LFO Rate — toggle `Sync`,
+pick a `Div` (1/1 ↔ 1/16t, dotted + triplet variants), rate computes
+from host BPM read out of `CoreEventSpace::Transport` events.
 
 `tools/sdsp-runner` is the standalone CLAP host — loads any `.clap`,
 plays a WAV file through it to cpal output (`sdsp-runner <plugin.clap>
@@ -85,7 +135,10 @@ superduper-dsp/
     superduper-vocal/        split-band de-esser + de-clicker (rap vocal)
     superduper-ambient/      autonomous chord-drone generator
     superduper-pad/          polyphonic MIDI pad synth
+    superduper-wave/         wavetable bass/lead synth (curve editor + mip-AA)
+    superduper-kubyz/        physical-model jaw-harp / khomus
     example-passthrough/     toy effect for the (deprecated) hot-reload path
+  tools/kubyz_analyser/      Python FFT analyser → Rust preset snippet
   tools/sdsp-runner/         standalone CLAP host (file-in → cpal-out)
   plugin/                    old shell-plugin code (deprecated, kept for reference)
   daemon/, protocol/         IPC infrastructure (deprecated for now)
@@ -515,7 +568,48 @@ and the CFBundleIdentifier. The script also installs to
     phase. Commit 54fdae7 added it — copy that pattern for any plugin
     with internal pre-delay.
 
-21. **per-plugin quality_audit tests.** Compressor/Saturator/EQ ship a
+21a. **CLAP automation write requires `ParamValueEvent` emit.** GUI
+    knob moves just writing into `AtomicF32::store` don't reach the host
+    — REAPER won't record into its FX envelope without explicit events
+    coming back out of `process()`. Pattern: per-param `dirty: AtomicBool`
+    raised by the GUI, audio thread runs
+    `emit_dirty_param_events(&shared.params, &shared.dirty_params,
+    events.output)` once at the top of every `process()`.
+
+21b. **MIDI CC handlers must NOT raise the dirty bit.** Otherwise the
+    plugin re-emits every incoming CC as a ParamValueEvent, REAPER
+    re-records it into the FX envelope, and on the next playback the
+    envelope replays into the CC handler again — runaway feedback. CC
+    moves belong in the MIDI clip; only GUI-driven param changes
+    belong in the FX envelope.
+
+21c. **CLAP state extension is mandatory for any custom data.** Without
+    `PluginStateImpl`, REAPER (and every other DAW) drops everything
+    that isn't a CLAP param: harmonic bars, drawn curves, formant
+    bandwidths. Symptom — user designs a patch, saves the project,
+    reopens, and the visualised stuff is gone but the sliders sit at
+    the saved values. The fix is two methods + a JSON struct.
+
+21d. **`apply_preset` must mark every param dirty.** Otherwise picking
+    a preset moves the knobs in the GUI but the host's automation lane
+    only sees the old values, so a recorded preset switch silently
+    reverts on playback. After updating every `params[i].store(...)`
+    the helper must also `dirty_params[i].store(true, ...)`.
+
+21e. **Host BPM is in the Transport event, not the Process struct.**
+    Catch `CoreEventSpace::Transport(t)` inside the same event-walk
+    loop as ParamValue / NoteOn / Midi; cache the tempo in a shared
+    `AtomicF32 host_bpm`. Helper for division → Hz lives in
+    `synth_core::dsp_blocks::sync_division_hz`.
+
+21f. **One scope buffer per plugin = atomic per-slot ring buffer.**
+    `core_gui::LiveScope` is lock-free (`AtomicF32` per slot,
+    `AtomicUsize` head). Audio thread `push`es per sample, GUI
+    `snapshot`s the last N for the spectrum strip. Inconsistency
+    under contention shows as a slight wiggle — fine for a meter,
+    much cheaper than a Mutex.
+
+22. **per-plugin quality_audit tests.** Compressor/Saturator/EQ ship a
     `tests/quality_audit.rs` that runs sine-sweep + THD + aliasing
     measurements and asserts numbers (e.g. "saturator at drive 0.5 has
     THD < -35 dB at 1 kHz, aliasing < -55 dB at 18 kHz under 4× OS").

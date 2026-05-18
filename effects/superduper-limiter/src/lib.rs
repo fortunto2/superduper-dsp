@@ -372,6 +372,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let out_r = (delayed_r * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
                 l_write[i] = out_l;
                 r_write[i] = out_r;
+                self.shared.scope.push((out_l + out_r) * 0.5);
 
                 let gr_db = 20.0 * self.gain_env.max(1e-9).log10();
                 if gr_db < max_gr_db { max_gr_db = gr_db; }

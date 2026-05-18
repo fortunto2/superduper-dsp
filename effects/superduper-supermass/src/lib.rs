@@ -307,6 +307,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 sr, mix, width, drive, tilt,
                 duck_amount, duck_attack, duck_release,
                 bypassed,
+                &self.shared.scope,
             );
         }
 
@@ -334,6 +335,7 @@ fn stereo_process(
     mix_target: f32, width_target: f32, drive_target: f32, tilt_target: f32,
     duck_amount_target: f32, duck_attack: f32, duck_release: f32,
     bypassed: bool,
+    scope: &superduper_synth_core::gui::LiveScope,
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     let Some((l_read, l_write)) = split_io(ch_l) else { return };
@@ -365,7 +367,9 @@ fn stereo_process(
             in_buf[0] = driven; in_buf[1] = driven;
             net.tick(&in_buf, &mut out_buf);
             let wet = tilt_l.process((out_buf[0] + out_buf[1]) * 0.5, sr, tilt);
-            *o = dry * (1.0 - mix) + wet * width * duck_gain * mix;
+            let final_out = dry * (1.0 - mix) + wet * width * duck_gain * mix;
+            *o = final_out;
+            scope.push(final_out);
         }
         return;
     };
@@ -412,8 +416,11 @@ fn stereo_process(
         let final_wl = wet_l * width + mono_w * (1.0 - width);
         let final_wr = wet_r * width + mono_w * (1.0 - width);
 
-        l_write[i] = dl * (1.0 - mix) + final_wl * duck_gain * mix;
-        r_write[i] = dr * (1.0 - mix) + final_wr * duck_gain * mix;
+        let out_l_sample = dl * (1.0 - mix) + final_wl * duck_gain * mix;
+        l_write[i] = out_l_sample;
+        let out_r_sample = dr * (1.0 - mix) + final_wr * duck_gain * mix;
+        r_write[i] = out_r_sample;
+        scope.push((out_l_sample + out_r_sample) * 0.5);
     }
 }
 

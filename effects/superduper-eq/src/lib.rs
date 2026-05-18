@@ -248,7 +248,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     y = chain[2].process(y);
                     y = chain[3].process(y);
                     if lp_on { y = chain[4].process(y); }
-                    *o = y * out_lin;
+                    let final_out = y * out_lin;
+                    *o = final_out;
+                    self.shared.scope.push(final_out);
                 }
             }
         }

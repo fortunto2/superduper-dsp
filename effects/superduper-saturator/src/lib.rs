@@ -259,6 +259,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     channel_pair, sr, curve, os_mode,
                     drive_db_target, tone_target, output_db_target, mix_target,
                     bypassed,
+                    &self.shared.scope,
                 );
             }
         }
@@ -285,6 +286,7 @@ fn process_channel(
     output_db_target: f32,
     mix_target: f32,
     bypassed: bool,
+    scope: &superduper_synth_core::gui::LiveScope,
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     let Some((read, write)) = split_io(channel) else { return };
@@ -334,7 +336,9 @@ fn process_channel(
         let toned = tilt.process(saturated, sr, tone);
         let wet = toned * out_lin;
 
-        *o = dry * (1.0 - mix) + wet * mix;
+        let final_out = dry * (1.0 - mix) + wet * mix;
+        *o = final_out;
+        scope.push(final_out);
     }
 }
 

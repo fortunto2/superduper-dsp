@@ -401,7 +401,9 @@ fn stereo_process(
             p.fb_l = saturated;
 
             // Duck applies to WET only — dry passes through clean.
-            l_write[i] = dry * (1.0 - mix) + saturated * duck_gain * mix;
+            let final_out = dry * (1.0 - mix) + saturated * duck_gain * mix;
+            l_write[i] = final_out;
+            p.shared.scope.push(final_out);
         }
         return;
     };
@@ -485,8 +487,11 @@ fn stereo_process(
 
         // Final mix — dry passes through unaffected; wet is ducked by the
         // sidechain envelope so a loud vocal pushes the delay tail back.
-        l_write[i] = dry_l * (1.0 - mix) + sat_l * duck_gain * mix;
-        r_write[i] = dry_r * (1.0 - mix) + sat_r * duck_gain * mix;
+        let out_l = dry_l * (1.0 - mix) + sat_l * duck_gain * mix;
+        let out_r = dry_r * (1.0 - mix) + sat_r * duck_gain * mix;
+        l_write[i] = out_l;
+        r_write[i] = out_r;
+        p.shared.scope.push(0.5 * (out_l + out_r));
     }
 }
 

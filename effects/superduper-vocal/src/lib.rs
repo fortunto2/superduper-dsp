@@ -428,6 +428,7 @@ fn process_stereo(
         );
         l_write[i] = fl;
         r_write[i] = fr;
+        p.shared.scope.push((fl + fr) * 0.5);
         if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
         if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
     }
@@ -452,6 +453,7 @@ fn process_mono(
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
         );
         l_write[i] = fl;
+        p.shared.scope.push(fl);
         if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
         if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
     }

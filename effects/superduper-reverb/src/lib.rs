@@ -244,6 +244,7 @@ fn stereo_process(
     duck_attack_ms: f32,
     duck_release_ms: f32,
     bypassed: bool,
+    scope: &superduper_synth_core::gui::LiveScope,
 ) {
     // Resolve each channel into (read_slice, write_slice). For InPlace we
     // reuse the same buffer for both. OutputOnly clears, InputOnly is a no-op.
@@ -307,7 +308,9 @@ fn stereo_process(
                 duck_amount_db, duck_attack_ms, duck_release_ms,
             );
             let (wl, _) = state.process_sample(dry, dry, p);
-            *o = dry * (1.0 - mix) + (wl * width * duck_gain) * mix;
+            let final_out = dry * (1.0 - mix) + (wl * width * duck_gain) * mix;
+            *o = final_out;
+            scope.push(final_out);
         }
         return;
     };
@@ -358,8 +361,11 @@ fn stereo_process(
         let mono_w = (wl + wr) * 0.5;
         let final_wl = wl * width + mono_w * (1.0 - width);
         let final_wr = wr * width + mono_w * (1.0 - width);
-        l_write[i] = dl * (1.0 - mix) + final_wl * duck_gain * mix;
-        r_write[i] = dr * (1.0 - mix) + final_wr * duck_gain * mix;
+        let out_l_sample = dl * (1.0 - mix) + final_wl * duck_gain * mix;
+        let out_r_sample = dr * (1.0 - mix) + final_wr * duck_gain * mix;
+        l_write[i] = out_l_sample;
+        r_write[i] = out_r_sample;
+        scope.push((out_l_sample + out_r_sample) * 0.5);
     }
 }
 
@@ -534,6 +540,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 duck_attack,
                 duck_release,
                 bypassed,
+                &self.shared.scope,
             );
         }
 

@@ -33,6 +33,8 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
     PluginParams,
 };
+use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use parking_lot::Mutex;
@@ -352,11 +354,32 @@ impl<'a> PluginAudioProcessor<'a> {
             0x80 => self.release_voice(Match::Specific(key as u16), Match::All),
             0xb0 if key == 123 => self.release_voice(Match::All, Match::All),
             0xb0 if key == 120 => self.choke_voice(Match::All, Match::All),
-            // ModWheel (CC 1) → Mouth Depth (play the mouth live with the
-            // expression wheel / aftertouch mapped here).
-            0xb0 if key == 1 => {
-                let d = raw_velocity as f32 / 127.0;
-                self.shared.params[P_MOUTH_DEPTH].store(d, Ordering::Relaxed);
+            // Expressive MIDI CC mapping. NOTE: these intentionally write
+            // directly into the param atomics WITHOUT raising the dirty
+            // flag — otherwise the plugin would echo every CC back as a
+            // ParamValueEvent, which REAPER would then re-record into the
+            // FX automation lane, causing a feedback loop. CC moves stay
+            // in the MIDI clip; GUI mouse moves go to FX envelopes.
+            //   CC 1  ModWheel    → Mouth Depth
+            //   CC 2  Breath      → Mouth Stereo
+            //   CC 11 Expression  → F1   (open / close)
+            //   CC 71 Resonance   → F3
+            //   CC 74 Brightness  → F2   (front / back)
+            0xb0 => {
+                let v = raw_velocity as f32 / 127.0;
+                let map = |idx: usize, frac: f32| {
+                    let def = &PARAMS[idx];
+                    let val = def.min as f32 + frac * (def.max - def.min) as f32;
+                    self.shared.params[idx].store(val, Ordering::Relaxed);
+                };
+                match key {
+                    1 => map(P_MOUTH_DEPTH, v),
+                    2 => map(P_MOUTH_STEREO, v),
+                    11 => map(P_F1, v),
+                    74 => map(P_F2, v),
+                    71 => map(P_F3, v),
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -704,6 +727,66 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLAP state — without this REAPER drops everything that isn't a CLAP param
+// (harmonics, formant_bw/gain). JSON keeps the format debuggable + open to
+// future field additions.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct KubyzState {
+    /// Schema version — bump when format breaks; old saves are then
+    /// ignored cleanly rather than silently corrupting state.
+    version: u32,
+    params: Vec<f32>,
+    harmonics: Vec<f32>,
+    formant_bw: [f32; 3],
+    formant_gain: [f32; 3],
+    bypass: bool,
+}
+
+const STATE_VERSION: u32 = 1;
+
+impl PluginStateImpl for PluginMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let params: Vec<f32> = self.shared.params.iter()
+            .map(|a| a.load(Ordering::Relaxed)).collect();
+        let harmonics: Vec<f32> = self.shared.harmonics.iter()
+            .map(|a| a.load(Ordering::Relaxed)).collect();
+        let state = KubyzState {
+            version: STATE_VERSION,
+            params,
+            harmonics,
+            formant_bw: *self.shared.formant_bw.lock(),
+            formant_gain: *self.shared.formant_gain.lock(),
+            bypass: self.shared.bypass.load(Ordering::Relaxed),
+        };
+        serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON error"))
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let state: KubyzState = serde_json::from_reader(input)
+            .map_err(|_| PluginError::Message("state JSON error"))?;
+        if state.version != STATE_VERSION {
+            return Err(PluginError::Message("state version mismatch"));
+        }
+        for (i, v) in state.params.iter().enumerate() {
+            if let Some(slot) = self.shared.params.get(i) {
+                slot.store(*v, Ordering::Relaxed);
+            }
+        }
+        for (i, v) in state.harmonics.iter().enumerate() {
+            if let Some(slot) = self.shared.harmonics.get(i) {
+                slot.store(*v, Ordering::Relaxed);
+            }
+        }
+        *self.shared.formant_bw.lock() = state.formant_bw;
+        *self.shared.formant_gain.lock() = state.formant_gain;
+        self.shared.bypass.store(state.bypass, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
     Window as ClapGuiWindow,
@@ -770,6 +853,7 @@ impl Plugin for SuperDuperKubyz {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
+            .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>();
     }
 }

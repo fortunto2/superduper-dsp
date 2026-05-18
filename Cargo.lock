@@ -3326,6 +3326,8 @@ dependencies = [
  "egui-baseview",
  "parking_lot",
  "raw-window-handle 0.5.2",
+ "serde",
+ "serde_json",
  "superduper-dsp-sdk",
  "superduper-dsp-sdk-build",
  "superduper-synth-core",

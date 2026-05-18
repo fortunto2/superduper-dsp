@@ -755,6 +755,46 @@ flag, type STEREO). To route something into it:
 If no sidechain is routed, both ducker key signals fall back to dry input
 (works on insert vocals out of the box).
 
+## VST3 / AUv2 wrappers via clap-wrapper
+
+CLAP works in REAPER / Bitwig / Studio One / Logic 11+ natively. For
+DaVinci Resolve, Cubase, FL Studio, Ableton (≤ 12.0), and Logic ≤ 10
+we ship VST3 wrappers built by `free-audio/clap-wrapper`. AUv2 is
+staged but **off by default** — Apple's AudioUnitSDK currently fails
+to compile against the macOS 26 SDK (libcpp template specialisation
+regression). Flip `-DCLAP_WRAPPER_BUILD_AUV2=ON` once upstream lands a
+fix.
+
+Mechanics:
+- `tools/clap-wrapper` is a git submodule. After clone:
+  `git submodule update --init --recursive`.
+- `tools/clap-wrapper-patches/*.patch` — local patches needed for the
+  macOS 26 SDK + VST3 SDK pin. `scripts/build_wrappers.sh` applies them
+  idempotently (`git apply --check` first).
+- `CMakeLists.txt` + `cmake/plugin_list.cmake` is the single source of
+  truth: each row maps the Rust crate → wrapper output name (must
+  match the `.clap` bundle basename exactly so clap-wrapper's
+  filesystem search hits it) → CLAP id → macOS bundle id → AU type
+  (`aufx`/`aumu`) + subtype code.
+- At runtime the VST3 wrapper enumerates `getMacCLAPSearchPaths()`
+  (returns `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP`,
+  the bundle's own resources) and `dlopen`s the first matching
+  `<output_name>.clap` it finds. **Therefore the `.clap` MUST be
+  installed on the target machine.** The wrappers are pure CLAP
+  loaders — they don't bundle the DSP.
+
+Build flow on a workstation:
+```bash
+# 1. Build the .clap bundles first (Rust → cdylib → packaged):
+./scripts/build_release.sh 0.10.0
+# 2. Build the wrappers:
+./scripts/build_wrappers.sh --install  # also copies to ~/Library/Audio/Plug-Ins/VST3
+```
+
+CI release.yml runs both steps on macos-14 and uploads two zips per
+plugin (CLAP + VST3) plus combined zips. Windows currently ships CLAP
+only — VST3 on Windows is plumbing-ready but not in CI scope yet.
+
 ## Distribution model — Stage C (decided 2026-05)
 
 Every effect is its own `.clap` bundle with a unique CLAP id. Users get

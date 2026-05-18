@@ -6,7 +6,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_CUTOFF, P_DECAY, P_DRIVE, P_MODULATION, P_OUTPUT, P_RELEASE, P_RESONANCE,
+    PARAMS, P_ATTACK, P_CUTOFF, P_DECAY, P_DRIVE, P_ENV_DELAY, P_ENV_HOLD, P_MODULATION, P_OUTPUT, P_RELEASE, P_RESONANCE,
     P_SUSTAIN, P_WIDTH, SharedParams,
 };
 
@@ -115,8 +115,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], &state.shared.midi_learn, P_DRIVE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], &state.shared.midi_learn, P_WIDTH, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
-            core_gui::section(ui, "Envelope", |ui| {
+            core_gui::section(ui, "Envelope (DAHDSR)", |ui| {
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_ENV_DELAY], &PARAMS[P_ENV_DELAY], &state.shared.dirty_params[P_ENV_DELAY], &state.shared.midi_learn, P_ENV_DELAY, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], &state.shared.midi_learn, P_ATTACK, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_ENV_HOLD], &PARAMS[P_ENV_HOLD], &state.shared.dirty_params[P_ENV_HOLD], &state.shared.midi_learn, P_ENV_HOLD, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], &state.shared.midi_learn, P_DECAY, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], &state.shared.midi_learn, P_SUSTAIN, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], &state.shared.midi_learn, P_RELEASE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });

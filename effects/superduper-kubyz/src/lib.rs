@@ -539,7 +539,7 @@ impl<'a> PluginAudioProcessor<'a> {
                 *slot = harmonics[n] * bright.powf(exp);
             }
 
-            let adsr = AdsrParams { sr, attack_s, decay_s, sustain, release_s };
+            let adsr = AdsrParams::adsr(sr, attack_s, decay_s, sustain, release_s);
             let mut mix_l = 0.0_f32;
             let mut mix_r = 0.0_f32;
             for v in self.voices.iter_mut() {

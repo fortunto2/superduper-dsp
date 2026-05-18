@@ -102,6 +102,10 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 8, name: b"Release",    min: 0.01, max: 8.0,     default: 1.5,    unit: "s"     },
     ParamDef { id: 9, name: b"Output",     min: -36.0, max: 6.0,    default: -8.0,   unit: "dB"    },
     ParamDef { id: 10, name: b"Bend Range", min: 0.0,  max: 24.0,    default: 2.0,    unit: "ST"    },
+    // DAHDSR extensions — pre-attack silence ("Delay") + peak hold
+    // before decay. Both default to 0 → classic ADSR behaviour.
+    ParamDef { id: 11, name: b"Env Delay",  min: 0.0,  max: 4.0,     default: 0.0,    unit: "s"     },
+    ParamDef { id: 12, name: b"Env Hold",   min: 0.0,  max: 4.0,     default: 0.0,    unit: "s"     },
 ];
 
 pub const P_CUTOFF: usize = 0;
@@ -115,6 +119,8 @@ pub const P_SUSTAIN: usize = 7;
 pub const P_RELEASE: usize = 8;
 pub const P_OUTPUT: usize = 9;
 pub const P_BEND_RANGE: usize = 10;
+pub const P_ENV_DELAY: usize = 11;
+pub const P_ENV_HOLD: usize = 12;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -497,6 +503,8 @@ impl<'a> PluginAudioProcessor<'a> {
         decay_s: f32,
         sustain: f32,
         release_s: f32,
+        delay_s: f32,
+        hold_s: f32,
     ) {
         let sr = self.sample_rate;
         debug_assert_eq!(out_l.len(), out_r.len());
@@ -511,7 +519,9 @@ impl<'a> PluginAudioProcessor<'a> {
 
             let adsr_p = AdsrParams {
                 sr,
+                delay_s,
                 attack_s,
+                hold_s,
                 decay_s,
                 sustain,
                 release_s,
@@ -715,6 +725,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let decay = self.shared.params[P_DECAY].load(Ordering::Relaxed);
                 let sustain = self.shared.params[P_SUSTAIN].load(Ordering::Relaxed);
                 let release = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
+                let env_delay = self.shared.params[P_ENV_DELAY].load(Ordering::Relaxed);
+                let env_hold = self.shared.params[P_ENV_HOLD].load(Ordering::Relaxed);
 
                 self.render_subblock(
                     &mut out_l[start..end],
@@ -729,6 +741,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     decay,
                     sustain,
                     release,
+                    env_delay,
+                    env_hold,
                 );
             }
 

@@ -43,7 +43,7 @@ fn run_voice(antialias: bool) -> f32 {
         antialias,
         noise_level: 0.0,
         fenv_amount_oct: 0.0,
-        fenv: AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.01, sustain: 0.0, release_s: 0.01 },
+        fenv: AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.01, sustain: 0.0, release_s: 0.01 },
         lfo_shape: LfoShape::Sine,
         lfo_dest: LfoDest::Cutoff,
         lfo_rate_hz: 0.0,
@@ -58,7 +58,7 @@ fn run_voice(antialias: bool) -> f32 {
     };
 
     // Warm-up: let filter ring out, envelope reach unity.
-    let adsr = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 1.0, sustain: 1.0, release_s: 1.0 };
+    let adsr = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 1.0, sustain: 1.0, release_s: 1.0 };
     let mut env = AdsrEnvelope::default();
     env.gate_on();
     for _ in 0..2048 {

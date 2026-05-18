@@ -590,7 +590,7 @@ impl<'a> PluginAudioProcessor<'a> {
                 }
             }
 
-            let adsr_p = AdsrParams { sr, attack_s, decay_s, sustain, release_s };
+            let adsr_p = AdsrParams::adsr(sr, attack_s, decay_s, sustain, release_s);
 
             let mut mix_l = 0.0_f32;
             let mut mix_r = 0.0_f32;
@@ -619,13 +619,7 @@ impl<'a> PluginAudioProcessor<'a> {
                     drive,
                     antialias,
                     fenv_amount_oct,
-                    fenv: AdsrParams {
-                        sr,
-                        attack_s: fenv_a,
-                        decay_s: fenv_d,
-                        sustain: fenv_s,
-                        release_s: fenv_r,
-                    },
+                    fenv: AdsrParams::adsr(sr, fenv_a, fenv_d, fenv_s, fenv_r),
                     lfo_shape,
                     lfo_dest,
                     lfo_rate_hz,

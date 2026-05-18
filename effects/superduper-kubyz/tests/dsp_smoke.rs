@@ -25,13 +25,13 @@ fn voice_produces_audio_on_held_note() {
         velocity_formant_shift: preset.velocity_formant_shift,
     };
     // Warm-up.
-    let adsr = AdsrParams {
-        sr: SR,
-        attack_s: preset.attack_s,
-        decay_s: preset.decay_s,
-        sustain: preset.sustain.max(0.1), // raise sustain so the test sees a steady patch
-        release_s: preset.release_s,
-    };
+    let adsr = AdsrParams::adsr(
+        SR,
+        preset.attack_s,
+        preset.decay_s,
+        preset.sustain.max(0.1),
+        preset.release_s,
+    );
     let mut e = AdsrEnvelope::default();
     e.gate_on();
     for _ in 0..2048 {

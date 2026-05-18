@@ -10,7 +10,7 @@ use superduper_wave::osc::{
     WT_SIZE,
 };
 
-const FENV_BYPASS: AdsrParams = AdsrParams { sr: 48_000.0, attack_s: 0.001, decay_s: 0.01, sustain: 0.0, release_s: 0.01 };
+const FENV_BYPASS: AdsrParams = AdsrParams { sr: 48_000.0, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.01, sustain: 0.0, release_s: 0.01 };
 const LFO_OFF_RATE: f32 = 0.0;
 const LFO_OFF_DEPTH: f32 = 0.0;
 
@@ -64,7 +64,7 @@ fn voice_emits_audio_on_note() {
     };
 
     // 256 samples warm-up (filter ringup + attack ramp).
-    let adsr = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.5, sustain: 0.8, release_s: 0.5 };
+    let adsr = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.5, sustain: 0.8, release_s: 0.5 };
     let mut env_acc = AdsrEnvelope::default();
     env_acc.gate_on();
     for _ in 0..256 {

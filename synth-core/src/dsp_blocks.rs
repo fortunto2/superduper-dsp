@@ -928,11 +928,18 @@ impl Ducker {
 // stage needing a different curve shape.
 // ---------------------------------------------------------------------------
 
-/// State machine of an ADSR envelope.
+/// State machine of a DAHDSR envelope. The Delay + Hold stages turn
+/// the classic ADSR into a more expressive shape — Vital / Serum style.
+/// Setting `delay_s = 0` and `hold_s = 0` collapses back to ADSR
+/// behaviour exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdsrStage {
     Idle,
+    /// Pre-attack silence — gate_on() lands here for `delay_s` seconds.
+    PreDelay,
     Attack,
+    /// Hold at peak (1.0) for `hold_s` seconds before decay starts.
+    Hold,
     Decay,
     Sustain,
     Release,
@@ -942,6 +949,9 @@ pub enum AdsrStage {
 pub struct AdsrEnvelope {
     level: f32,
     stage: AdsrStage,
+    /// Samples spent in the current stage. Used by PreDelay + Hold,
+    /// which both wait by sample count rather than by level.
+    stage_samples: u32,
 }
 
 impl Default for AdsrEnvelope {
@@ -949,6 +959,7 @@ impl Default for AdsrEnvelope {
         Self {
             level: 0.0,
             stage: AdsrStage::Idle,
+            stage_samples: 0,
         }
     }
 }
@@ -956,18 +967,37 @@ impl Default for AdsrEnvelope {
 #[derive(Copy, Clone)]
 pub struct AdsrParams {
     pub sr: f32,
+    /// Pre-attack delay in seconds (DAHDSR's D). 0 = no delay → classic
+    /// ADSR behaviour. Useful for layering and rhythmic effects.
+    pub delay_s: f32,
     pub attack_s: f32,
+    /// Hold the peak at 1.0 for this many seconds before decaying.
+    /// 0 = no hold → classic ADSR.
+    pub hold_s: f32,
     pub decay_s: f32,
     pub sustain: f32,
     pub release_s: f32,
 }
 
+impl AdsrParams {
+    /// Convenience constructor for the classic ADSR shape (delay = hold = 0).
+    /// Existing call sites that don't care about DAHDSR keep working
+    /// by calling this instead of struct literal syntax.
+    #[inline]
+    pub fn adsr(sr: f32, attack_s: f32, decay_s: f32, sustain: f32, release_s: f32) -> Self {
+        Self { sr, delay_s: 0.0, attack_s, hold_s: 0.0, decay_s, sustain, release_s }
+    }
+}
+
 impl AdsrEnvelope {
     /// Begin attack from the current level — re-triggering during decay or
     /// release smoothly resumes from where the envelope currently is.
+    /// Goes through PreDelay first if `delay_s > 0` on the next process()
+    /// call (which transitions to Attack once `delay_s * sr` samples elapse).
     #[inline]
     pub fn gate_on(&mut self) {
-        self.stage = AdsrStage::Attack;
+        self.stage = AdsrStage::PreDelay;
+        self.stage_samples = 0;
     }
 
     /// Begin release from the current level.
@@ -1009,13 +1039,40 @@ impl AdsrEnvelope {
             AdsrStage::Idle => {
                 self.level = 0.0;
             }
+            AdsrStage::PreDelay => {
+                // Silence while we count out delay_s seconds. Going
+                // straight to Attack when delay_s ≈ 0 lets old ADSR
+                // call-sites keep their original timing.
+                self.level = 0.0;
+                let delay_samples = (p.delay_s.max(0.0) * p.sr) as u32;
+                if self.stage_samples >= delay_samples {
+                    self.stage = AdsrStage::Attack;
+                    self.stage_samples = 0;
+                } else {
+                    self.stage_samples += 1;
+                }
+            }
             AdsrStage::Attack => {
                 // Linear ramp — gives the punchy front-end a note needs.
                 let inc = if p.attack_s <= 1e-4 { 1.0 } else { 1.0 / (p.attack_s * p.sr) };
                 self.level += inc;
                 if self.level >= 1.0 {
                     self.level = 1.0;
+                    self.stage = AdsrStage::Hold;
+                    self.stage_samples = 0;
+                }
+            }
+            AdsrStage::Hold => {
+                // Pin to the peak for hold_s seconds; transition straight
+                // to Decay when the hold time expires (or immediately if
+                // hold_s ≈ 0, which is the old ADSR behaviour).
+                self.level = 1.0;
+                let hold_samples = (p.hold_s.max(0.0) * p.sr) as u32;
+                if self.stage_samples >= hold_samples {
                     self.stage = AdsrStage::Decay;
+                    self.stage_samples = 0;
+                } else {
+                    self.stage_samples += 1;
                 }
             }
             AdsrStage::Decay => {

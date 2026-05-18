@@ -153,7 +153,7 @@ fn adsr_starts_idle_and_stays_silent() {
     use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams};
     let mut env = AdsrEnvelope::default();
     assert!(env.is_idle());
-    let p = AdsrParams { sr: SR, attack_s: 0.1, decay_s: 0.1, sustain: 0.5, release_s: 0.1 };
+    let p = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.1, hold_s: 0.0, decay_s: 0.1, sustain: 0.5, release_s: 0.1 };
     for _ in 0..1000 {
         assert_eq!(env.process(p), 0.0, "idle envelope must stay silent");
     }
@@ -164,7 +164,7 @@ fn adsr_release_then_idle_within_5_release_constants() {
     use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams};
     let mut env = AdsrEnvelope::default();
     env.gate_on();
-    let p = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.001, sustain: 0.5, release_s: 0.05 };
+    let p = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.001, sustain: 0.5, release_s: 0.05 };
     // run to sustain
     for _ in 0..(SR as usize / 10) { env.process(p); }
     env.gate_off();

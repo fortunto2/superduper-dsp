@@ -23,7 +23,7 @@ fn midi_note_table_matches_standard_pitches() {
 fn adsr_attack_reaches_unity() {
     let mut env = AdsrEnvelope::default();
     env.gate_on();
-    let p = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 1.0, sustain: 0.7, release_s: 1.0 };
+    let p = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 1.0, sustain: 0.7, release_s: 1.0 };
     // 1 ms = 48 samples. Should reach >0.99 within twice that.
     let mut peak = 0.0_f32;
     for _ in 0..100 {
@@ -37,7 +37,7 @@ fn adsr_attack_reaches_unity() {
 fn adsr_decays_to_sustain() {
     let mut env = AdsrEnvelope::default();
     env.gate_on();
-    let p = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.01, sustain: 0.4, release_s: 1.0 };
+    let p = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.01, sustain: 0.4, release_s: 1.0 };
     // Run long enough to reach sustain (~1 s safely covers attack + decay).
     for _ in 0..(SR as usize) {
         env.process(p);
@@ -52,7 +52,7 @@ fn adsr_decays_to_sustain() {
 fn adsr_release_falls_to_zero() {
     let mut env = AdsrEnvelope::default();
     env.gate_on();
-    let p = AdsrParams { sr: SR, attack_s: 0.001, decay_s: 0.01, sustain: 0.6, release_s: 0.05 };
+    let p = AdsrParams { sr: SR, delay_s: 0.0, attack_s: 0.001, hold_s: 0.0, decay_s: 0.01, sustain: 0.6, release_s: 0.05 };
     // Reach sustain.
     for _ in 0..(SR as usize / 10) {
         env.process(p);

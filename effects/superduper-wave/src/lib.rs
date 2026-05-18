@@ -95,6 +95,17 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 30, name: b"Mod2 Src",   min: 0.0,    max: 5.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 31, name: b"Mod2 Dst",   min: 0.0,    max: 6.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 32, name: b"Mod2 Amt",   min: -1.0,   max: 1.0,     default: 0.0,    unit: ""     },
+    // Hard sync — phantom master sine at root × Sync Ratio resets the
+    // main oscillator phase when it crosses zero. Classic Serum / Diva
+    // sync-saw / sync-square sound. Sync Ratio = 1.0 + Sync = 0 is a
+    // no-op (defaults).
+    ParamDef { id: 33, name: b"Sync",       min: 0.0,    max: 1.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 34, name: b"Sync Ratio", min: 0.25,   max: 4.0,     default: 1.0,    unit: "x"    },
+    // Phase modulation from a sidecar sine at root × FM Ratio. FM Amt
+    // scales the depth (0..1 → ±π phase swing). Cheap, musical FM
+    // without needing a separate oscillator block.
+    ParamDef { id: 35, name: b"FM Ratio",   min: 0.25,   max: 8.0,     default: 2.0,    unit: "x"    },
+    ParamDef { id: 36, name: b"FM Amt",     min: 0.0,    max: 1.0,     default: 0.0,    unit: ""     },
 ];
 
 pub const P_WT_POS: usize = 0;
@@ -130,6 +141,10 @@ pub const P_MOD1_AMT: usize = 29;
 pub const P_MOD2_SRC: usize = 30;
 pub const P_MOD2_DST: usize = 31;
 pub const P_MOD2_AMT: usize = 32;
+pub const P_SYNC: usize = 33;
+pub const P_SYNC_RATIO: usize = 34;
+pub const P_FM_RATIO: usize = 35;
+pub const P_FM_AMT: usize = 36;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -628,6 +643,10 @@ impl<'a> PluginAudioProcessor<'a> {
                     frame_a_prev: &self.frame_a_prev,
                     frame_a_fade: fade_pos,
                     frame_b: &self.frame_b,
+                    sync_on: self.shared.params[P_SYNC].load(Ordering::Relaxed) >= 0.5,
+                    sync_ratio: self.shared.params[P_SYNC_RATIO].load(Ordering::Relaxed),
+                    fm_ratio: self.shared.params[P_FM_RATIO].load(Ordering::Relaxed),
+                    fm_amount: self.shared.params[P_FM_AMT].load(Ordering::Relaxed),
                     mod_slots,
                     mod_wheel,
                     aftertouch,
@@ -942,6 +961,9 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 _ => "None",
             };
             return write!(w, "{}", name);
+        }
+        if pid == P_SYNC {
+            return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
         }
         if pid == P_MOD1_DST || pid == P_MOD2_DST {
             let name = match v.round() as i32 {

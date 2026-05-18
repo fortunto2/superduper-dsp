@@ -11,7 +11,7 @@ use crate::{
     P_DRIVE, P_FENV_A, P_FENV_AMOUNT, P_FENV_D, P_FENV_R, P_FENV_S, P_FILTER_MODE, P_LFO_DEPTH,
     P_LFO_DEST, P_LFO_DIV, P_LFO_RATE, P_LFO_SHAPE, P_LFO_SYNC, P_MOD1_AMT, P_MOD1_DST, P_MOD1_SRC,
     P_MOD2_AMT, P_MOD2_DST, P_MOD2_SRC, P_NOISE, P_OUTPUT, P_RELEASE,
-    P_RESONANCE, P_SUB, P_SUSTAIN, P_UNISON, P_WT_POS, SharedParams,
+    P_RESONANCE, P_SUB, P_SUSTAIN, P_SYNC, P_SYNC_RATIO, P_FM_RATIO, P_FM_AMT, P_UNISON, P_WT_POS, SharedParams,
 };
 use crate::osc::{mip_from_table, render_formula, WT_SIZE};
 
@@ -814,6 +814,12 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_UNISON], &PARAMS[P_UNISON], &state.shared.dirty_params[P_UNISON], &state.shared.midi_learn, P_UNISON, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_DETUNE], &PARAMS[P_DETUNE], &state.shared.dirty_params[P_DETUNE], &state.shared.midi_learn, P_DETUNE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_SUB], &PARAMS[P_SUB], &state.shared.dirty_params[P_SUB], &state.shared.midi_learn, P_SUB, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+            });
+            core_gui::section(ui, "Sync + FM", |ui| {
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_SYNC], &PARAMS[P_SYNC], &state.shared.dirty_params[P_SYNC], &state.shared.midi_learn, P_SYNC, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_SYNC_RATIO], &PARAMS[P_SYNC_RATIO], &state.shared.dirty_params[P_SYNC_RATIO], &state.shared.midi_learn, P_SYNC_RATIO, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_FM_RATIO], &PARAMS[P_FM_RATIO], &state.shared.dirty_params[P_FM_RATIO], &state.shared.midi_learn, P_FM_RATIO, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_FM_AMT], &PARAMS[P_FM_AMT], &state.shared.dirty_params[P_FM_AMT], &state.shared.midi_learn, P_FM_AMT, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Mix", |ui| {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_NOISE], &PARAMS[P_NOISE], &state.shared.dirty_params[P_NOISE], &state.shared.midi_learn, P_NOISE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });

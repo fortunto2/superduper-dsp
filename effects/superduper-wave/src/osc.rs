@@ -289,6 +289,14 @@ pub struct WaveVoice {
     pub choke_remaining: u32,
     pub choke_total: u32,
     pub choke_level: f32,
+    /// Phantom master phase used by Hard Sync — when this crosses 1.0
+    /// the main unison-osc phases are reset to 0, producing the
+    /// classic "sync sweep" sound.
+    pub sync_phase: f32,
+    /// Independent phase used by the cross-FM modulator (sine at
+    /// root × FM Ratio). Sampled per-sample to phase-modulate the
+    /// main wavetable read.
+    pub fm_phase: f32,
 }
 
 pub const NOTE_FREE: u8 = 0xff;
@@ -311,6 +319,8 @@ impl Default for WaveVoice {
             choke_remaining: 0,
             choke_total: 0,
             choke_level: 0.0,
+            sync_phase: 0.0,
+            fm_phase: 0.0,
         }
     }
 }
@@ -389,6 +399,12 @@ pub struct WaveParams<'a> {
     pub frame_a_prev: &'a MipWavetable,
     pub frame_a_fade: f32,
     pub frame_b: &'a MipWavetable,
+
+    // ---- Hard sync + cross-FM ----
+    pub sync_on: bool,
+    pub sync_ratio: f32,
+    pub fm_ratio: f32,
+    pub fm_amount: f32,
 
     // ---- Mod-matrix slot snapshots (caller fills both — 2 slots) ----
     pub mod_slots: [ModSlot; 2],
@@ -601,19 +617,52 @@ impl WaveVoice {
         let mut mix_l = 0.0_f32;
         let mut mix_r = 0.0_f32;
         // Main unison stack.
+        // Hard sync — advance the phantom master sine; when it wraps
+        // past 1.0 the main unison phases get reset on the very next
+        // sample. We sample the wrap flag once per outer voice-step so
+        // every unison member resets together (otherwise they'd phase-
+        // smear). Sync stays inert when sync_ratio is exactly 1.0 OR
+        // sync_on is false — kept as a single fast branch.
+        let sync_reset = if p.sync_on {
+            let sync_freq = p.root_hz * p.sync_ratio.max(0.01) * pitch_ratio;
+            self.sync_phase += sync_freq / p.sr;
+            let reset = self.sync_phase >= 1.0;
+            if reset { self.sync_phase -= 1.0; }
+            reset
+        } else {
+            false
+        };
+
+        // FM modulator — sine at root × FM Ratio. Output ∈ [-1, 1] is
+        // scaled by fm_amount and added to the wavetable read phase
+        // (modulo 1.0). Cheap, audibly musical phase modulation; no
+        // separate oscillator block needed.
+        let fm_sample = if p.fm_amount > 0.0001 {
+            let fm_freq = p.root_hz * p.fm_ratio.max(0.01) * pitch_ratio;
+            self.fm_phase += fm_freq / p.sr;
+            if self.fm_phase >= 1.0 { self.fm_phase -= 1.0; }
+            (self.fm_phase * core::f32::consts::TAU).sin() * p.fm_amount
+        } else {
+            0.0
+        };
+
         for i in 0..n_active {
             let o = &mut self.osc[i];
+            if sync_reset { o.phase = 0.0; }
             let voice_freq = p.root_hz * o.detune_ratio * pitch_ratio;
             let phase_inc = voice_freq / p.sr;
             o.phase += phase_inc;
             if o.phase >= 1.0 {
                 o.phase -= 1.0;
             }
+            // Phase-mod the wavetable read by the FM sample. Wraps
+            // through 1.0 by the additive modulo down in read_blend.
+            let read_phase = (o.phase + fm_sample).rem_euclid(1.0);
             let mip = p.frame_a.pick_level(voice_freq, p.sr, p.antialias);
             let table_a_prev = &p.frame_a_prev.levels[mip];
             let table_a = &p.frame_a.levels[mip];
             let table_b = &p.frame_b.levels[mip];
-            let s = read_blend(table_a_prev, table_a, table_b, o.phase, p.frame_a_fade, wt_pos);
+            let s = read_blend(table_a_prev, table_a, table_b, read_phase, p.frame_a_fade, wt_pos);
             mix_l += s * o.pan_l;
             mix_r += s * o.pan_r;
         }

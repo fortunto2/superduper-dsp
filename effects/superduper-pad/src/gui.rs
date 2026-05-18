@@ -6,7 +6,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_CUTOFF, P_DECAY, P_DRIVE, P_ENV_DELAY, P_ENV_HOLD, P_MODULATION, P_OUTPUT, P_RELEASE, P_RESONANCE,
+    PARAMS, P_ATTACK, P_CUTOFF, P_DECAY, P_DRIVE, P_ENV_DELAY, P_ENV_HOLD, P_MODULATION, P_OUTPUT, P_POLYPHONY, P_RELEASE, P_RESONANCE,
     P_SUSTAIN, P_WIDTH, SharedParams,
 };
 
@@ -122,6 +122,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], &state.shared.midi_learn, P_DECAY, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], &state.shared.midi_learn, P_SUSTAIN, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], &state.shared.midi_learn, P_RELEASE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+            });
+            core_gui::section(ui, "Voice", |ui| {
+                core_gui::learn_param_row_g(ui, &state.shared.params[P_POLYPHONY], &PARAMS[P_POLYPHONY], &state.shared.dirty_params[P_POLYPHONY], &state.shared.midi_learn, P_POLYPHONY, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Output", |ui| {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], &state.shared.midi_learn, P_OUTPUT, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });

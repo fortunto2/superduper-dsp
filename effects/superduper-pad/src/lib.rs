@@ -106,6 +106,9 @@ pub const PARAMS: &[ParamDef] = &[
     // before decay. Both default to 0 → classic ADSR behaviour.
     ParamDef { id: 11, name: b"Env Delay",  min: 0.0,  max: 4.0,     default: 0.0,    unit: "s"     },
     ParamDef { id: 12, name: b"Env Hold",   min: 0.0,  max: 4.0,     default: 0.0,    unit: "s"     },
+    // Polyphony cap — clamped to [2, 16]. New voice allocations beyond
+    // this count steal from the oldest releasing voice.
+    ParamDef { id: 13, name: b"Polyphony",  min: 2.0,  max: 16.0,    default: 8.0,    unit: "v"     },
 ];
 
 pub const P_CUTOFF: usize = 0;
@@ -121,8 +124,12 @@ pub const P_OUTPUT: usize = 9;
 pub const P_BEND_RANGE: usize = 10;
 pub const P_ENV_DELAY: usize = 11;
 pub const P_ENV_HOLD: usize = 12;
+pub const P_POLYPHONY: usize = 13;
 
-pub const VOICE_COUNT: usize = 8;
+/// Hard cap on voice array size. The Polyphony param limits how many
+/// of these the user can actually trigger; raising the array gives
+/// headroom for the cap without re-allocating at runtime.
+pub const VOICE_COUNT: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Shared params — identical pattern to Ambient.
@@ -218,6 +225,10 @@ struct Voice {
     choke_remaining: u32,
     choke_total: u32,
     choke_level: f32,
+    /// MPE per-voice pitch offset in semitones. CLAP NoteExpression
+    /// (Tuning channel) writes per-note bend here so each voice can be
+    /// pitched independently — Roli Seaboard / Linnstrument workflows.
+    pitch_offset_st: f32,
 }
 
 impl Default for Voice {
@@ -233,6 +244,7 @@ impl Default for Voice {
             choke_remaining: 0,
             choke_total: 0,
             choke_level: 0.0,
+            pitch_offset_st: 0.0,
         }
     }
 }
@@ -286,6 +298,10 @@ impl<'a> PluginAudioProcessor<'a> {
         self.next_age = self.next_age.wrapping_add(1);
         let stamp = self.next_age;
 
+        let polyphony = self.shared.params[P_POLYPHONY]
+            .load(Ordering::Relaxed)
+            .clamp(2.0, VOICE_COUNT as f32) as usize;
+
         // 1. Retrigger same key — single voice per held note avoids zombie
         //    voices when a host sends rapid on/off pairs. Cancels any
         //    in-flight choke fade so a held key over CC 120 still sounds.
@@ -295,9 +311,15 @@ impl<'a> PluginAudioProcessor<'a> {
                 v.velocity = velocity;
                 v.age_stamp = stamp;
                 v.choke_remaining = 0;
+                v.pitch_offset_st = 0.0;
                 return;
             }
         }
+        // Count currently-active voices to enforce the polyphony cap.
+        // If we're already at the cap we skip straight to voice-steal
+        // logic instead of spinning up a fresh slot from the idle pool.
+        let active_count = self.voices.iter().filter(|v| v.key != NOTE_FREE).count();
+        let cap_hit = active_count >= polyphony;
         // 2. Free voice — assign without touching PadVoice/filter state.
         //    A full `Voice::default()` reset zeroes the SVF integrators
         //    and resets the oscillator phases, which causes an audible
@@ -305,15 +327,18 @@ impl<'a> PluginAudioProcessor<'a> {
         //    had left (it was idle, so amplitude is 0 anyway) lets the
         //    attack ramp smoothly from silence with the same oscillator
         //    continuity.
-        if let Some(v) = self.voices.iter_mut().find(|v| v.env.is_idle() && v.choke_remaining == 0) {
-            v.key = key;
-            v.note_id = note_id;
-            v.velocity = velocity;
-            v.age_stamp = stamp;
-            v.env = AdsrEnvelope::default();
-            v.env.gate_on();
-            v.choke_remaining = 0;
-            return;
+        if !cap_hit {
+            if let Some(v) = self.voices.iter_mut().find(|v| v.env.is_idle() && v.choke_remaining == 0) {
+                v.key = key;
+                v.note_id = note_id;
+                v.velocity = velocity;
+                v.age_stamp = stamp;
+                v.env = AdsrEnvelope::default();
+                v.env.gate_on();
+                v.choke_remaining = 0;
+                v.pitch_offset_st = 0.0;
+                return;
+            }
         }
         // 3. Quietest releasing voice.
         let mut steal_idx = 0usize;
@@ -350,6 +375,7 @@ impl<'a> PluginAudioProcessor<'a> {
         v.velocity = velocity;
         v.age_stamp = stamp;
         v.choke_remaining = 0;
+        v.pitch_offset_st = 0.0;
         v.env.gate_on();
     }
 
@@ -484,6 +510,32 @@ impl<'a> PluginAudioProcessor<'a> {
             CoreEventSpace::Midi(m) => {
                 self.handle_midi_event(m.data());
             }
+            // CLAP NoteExpression with NoteExpressionType::Tuning carries
+            // per-voice pitch bend in semitones (MPE pitch slide). Find
+            // the matching voice by note_id (or key as fallback) and
+            // update its pitch_offset_st atom.
+            CoreEventSpace::NoteExpression(ne) => {
+                use clack_common::events::event_types::NoteExpressionType;
+                if ne.expression_type() == Some(NoteExpressionType::Tuning) {
+                    let target_note_id = match ne.note_id() {
+                        Match::Specific(id) => id as i32,
+                        Match::All => -1,
+                    };
+                    let target_key = match ne.key() {
+                        Match::Specific(k) => Some(k as u8),
+                        Match::All => None,
+                    };
+                    let st = ne.value() as f32;
+                    for v in self.voices.iter_mut() {
+                        if v.key == NOTE_FREE { continue; }
+                        let id_ok = target_note_id == -1 || v.note_id == target_note_id;
+                        let key_ok = target_key.map_or(true, |k| v.key == k);
+                        if id_ok && key_ok {
+                            v.pitch_offset_st = st;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -540,7 +592,7 @@ impl<'a> PluginAudioProcessor<'a> {
                 // bandlimited signal — no truncation discontinuity.
                 if v.choke_remaining > 0 {
                     let fade = (v.choke_remaining as f32) / (v.choke_total as f32);
-                    let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
+                    let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed) + v.pitch_offset_st);
                     let l_hz = base_hz * 2f32.powf(-width * 0.5 / 1200.0);
                     let r_hz = base_hz * 2f32.powf(width * 0.5 / 1200.0);
                     let pl = PadParams {
@@ -568,7 +620,7 @@ impl<'a> PluginAudioProcessor<'a> {
                     v.key = NOTE_FREE;
                     continue;
                 }
-                let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
+                let base_hz = midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed) + v.pitch_offset_st);
                 let l_hz = base_hz * 2f32.powf(-width * 0.5 / 1200.0);
                 let r_hz = base_hz * 2f32.powf(width * 0.5 / 1200.0);
 

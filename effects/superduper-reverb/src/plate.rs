@@ -60,6 +60,33 @@ const MOD_EXCURSION: f32 = 8.0;
 // Building blocks
 // ---------------------------------------------------------------------------
 
+/// 3rd-order Lagrange interpolation read from a ring buffer. Used by every
+/// in-tank delay tap so a continuous SIZE sweep produces no clicks AND
+/// preserves HF in the reverb tail. Linear interp is enough to silence the
+/// click but adds a per-tap low-pass that compounds badly over a long
+/// figure-of-eight decay — Lagrange-3 is "maximally flat at DC", costing
+/// 3 extra multiplies per read for a ~50× tighter HF response than linear.
+/// Reference: J.O. Smith, "Physical Audio Signal Processing",
+/// "Lagrange Interpolation".
+///
+/// Requires `1.0 <= d <= cap - 3` so the four taps stay inside the buffer.
+#[inline]
+fn lagrange3_read(buf: &[f32], write_idx: usize, cap: usize, d: f32) -> f32 {
+    let d = d.max(1.0).min((cap - 3) as f32);
+    let d_int = d as usize;
+    let frac = d - d_int as f32;
+    let base = (write_idx + cap - d_int - 1) % cap;
+    let y_m1 = buf[base];
+    let y_0 = buf[(base + 1) % cap];
+    let y_1 = buf[(base + 2) % cap];
+    let y_2 = buf[(base + 3) % cap];
+    let c0 = -frac * (frac - 1.0) * (frac - 2.0) / 6.0;
+    let c1 = (frac + 1.0) * (frac - 1.0) * (frac - 2.0) / 2.0;
+    let c2 = -(frac + 1.0) * frac * (frac - 2.0) / 2.0;
+    let c3 = (frac + 1.0) * frac * (frac - 1.0) / 6.0;
+    c0 * y_m1 + c1 * y_0 + c2 * y_1 + c3 * y_2
+}
+
 struct Allpass {
     buf: [f32; AP_BUF],
     idx: usize,
@@ -72,26 +99,26 @@ impl Default for Allpass {
 }
 
 impl Allpass {
-    /// Schroeder allpass:
+    /// Schroeder allpass with Lagrange-3 interpolated tap so the delay
+    /// length can be swept continuously (SIZE knob ramps `len_frac`
+    /// between integer values; without interpolation the read pointer
+    /// jumps whole samples and the feedback loop emits an audible click).
     ///   v[n] = x[n] + g * v[n-D]   (state, written into buf)
     ///   y[n] = -g * v[n] + v[n-D]  (output — has DC gain 1.0)
-    fn process(&mut self, x: f32, len: usize, g: f32) -> f32 {
-        let len = len.clamp(1, AP_BUF - 1);
-        let read_idx = (self.idx + AP_BUF - len) % AP_BUF;
-        let delayed = self.buf[read_idx];
+    fn process(&mut self, x: f32, len_frac: f32, g: f32) -> f32 {
+        let delayed = lagrange3_read(&self.buf, self.idx, AP_BUF, len_frac);
         let v = x + g * delayed;
         let y = -g * v + delayed;
         self.buf[self.idx] = v;
         self.idx = (self.idx + 1) % AP_BUF;
         y
     }
-    /// Read from inside the delay line at an arbitrary offset (used for the
-    /// multi-tap output — Dattorro samples the internal AP buffer, not its
-    /// output node).
-    fn tap_buf(&self, offset: usize) -> f32 {
-        let o = offset.min(AP_BUF - 1);
-        let r = (self.idx + AP_BUF - o) % AP_BUF;
-        self.buf[r]
+    /// Read from inside the delay line at an arbitrary fractional offset.
+    /// Used by the 7-tap output — the SIZE knob scales every offset, so
+    /// any non-interpolated tap clicks when its position crosses an
+    /// integer.
+    fn tap_buf(&self, offset: f32) -> f32 {
+        lagrange3_read(&self.buf, self.idx, AP_BUF, offset)
     }
 }
 
@@ -107,15 +134,13 @@ impl Default for ModAllpass {
 }
 
 impl ModAllpass {
-    /// Allpass with linearly-interpolated tap (so we can sweep delay length
-    /// smoothly via the LFO). Same Schroeder structure as `Allpass::process`.
+    /// Allpass with Lagrange-3 interpolated tap (so we can sweep delay
+    /// length smoothly via the LFO). Same Schroeder structure as
+    /// `Allpass::process`. Upgraded from linear interp when the same fix
+    /// landed on the fixed allpasses — keeping all allpasses on the same
+    /// interpolation kernel preserves the tank's frequency response.
     fn process(&mut self, x: f32, len_frac: f32, g: f32) -> f32 {
-        let len_frac = len_frac.clamp(1.0, (AP_BUF - 2) as f32);
-        let len_i = len_frac as usize;
-        let len_f = len_frac - len_i as f32;
-        let read_a = (self.idx + AP_BUF - len_i) % AP_BUF;
-        let read_b = (read_a + AP_BUF - 1) % AP_BUF;
-        let delayed = self.buf[read_a] * (1.0 - len_f) + self.buf[read_b] * len_f;
+        let delayed = lagrange3_read(&self.buf, self.idx, AP_BUF, len_frac);
         let v = x + g * delayed;
         let y = -g * v + delayed;
         self.buf[self.idx] = v;
@@ -142,10 +167,13 @@ impl Delay {
     fn advance(&mut self) {
         self.idx = (self.idx + 1) % TANK_BUF;
     }
-    fn tap(&self, offset: usize) -> f32 {
-        let o = offset.min(TANK_BUF - 1);
-        let r = (self.idx + TANK_BUF - o) % TANK_BUF;
-        self.buf[r]
+    /// Fractional tap with Lagrange-3 interpolation. Required for click-
+    /// free SIZE sweeps — `size` scales every tap offset, and integer-
+    /// only reads jump whole samples when the offset crosses an integer.
+    /// Lagrange-3 (vs linear) preserves the reverb's HF content over the
+    /// long feedback loop — see `lagrange3_read` for the rationale.
+    fn tap(&self, offset: f32) -> f32 {
+        lagrange3_read(self.buf.as_slice(), self.idx, TANK_BUF, offset)
     }
 }
 
@@ -270,7 +298,7 @@ impl PlateState {
 
         // ---- Input diffuser: 4 cascaded allpasses ----
         for i in 0..4 {
-            let len = (DIFF_LENS[i] * scale) as usize;
+            let len = DIFF_LENS[i] * scale;
             x = self.diff[i].process(x, len, DIFF_GAINS[i]);
         }
 
@@ -299,13 +327,13 @@ impl PlateState {
         let l_in = x + self.cross_r_to_l;
         let l_after_mod = self.tank_l_mod_ap.process(l_in, mod_l_len, TANK_MOD_GAIN);
         self.tank_l_delay1.write(l_after_mod);
-        let d1_len_l = (TANK_DELAY1_L * scale) as usize;
+        let d1_len_l = TANK_DELAY1_L * scale;
         let after_d1_l = self.tank_l_delay1.tap(d1_len_l);
         self.tank_l_damp_lp = after_d1_l * (1.0 - p.damp) + self.tank_l_damp_lp * p.damp;
-        let ap2_len_l = (TANK_AP2_L * scale) as usize;
+        let ap2_len_l = TANK_AP2_L * scale;
         let after_ap2_l = self.tank_l_ap2.process(self.tank_l_damp_lp, ap2_len_l, TANK_AP2_GAIN);
         self.tank_l_delay2.write(after_ap2_l);
-        let d2_len_l = (TANK_DELAY2_L * scale) as usize;
+        let d2_len_l = TANK_DELAY2_L * scale;
         let after_d2_l = self.tank_l_delay2.tap(d2_len_l);
         // Crossfeed gain = decay (the single loop attenuation).
         self.cross_l_to_r = after_d2_l * p.decay;
@@ -314,13 +342,13 @@ impl PlateState {
         let r_in = x + self.cross_l_to_r;
         let r_after_mod = self.tank_r_mod_ap.process(r_in, mod_r_len, TANK_MOD_GAIN);
         self.tank_r_delay1.write(r_after_mod);
-        let d1_len_r = (TANK_DELAY1_R * scale) as usize;
+        let d1_len_r = TANK_DELAY1_R * scale;
         let after_d1_r = self.tank_r_delay1.tap(d1_len_r);
         self.tank_r_damp_lp = after_d1_r * (1.0 - p.damp) + self.tank_r_damp_lp * p.damp;
-        let ap2_len_r = (TANK_AP2_R * scale) as usize;
+        let ap2_len_r = TANK_AP2_R * scale;
         let after_ap2_r = self.tank_r_ap2.process(self.tank_r_damp_lp, ap2_len_r, TANK_AP2_GAIN);
         self.tank_r_delay2.write(after_ap2_r);
-        let d2_len_r = (TANK_DELAY2_R * scale) as usize;
+        let d2_len_r = TANK_DELAY2_R * scale;
         let after_d2_r = self.tank_r_delay2.tap(d2_len_r);
         self.cross_r_to_l = after_d2_r * p.decay;
 
@@ -332,22 +360,23 @@ impl PlateState {
 
         // ---- Multi-tap output (Dattorro's published offsets, scaled) ----
         // Left output reads mostly from R-tank (and vice versa) — that's how
-        // we get the broad stereo image from a figure-of-eight reverb.
-        let out_l = self.tank_r_delay1.tap((266.0 * scale) as usize)
-            + self.tank_r_delay1.tap((2974.0 * scale) as usize)
-            - self.tank_r_ap2.tap_buf((1913.0 * scale) as usize)
-            + self.tank_r_delay2.tap((1996.0 * scale) as usize)
-            - self.tank_l_delay1.tap((1990.0 * scale) as usize)
-            - self.tank_l_ap2.tap_buf((187.0 * scale) as usize)
-            - self.tank_l_delay2.tap((1066.0 * scale) as usize);
+        // we get the broad stereo image from a figure-of-eight reverb. All
+        // taps are fractional → SIZE can sweep continuously without clicks.
+        let out_l = self.tank_r_delay1.tap(266.0 * scale)
+            + self.tank_r_delay1.tap(2974.0 * scale)
+            - self.tank_r_ap2.tap_buf(1913.0 * scale)
+            + self.tank_r_delay2.tap(1996.0 * scale)
+            - self.tank_l_delay1.tap(1990.0 * scale)
+            - self.tank_l_ap2.tap_buf(187.0 * scale)
+            - self.tank_l_delay2.tap(1066.0 * scale);
 
-        let out_r = self.tank_l_delay1.tap((353.0 * scale) as usize)
-            + self.tank_l_delay1.tap((3627.0 * scale) as usize)
-            - self.tank_l_ap2.tap_buf((1228.0 * scale) as usize)
-            + self.tank_l_delay2.tap((2673.0 * scale) as usize)
-            - self.tank_r_delay1.tap((2111.0 * scale) as usize)
-            - self.tank_r_ap2.tap_buf((335.0 * scale) as usize)
-            - self.tank_r_delay2.tap((121.0 * scale) as usize);
+        let out_r = self.tank_l_delay1.tap(353.0 * scale)
+            + self.tank_l_delay1.tap(3627.0 * scale)
+            - self.tank_l_ap2.tap_buf(1228.0 * scale)
+            + self.tank_l_delay2.tap(2673.0 * scale)
+            - self.tank_r_delay1.tap(2111.0 * scale)
+            - self.tank_r_ap2.tap_buf(335.0 * scale)
+            - self.tank_r_delay2.tap(121.0 * scale);
 
         // Dattorro normalises by ~0.6, then we leave headroom for downstream
         // mixing. Empirically this lands around -3 dBFS at unity decay so the

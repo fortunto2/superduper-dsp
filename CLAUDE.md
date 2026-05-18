@@ -7,32 +7,45 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — vocal chain complete (8 plugins)
+## Current state — 11 plugins (8 effects + 3 instruments)
+
+**Effects (audio-in, audio-out):**
 
 - **superduper-reverb** — Dattorro figure-of-eight plate. Sidechain ducking.
 - **superduper-supermass** — Valhalla-style cascade (reverb 35m/15s →
   stereo chorus → reverb 50m/28s) on fundsp 0.23. Sidechain ducking.
 - **superduper-spectrum** — pass-through analyzer (Spectrum / Spectrogram
   / Split view, 3 colour palettes).
-- **superduper-saturator** — Tape / Tube / Soft-tanh curves + Tilt EQ.
+- **superduper-saturator** — Tape / Tube / Soft-tanh curves + Tilt EQ,
+  2×/4× polyphase oversampling.
 - **superduper-delay** — 3rd-order Lagrange-interp delay, tape-style
   feedback saturation, ping-pong + slap modes, sidechain ducking.
 - **superduper-compressor** — soft-knee feed-forward, peak+LP detector,
-  2 ms lookahead, sidechain HPF, external sidechain port, live GR meter.
+  2 ms lookahead, sidechain HPF, external sidechain port, live GR meter,
+  Clean/Pump/Smooth curves, Range + Hold params, oversampled ceiling clipper.
 - **superduper-eq** — 3-band parametric (low shelf + mid peak + high shelf)
   RBJ biquad + HP/LP, output trim.
 - **superduper-limiter** — lookahead brickwall, 4× true-peak detection
   on a sidechain upsampler, live GR meter.
+- **superduper-vocal** *(new)* — split-band de-esser + mouth de-clicker
+  tuned for rap vocals. 11th plugin.
 
-All eight ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+**Instruments (MIDI-in or generator, audio-out):**
+
+- **superduper-ambient** — autonomous chord-drone generator (no MIDI input).
+- **superduper-pad** — polyphonic MIDI synth, 8-voice PadVoice pool +
+  per-voice ADSR + TPT/ZDF SVF, click-free voice steal.
+
+All eleven ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 `tools/sdsp-runner` is the standalone CLAP host — loads any `.clap`,
 plays a WAV file through it to cpal output (`sdsp-runner <plugin.clap>
-[<input.wav>]`). Useful for fast dev loop without REAPER.
-
-Planned: SuperDuper Ambient (multi-track autonomous generator from
-rust-synth), SuperDuper Pad (note-driven synth via MIDI input port).
+[<input.wav>]`). Useful for fast dev loop without REAPER. **Effects only**
+— synth/MIDI plugins (Pad) won't make sound through sdsp-runner because
+it doesn't generate MIDI events; use the `clap_midi.rs` / `click_audit.rs`
+test pattern instead (drives MIDI via clack-host and writes the result
+to a WAV under `/tmp/`).
 
 ## Workspace layout
 
@@ -48,20 +61,43 @@ superduper-dsp/
   sdk-macros/                proc-macro params!{} (M2 planned)
   synth-core/                shared DSP — anything reusable across effects
     src/
-      dsp_blocks.rs          Ducker, Tilt, DcBlocker, SmoothedParam
-      analysis.rs            FFT, magnitude_spectrum_db, ascii_spectrum, sine sweep
+      dsp_blocks.rs          Ducker, Tilt, DcBlocker, SmoothedParam, Biquad,
+                             EnvelopeDetector, compressor_gain_db (+ curves),
+                             Oversampler2x, DelayLine, SlewLimiter2Pole,
+                             OnePoleLp, PadVoice + PadParams, AdsrEnvelope +
+                             AdsrParams, midi_note_to_hz, saturation primitives
+                             (tanh_drive, tape_clip, tube_clip)
+      analysis.rs            FFT, magnitude_spectrum_db, ascii_spectrum,
+                             sine sweep, measure_thd_db, measure_aliasing_db,
+                             measure_imd_smpte_db, make_bin_aligned_sine
       supermass.rs           Valhalla-style cascade reverb (Net builder)
-    tests/dsp_blocks.rs      9 unit tests on shared blocks
+      gui.rs                 shared egui_baseview helpers (feature = "gui")
+    tests/dsp_blocks.rs      unit tests on shared blocks
   effects/
     superduper-reverb/       Dattorro plate effect plugin
     superduper-supermass/    Cascade reverb effect plugin
-    example-passthrough/     toy effect for the hot-reload path
+    superduper-spectrum/     pass-through analyzer + visualiser
+    superduper-saturator/    tape/tube/soft-tanh + oversampling
+    superduper-delay/        Lagrange-interp delay + tape feedback
+    superduper-compressor/   feed-forward comp + lookahead + GR meter
+    superduper-eq/           3-band RBJ parametric + HP/LP
+    superduper-limiter/      lookahead brickwall + true-peak detect
+    superduper-vocal/        split-band de-esser + de-clicker (rap vocal)
+    superduper-ambient/      autonomous chord-drone generator
+    superduper-pad/          polyphonic MIDI pad synth
+    example-passthrough/     toy effect for the (deprecated) hot-reload path
+  tools/sdsp-runner/         standalone CLAP host (file-in → cpal-out)
   plugin/                    old shell-plugin code (deprecated, kept for reference)
   daemon/, protocol/         IPC infrastructure (deprecated for now)
   scripts/
-    build_reverb_bundle.sh
-    build_supermass_bundle.sh
-    restart_reaper.sh
+    build_reverb_bundle.sh, build_supermass_bundle.sh, build_spectrum_bundle.sh,
+    build_saturator_bundle.sh, build_delay_bundle.sh, build_compressor_bundle.sh,
+    build_eq_bundle.sh, build_limiter_bundle.sh, build_vocal_bundle.sh,
+    build_ambient_bundle.sh, build_pad_bundle.sh,
+    build_bundle.sh             generic helper used by the per-effect scripts
+    build_release.sh            full local release zip with SHA256SUMS
+    restart_reaper.sh           graceful (or --force) REAPER restart
+    install_local.sh, load_effect.sh, load_named_effect.sh
 ```
 
 ## How to add a new effect plugin
@@ -301,6 +337,36 @@ and the CFBundleIdentifier. The script also installs to
   Mix or Width sends a step function into the audio and you hear zipper noise.
   Snap to host-loaded value at `activate()` time so the first block isn't a
   fade-in.
+- `Biquad` — RBJ EQ Cookbook biquad (peaking, low/high shelf, HPF, LPF) in
+  Direct Form II Transposed. Used by the EQ + the Vocal de-esser.
+- `EnvelopeDetector` — asymmetric one-pole peak follower (attack ≠ release).
+  Drives the compressor + limiter detection paths.
+- `compressor_gain_db` + `compressor_gain_db_curve` with `CompressorCurve`
+  (`Clean`/`Pump`/`Smooth`) — Giannoulis-Massberg-Reiss soft knee +
+  alternative knee shapes. Use `Curve::Clean` for transparent SSL-style,
+  `Pump` for FET 1176 punch, `Smooth` for sustained material.
+- `Oversampler2x` + `oversample_apply` — 11-tap halfband FIR upsampler/
+  downsampler. `os_mode` 0 = native, 1 = 2×, 2 = 4× cascaded. Wraps any
+  per-sample non-linearity to keep aliasing below ~-80 dB.
+- `DelayLine` — variable-length delay with 3rd-order Lagrange interpolation.
+  Don't use linear interp for delay-tap fractional reads (6 dB high-shelf
+  artefact at Nyquist).
+- `SlewLimiter2Pole` — two cascaded one-poles, C¹ continuous. Use it for
+  delay-time / pitch automation; a single one-pole has a discontinuous
+  derivative on target changes and audibly clicks.
+- `OnePoleLp` — simple one-pole LPF. The tone control inside a delay's
+  feedback loop (every repeat gets darker).
+- `PadVoice` + `PadParams` — autonomous 4-partial pad oscillator with built-in
+  TPT/ZDF SVF lowpass + tanh saturation. Used by Pad (note-driven) and
+  Ambient (autonomous drone). **Don't reset the voice's filter state**
+  between notes — preserving `lp_z1`/`lp_z2` avoids clicks on voice steal.
+- `AdsrEnvelope` + `AdsrParams` — linear-attack / exp-decay+release ADSR
+  with an explicit `AdsrStage` state machine. `gate_on()` resumes from the
+  current level (no glitch on re-trigger during decay/release).
+- `midi_note_to_hz` — `440·2^((n-69)/12)`. Use this, not a manual table.
+- `tanh_drive`, `tape_clip`, `tube_clip` — three saturation curves with
+  matched dB gain. Caller picks the flavour; `tube_clip` carries a tiny
+  DC bias so always pair it with `DcBlocker` downstream.
 
 **`superduper_synth_core::analysis`:**
 - `magnitude_spectrum_db(samples)` — Hann window + real-FFT → dB per bin.
@@ -310,6 +376,15 @@ and the CFBundleIdentifier. The script also installs to
 - `frequency_response_sine_sweep(process_one, sr, freqs, secs)` — log-spaced
   sine sweep through a closure-shaped DSP block → measured gain curve.
 - `log_freq_grid()` — standard 1/3-octave grid 20 Hz–20 kHz.
+- `measure_thd_db(samples, f0, sr)` — total harmonic distortion against
+  the dominant peak (2nd through 8th harmonic). Feed an integer-cycle sine.
+- `measure_aliasing_db(samples, f0, sr)` — max non-harmonic peak. For
+  saturator tests, pick `f0 ≈ 0.45·sr` so harmonics all alias back into band.
+- `measure_imd_smpte_db(samples, sr)` + `imd_smpte_input(n, sr)` — SMPTE
+  IMD test (60 Hz + 7 kHz at 4:1) for tube/tape colour characterisation.
+- `make_bin_aligned_sine(fft_len, sr, hz, amp)` — sine that lands exactly
+  on an FFT bin so THD measurements don't leak the fundamental into its
+  neighbours. **Use this for every spectrum-based assertion.**
 
 **`superduper_synth_core::supermass`:**
 - `build_wet() -> fundsp::Net` — cascade reverb graph. Call
@@ -384,6 +459,69 @@ and the CFBundleIdentifier. The script also installs to
     is fine, but the *target* changes in steps. Slew through SmoothedParam
     to kill zipper noise on knob drags.
 
+14. **MIDI/note ports — declare BOTH dialects.** A synth plugin must register
+    the `note-ports` extension with `NoteDialects::CLAP | NoteDialects::MIDI`
+    and `preferred_dialect: Some(NoteDialect::Clap)`. Hosts pick whichever
+    they speak — REAPER routes MIDI items as MIDI 1.0, some other hosts
+    only send CLAP notes. Without both dialects, half of hosts silently
+    drop your NoteOn events. Handle `CoreEventSpace::NoteOn / NoteOff /
+    NoteChoke / Midi` in your event loop; treat the raw MIDI status nibble
+    (0x90/0x80/0xB0 + CC123/CC120) for the MIDI dialect path.
+
+15. **`OutputOnly` audio buffers — handle them.** REAPER (and others) hand
+    instrument plugins a `ChannelPair::OutputOnly` buffer with NO input
+    slice. Naive `split_io` patterns from effect plugins return `None` for
+    OutputOnly and silently produce zero audio. Use
+    `clap_helpers::output_slice` (added during the Pad/Ambient fix in
+    commit 16d5148) which unwraps OutputOnly correctly. Symptom: synth
+    is dead silent in the DAW but its tests pass.
+
+16. **TPT/ZDF SVF over Chamberlin for any voice filter.** Chamberlin SVF
+    blows up at cutoff > sr/6 (numerical instability from forward Euler
+    integration). The Trapezoidal Zero-Delay-Feedback form (Zavalishin
+    "Art of VA Filter Design", chap. 5) is unconditionally stable up to
+    Nyquist and costs the same per sample. The PadVoice ported from
+    rust-synth originally used Chamberlin and clicked at high cutoff —
+    commit bdda936 switched it to TPT/ZDF.
+
+17. **Voice steal — preserve oscillator + filter state, NOT envelope.**
+    The instinct is to `Voice::default()` a stolen voice slot. That zeros
+    SVF integrators (`lp_z1`/`lp_z2`) and oscillator phases, producing
+    an audible click on every steal. Correct pattern: only assign the new
+    `key`/`note_id`/`velocity`/`age_stamp` and call `env.gate_on()` to
+    re-trigger the attack from whatever level the envelope currently has.
+    For re-using a fully-idle slot, you can also keep the filter state —
+    its `lp_z*` are already ≈ 0 from the release floor.
+
+18. **Drag-knob "vanishing audio" is usually a too-fast slew.** With a 5 ms
+    SmoothedParam time constant, dragging Cutoff from 16 kHz to 80 Hz
+    spans 12-orders-of-magnitude on a log scale at one constant linear
+    rate — the audible result is "the sound disappears for a moment".
+    Either lengthen the time constant (30-50 ms is musical) or, better,
+    parameterise the slew rate in *octaves per second* and convert to
+    linear inside the SmoothedParam step. Don't fight the user's ear.
+
+19. **Sample-discontinuity audit pattern.** When the user reports clicks/
+    crackle but the bug is non-obvious, write a `tests/click_audit.rs`
+    that drives the plugin through a realistic MIDI sequence via
+    clack-host, records to `/tmp/<plugin>_click_audit.wav`, and asserts
+    `max |x[n+1] - x[n]| < 0.4`. The WAV doubles as a listening test;
+    the histogram + top-10-spike timing pinpoints the moment if anything
+    fails. Pad uses this pattern (`effects/superduper-pad/tests/click_audit.rs`).
+
+20. **CLAP latency reporting matters for PDC.** Compressor + Limiter add
+    1-2 ms of lookahead; without `latency` extension implementation the
+    DAW won't compensate and your plugin throws the parallel bus out of
+    phase. Commit 54fdae7 added it — copy that pattern for any plugin
+    with internal pre-delay.
+
+21. **per-plugin quality_audit tests.** Compressor/Saturator/EQ ship a
+    `tests/quality_audit.rs` that runs sine-sweep + THD + aliasing
+    measurements and asserts numbers (e.g. "saturator at drive 0.5 has
+    THD < -35 dB at 1 kHz, aliasing < -55 dB at 18 kHz under 4× OS").
+    Use these as the basis for new plugins — the measurement primitives
+    in `analysis.rs` (THD/IMD/aliasing) exist specifically for this.
+
 ## DSP code style rules — never violate inside `process()`
 
 - No heap allocation (no `Vec`, `Box::new`, `String`, `HashMap`).
@@ -401,24 +539,49 @@ and the CFBundleIdentifier. The script also installs to
 ```bash
 ./scripts/build_reverb_bundle.sh
 ./scripts/build_supermass_bundle.sh
-# new effects: write scripts/build_<name>_bundle.sh
+./scripts/build_spectrum_bundle.sh
+./scripts/build_saturator_bundle.sh
+./scripts/build_delay_bundle.sh
+./scripts/build_compressor_bundle.sh
+./scripts/build_eq_bundle.sh
+./scripts/build_limiter_bundle.sh
+./scripts/build_vocal_bundle.sh
+./scripts/build_ambient_bundle.sh
+./scripts/build_pad_bundle.sh
+# new effects: copy one of the above and change two strings (package name +
+# CFBundleIdentifier). Or call ./scripts/build_bundle.sh <name> directly.
 ```
 
-### Run all tests
+### Run all tests across the workspace
 ```bash
-cargo test --release -p superduper-reverb -p superduper-supermass -p superduper-synth-core
+cargo test --release --workspace
+# or one plugin at a time:
+cargo test --release -p superduper-pad
 ```
 
-### See ASCII spectrum output
+### See ASCII spectrum / measurement output
 ```bash
 cargo test --release -p superduper-reverb --test spectrum -- --nocapture
 cargo test --release -p superduper-supermass --test spectrum -- --nocapture
+cargo test --release -p superduper-saturator --test quality_audit -- --nocapture
+cargo test --release -p superduper-compressor --test quality_audit -- --nocapture
+# Pad click audit (writes /tmp/pad_click_audit.wav and prints histogram + tail spectrum):
+cargo test --release -p superduper-pad --test click_audit -- --nocapture
+```
+
+### Audition a generated test WAV
+```bash
+afplay /tmp/pad_click_audit.wav     # macOS — built into the OS
 ```
 
 ### Tail plugin debug logs (during REAPER session)
 ```bash
 tail -F ~/.superduper-dsp/reverb.log
 tail -F ~/.superduper-dsp/supermass.log
+tail -F ~/.superduper-dsp/pad.log
+tail -F ~/.superduper-dsp/ambient.log
+tail -F ~/.superduper-dsp/vocal.log
+# any plugin with logging: ~/.superduper-dsp/<plugin>.log
 ```
 
 ### Restart REAPER cleanly

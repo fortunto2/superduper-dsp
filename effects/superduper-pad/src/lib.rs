@@ -181,6 +181,16 @@ struct Voice {
     /// Monotonic stamp — used by the voice stealer to find the oldest
     /// allocated voice when all slots are busy.
     age_stamp: u64,
+    /// Choke-fade state. When `choke_remaining > 0` the voice ignores its
+    /// ADSR and applies a linear amplitude ramp from `choke_level` to 0
+    /// over `choke_total` samples, then frees the slot. CLAP NoteChoke
+    /// and MIDI All-Sound-Off (CC 120) trigger this path — REAPER sends
+    /// CC 120 on transport relocate, which used to hard-cut the envelope
+    /// and click audibly. 5 ms fade is below the perceptual click
+    /// threshold yet short enough to feel instantaneous.
+    choke_remaining: u32,
+    choke_total: u32,
+    choke_level: f32,
 }
 
 impl Default for Voice {
@@ -193,6 +203,9 @@ impl Default for Voice {
             note_id: -1,
             velocity: 0.0,
             age_stamp: 0,
+            choke_remaining: 0,
+            choke_total: 0,
+            choke_level: 0.0,
         }
     }
 }
@@ -247,12 +260,14 @@ impl<'a> PluginAudioProcessor<'a> {
         let stamp = self.next_age;
 
         // 1. Retrigger same key — single voice per held note avoids zombie
-        //    voices when a host sends rapid on/off pairs.
+        //    voices when a host sends rapid on/off pairs. Cancels any
+        //    in-flight choke fade so a held key over CC 120 still sounds.
         for v in self.voices.iter_mut() {
             if v.key == key && v.note_id == note_id {
                 v.env.gate_on();
                 v.velocity = velocity;
                 v.age_stamp = stamp;
+                v.choke_remaining = 0;
                 return;
             }
         }
@@ -263,13 +278,14 @@ impl<'a> PluginAudioProcessor<'a> {
         //    had left (it was idle, so amplitude is 0 anyway) lets the
         //    attack ramp smoothly from silence with the same oscillator
         //    continuity.
-        if let Some(v) = self.voices.iter_mut().find(|v| v.env.is_idle()) {
+        if let Some(v) = self.voices.iter_mut().find(|v| v.env.is_idle() && v.choke_remaining == 0) {
             v.key = key;
             v.note_id = note_id;
             v.velocity = velocity;
             v.age_stamp = stamp;
             v.env = AdsrEnvelope::default();
             v.env.gate_on();
+            v.choke_remaining = 0;
             return;
         }
         // 3. Quietest releasing voice.
@@ -306,6 +322,7 @@ impl<'a> PluginAudioProcessor<'a> {
         v.note_id = note_id;
         v.velocity = velocity;
         v.age_stamp = stamp;
+        v.choke_remaining = 0;
         v.env.gate_on();
     }
 
@@ -321,15 +338,22 @@ impl<'a> PluginAudioProcessor<'a> {
     }
 
     fn choke_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
-        // Choke is a hard stop — no release tail. CLAP says it's used when
-        // the host needs the note to die *now* (e.g. transport stop).
+        // CLAP NoteChoke / MIDI All-Sound-Off (CC 120) is "die now". A true
+        // hard cut (env = 0 in one sample) produces an audible click equal
+        // to the current voice amplitude — REAPER hits this on every
+        // transport relocate. 5 ms linear fade is below the perceptual click
+        // threshold (single-cycle period at 200 Hz) but short enough to feel
+        // instantaneous to a human. The voice keeps rendering through the
+        // ramp; render_subblock frees the slot when choke_remaining reaches 0.
+        let fade_samples = (self.sample_rate * 0.005) as u32;
         for v in self.voices.iter_mut() {
-            if v.key == NOTE_FREE {
+            if v.key == NOTE_FREE && v.choke_remaining == 0 {
                 continue;
             }
             if matches_key(key_match, v.key) && matches_note_id(note_id_match, v.note_id) {
-                v.env = AdsrEnvelope::default();
-                v.key = NOTE_FREE;
+                v.choke_level = v.env.level();
+                v.choke_total = fade_samples.max(1);
+                v.choke_remaining = v.choke_total;
             }
         }
     }
@@ -431,7 +455,36 @@ impl<'a> PluginAudioProcessor<'a> {
             let mut mix_l = 0.0_f32;
             let mut mix_r = 0.0_f32;
             for v in self.voices.iter_mut() {
-                if v.key == NOTE_FREE && v.env.is_idle() {
+                if v.key == NOTE_FREE && v.env.is_idle() && v.choke_remaining == 0 {
+                    continue;
+                }
+                // Choke fade path — overrides the ADSR with a linear ramp
+                // from choke_level → 0 across choke_total samples. Voice
+                // keeps generating audio (oscillator + filter continue
+                // ticking) so the fade is a multiplicative window on a
+                // bandlimited signal — no truncation discontinuity.
+                if v.choke_remaining > 0 {
+                    let fade = (v.choke_remaining as f32) / (v.choke_total as f32);
+                    let base_hz = midi_note_to_hz(v.key as f32);
+                    let l_hz = base_hz * 2f32.powf(-width * 0.5 / 1200.0);
+                    let r_hz = base_hz * 2f32.powf(width * 0.5 / 1200.0);
+                    let pl = PadParams {
+                        sr,
+                        root_hz: l_hz,
+                        cutoff_hz: cutoff,
+                        resonance,
+                        modulation_cents: modulation,
+                        drive,
+                    };
+                    let pr = PadParams { root_hz: r_hz, ..pl };
+                    let amp = fade * v.choke_level * v.velocity;
+                    mix_l += v.voice_l.process(pl) * amp;
+                    mix_r += v.voice_r.process(pr) * amp;
+                    v.choke_remaining -= 1;
+                    if v.choke_remaining == 0 {
+                        v.env = AdsrEnvelope::default();
+                        v.key = NOTE_FREE;
+                    }
                     continue;
                 }
                 let env = v.env.process(adsr_p);
@@ -469,7 +522,7 @@ impl<'a> PluginAudioProcessor<'a> {
     fn count_active(&self) -> u32 {
         self.voices
             .iter()
-            .filter(|v| !v.env.is_idle() || v.key != NOTE_FREE)
+            .filter(|v| !v.env.is_idle() || v.key != NOTE_FREE || v.choke_remaining > 0)
             .count() as u32
     }
 }

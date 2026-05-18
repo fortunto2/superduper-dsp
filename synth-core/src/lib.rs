@@ -10,6 +10,7 @@
 
 pub mod analysis;
 pub mod dsp_blocks;
+pub mod formant;
 pub mod supermass;
 
 #[cfg(feature = "gui")]

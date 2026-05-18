@@ -178,6 +178,18 @@ pub struct PluginAudioProcessor<'a> {
     smooth_mix: SmoothedParam,
     smooth_width: SmoothedParam,
     smooth_duck: SmoothedParam,
+    // SIZE governs every tank delay length AND the 7-tap output offsets.
+    // A step-jump in size (knob drag) used to click loudly because the
+    // tank delays read by integer offset. Now that taps are fractional
+    // (plate::Delay::tap / Allpass::tap_buf), a smoothed size sweep is
+    // continuous in audio output. ~30 ms TC is short enough to feel
+    // immediate but long enough to glide through several integer-sample
+    // boundaries before the next user knob update.
+    smooth_size: SmoothedParam,
+    smooth_decay: SmoothedParam,
+    smooth_damp: SmoothedParam,
+    smooth_predelay: SmoothedParam,
+    smooth_mod: SmoothedParam,
     // Scratch buffers for sidechain (port index 1). Pre-allocated at
     // `activate` so the audio thread never touches the allocator.
     sc_l: Box<[f32]>,
@@ -200,10 +212,20 @@ fn stereo_process(
     smooth_mix: &mut SmoothedParam,
     smooth_width: &mut SmoothedParam,
     smooth_duck: &mut SmoothedParam,
+    smooth_size: &mut SmoothedParam,
+    smooth_decay: &mut SmoothedParam,
+    smooth_damp: &mut SmoothedParam,
+    smooth_predelay: &mut SmoothedParam,
+    smooth_mod: &mut SmoothedParam,
     ch_l: ChannelPair<'_, f32>,
     ch_r: Option<ChannelPair<'_, f32>>,
     sc: Option<(&[f32], &[f32])>,
-    p: PlateParams,
+    sr: f32,
+    size_target: f32,
+    decay_target: f32,
+    damp_target: f32,
+    predelay_target: f32,
+    mod_target: f32,
     width_target: f32,
     mix_target: f32,
     duck_amount_target: f32,
@@ -248,14 +270,28 @@ fn stereo_process(
             return;
         }
         for (i, (inp, o)) in l_read.iter().zip(l_write.iter_mut()).enumerate() {
-            let mix = smooth_mix.step(mix_target, p.sr);
-            let width = smooth_width.step(width_target, p.sr);
-            let duck_amount_db = smooth_duck.step(duck_amount_target, p.sr);
+            let mix = smooth_mix.step(mix_target, sr);
+            let width = smooth_width.step(width_target, sr);
+            let duck_amount_db = smooth_duck.step(duck_amount_target, sr);
+            let size_now = smooth_size.step(size_target, sr);
+            let decay_now = smooth_decay.step(decay_target, sr);
+            let damp_now = smooth_damp.step(damp_target, sr);
+            let predelay_now = smooth_predelay.step(predelay_target, sr);
+            let mod_now = smooth_mod.step(mod_target, sr);
+            let p = PlateParams {
+                sr,
+                size: size_now,
+                decay: decay_now,
+                damp: damp_now,
+                bandwidth: 1.0 - damp_now * 0.5,
+                predelay_ms: predelay_now,
+                modulation: mod_now,
+            };
 
             let dry = *inp;
             let key_l = sc.map(|(s, _)| s.get(i).copied().unwrap_or(0.0)).unwrap_or(dry);
             let duck_gain = ducker.process(
-                key_l, key_l, p.sr,
+                key_l, key_l, sr,
                 duck_amount_db, duck_attack_ms, duck_release_ms,
             );
             let (wl, _) = state.process_sample(dry, dry, p);
@@ -273,20 +309,36 @@ fn stereo_process(
     let n = l_read.len().min(r_read.len());
     for i in 0..n {
         // Slew the user-facing knobs toward their targets, sample by sample.
-        let mix = smooth_mix.step(mix_target, p.sr);
-        let width = smooth_width.step(width_target, p.sr);
-        let duck_amount_db = smooth_duck.step(duck_amount_target, p.sr);
+        let mix = smooth_mix.step(mix_target, sr);
+        let width = smooth_width.step(width_target, sr);
+        let duck_amount_db = smooth_duck.step(duck_amount_target, sr);
+        let size_now = smooth_size.step(size_target, sr);
+        let decay_now = smooth_decay.step(decay_target, sr);
+        let damp_now = smooth_damp.step(damp_target, sr);
+        let predelay_now = smooth_predelay.step(predelay_target, sr);
+        let mod_now = smooth_mod.step(mod_target, sr);
+        let p = PlateParams {
+            sr,
+            size: size_now,
+            decay: decay_now,
+            damp: damp_now,
+            bandwidth: 1.0 - damp_now * 0.5,
+            predelay_ms: predelay_now,
+            modulation: mod_now,
+        };
 
         let dl = l_read[i];
         let dr = r_read[i];
 
-        // Key signal selection.
+        // Key signal selection. Shadow `sr` from the outer scope inside the
+        // pattern binding (the sidechain right channel is also named `sr` —
+        // rename to `scr` so we don't accidentally use the audio rate).
         let (key_l, key_r) = match sc {
-            Some((sl, sr)) => (sl.get(i).copied().unwrap_or(0.0), sr.get(i).copied().unwrap_or(0.0)),
+            Some((sl, scr)) => (sl.get(i).copied().unwrap_or(0.0), scr.get(i).copied().unwrap_or(0.0)),
             None => (dl, dr),
         };
         let duck_gain = ducker.process(
-            key_l, key_r, p.sr,
+            key_l, key_r, sr,
             duck_amount_db, duck_attack_ms, duck_release_ms,
         );
 
@@ -323,6 +375,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let init_mix = shared.params[P_MIX].load(Ordering::Relaxed);
         let init_width = shared.params[P_WIDTH].load(Ordering::Relaxed);
         let init_duck = shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
+        let init_size = shared.params[P_SIZE].load(Ordering::Relaxed);
+        let init_decay = shared.params[P_DECAY].load(Ordering::Relaxed);
+        let init_damp = shared.params[P_DAMP].load(Ordering::Relaxed);
+        let init_predelay = shared.params[P_PREDELAY].load(Ordering::Relaxed);
+        let init_mod = shared.params[P_MOD].load(Ordering::Relaxed);
         Ok(Self {
             shared,
             state: Box::new(PlateState::default()),
@@ -330,6 +387,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_mix: SmoothedParam::new(init_mix),
             smooth_width: SmoothedParam::new(init_width),
             smooth_duck: SmoothedParam::new(init_duck),
+            smooth_size: SmoothedParam::new(init_size),
+            smooth_decay: SmoothedParam::new(init_decay),
+            smooth_damp: SmoothedParam::new(init_damp),
+            smooth_predelay: SmoothedParam::new(init_predelay),
+            smooth_mod: SmoothedParam::new(init_mod),
             sc_l: vec![0.0; max_frames].into_boxed_slice(),
             sc_r: vec![0.0; max_frames].into_boxed_slice(),
             sample_rate: audio_config.sample_rate as f32,
@@ -363,15 +425,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             );
         }
 
-        let params = PlateParams {
-            sr: self.sample_rate,
-            size: self.shared.params[P_SIZE].load(Ordering::Relaxed),
-            decay: self.shared.params[P_DECAY].load(Ordering::Relaxed),
-            damp: self.shared.params[P_DAMP].load(Ordering::Relaxed),
-            bandwidth: 1.0 - self.shared.params[P_DAMP].load(Ordering::Relaxed) * 0.5,
-            predelay_ms: self.shared.params[P_PREDELAY].load(Ordering::Relaxed),
-            modulation: self.shared.params[P_MOD].load(Ordering::Relaxed),
-        };
+        let size_target = self.shared.params[P_SIZE].load(Ordering::Relaxed);
+        let decay_target = self.shared.params[P_DECAY].load(Ordering::Relaxed);
+        let damp_target = self.shared.params[P_DAMP].load(Ordering::Relaxed);
+        let predelay_target = self.shared.params[P_PREDELAY].load(Ordering::Relaxed);
+        let mod_target = self.shared.params[P_MOD].load(Ordering::Relaxed);
         let width = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
         let mix = self.shared.params[P_MIX].load(Ordering::Relaxed);
         let duck_amount = self.shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
@@ -429,10 +487,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 &mut self.smooth_mix,
                 &mut self.smooth_width,
                 &mut self.smooth_duck,
+                &mut self.smooth_size,
+                &mut self.smooth_decay,
+                &mut self.smooth_damp,
+                &mut self.smooth_predelay,
+                &mut self.smooth_mod,
                 ch_l,
                 ch_r,
                 sc_slice,
-                params,
+                self.sample_rate,
+                size_target,
+                decay_target,
+                damp_target,
+                predelay_target,
+                mod_target,
                 width,
                 mix,
                 duck_amount,

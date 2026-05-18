@@ -574,7 +574,10 @@ impl DefaultPluginFactory for SuperDuperVocal {
         .with_vendor("SuperDuperAI")
         .with_version(version_string!("0.1"))
         .with_description("Vocal cleanup — de-esser + mouth de-clicker for rap and spoken word")
-        .with_features([AUDIO_EFFECT, STEREO])
+        // De-esser + mouth-click cleanup → RESTORATION is the right CLAP
+        // bucket; keep AUDIO_EFFECT as the main category so REAPER groups it
+        // under FX rather than as an instrument.
+        .with_features([AUDIO_EFFECT, STEREO, RESTORATION, FILTER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();

@@ -14,6 +14,7 @@
 //!     you expect.
 
 use realfft::RealFftPlanner;
+use realfft::num_complex::Complex;
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -440,6 +441,42 @@ pub fn make_bin_aligned_sine(fft_len: usize, sr: f32, target_hz: f32, amplitude:
         .map(|i| amplitude * (core::f32::consts::TAU * exact_freq * i as f32 / sr).sin())
         .collect();
     (samples, exact_freq)
+}
+
+// ---------------------------------------------------------------------------
+// Wavetable band-limiting — drops every spectral bin above `max_harmonic`
+// then transforms back to time domain. Used by wavetable synths to build
+// the per-pitch mip pyramid that keeps high notes alias-free.
+//
+// Cost: 1 forward FFT + 1 inverse FFT of `samples.len()` (power-of-two
+// preferred). NOT real-time safe — call once per preset / curve edit on
+// the main thread.
+// ---------------------------------------------------------------------------
+
+pub fn lowpass_to_harmonics(samples: &[f32], max_harmonic: usize) -> Vec<f32> {
+    let n = samples.len();
+    let mut input = samples.to_vec();
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fwd = planner.plan_fft_forward(n);
+    let inv = planner.plan_fft_inverse(n);
+    let mut spectrum = fwd.make_output_vec();
+    fwd.process(&mut input, &mut spectrum).unwrap();
+    // Bin 0 = DC, bins 1..=N/2 = harmonics 1..N/2. Drop anything past
+    // max_harmonic (also drop the Nyquist bin if it would survive — that
+    // ones halfband-aliased).
+    let cut = (max_harmonic + 1).min(spectrum.len());
+    for slot in spectrum.iter_mut().skip(cut) {
+        *slot = Complex::new(0.0, 0.0);
+    }
+    let mut output = vec![0.0_f32; n];
+    inv.process(&mut spectrum, &mut output).unwrap();
+    // realfft's inverse leaves the result un-normalised; divide by N to
+    // recover the original amplitude.
+    let scale = 1.0 / n as f32;
+    for v in output.iter_mut() {
+        *v *= scale;
+    }
+    output
 }
 
 /// Compare a measured frequency response against a theoretical function.

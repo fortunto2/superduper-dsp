@@ -447,6 +447,27 @@ impl Biquad {
         self.normalise(b0, b1, b2, a0, a1, a2);
     }
 
+    /// Constant-skirt-gain band-pass — RBJ cookbook, peak gain = Q. Used
+    /// for formant simulation (3 BPFs in parallel mimic the resonant
+    /// peaks of the vocal tract / mouth cavity). This is the right tool
+    /// for "vowel" sounds: signal passes ONLY in a narrow band around
+    /// the centre frequency, everything else is attenuated. Compare to
+    /// `set_peaking` which just adds a hump on top of a passthrough.
+    pub fn set_bandpass(&mut self, sr: f32, freq_hz: f32, q: f32) {
+        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.05));
+
+        let b0 = alpha;
+        let b1 = 0.0;
+        let b2 = -alpha;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        self.normalise(b0, b1, b2, a0, a1, a2);
+    }
+
     /// Low-pass mirror of `set_hpf`.
     pub fn set_lpf(&mut self, sr: f32, freq_hz: f32, q: f32) {
         let w0 = core::f32::consts::TAU * freq_hz / sr;

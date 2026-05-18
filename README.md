@@ -93,7 +93,21 @@ Prerequisites:
 - Apple Silicon Mac, Windows x64, or Linux for CLAP
 - CMake ≥ 3.21 (for VST3 / AU wrappers, macOS only)
 
-### CLAP only — fast path
+### Quick path — Makefile
+
+```bash
+make all              # CLAP + VST3 + AU, installed to ~/Library/Audio/Plug-Ins/
+make clap             # Just the 13 .clap bundles
+make wrappers         # VST3 + AU (depends on clap)
+make wave             # One plugin (any of the 13 — name matches the crate)
+make test             # cargo test --release --workspace
+make test-fast        # Skip slow clack-host audits (smoke + lib tests only)
+make release VERSION=0.11.0   # Versioned signed zips in ./dist/
+make clean            # Wipe cargo + cmake outputs
+```
+
+`make` (no args) is the same as `make all`. Plain-shell equivalents
+below if you'd rather skip make:
 
 ```bash
 # All 13 plugins in one go:
@@ -135,7 +149,8 @@ delete the `.clap` after building the wrapper.
 ### Running tests
 
 ```bash
-cargo test --release --workspace                            # everything
+make test                                                          # everything
+make test-fast                                                     # skip slow audits
 cargo test --release -p superduper-wave --test mod_matrix_audit -- --nocapture   # e2e WAV audit
 cargo test --release -p superduper-reverb --test spectrum -- --nocapture         # ASCII spectrum
 cargo test --release -p superduper-compressor --test quality_audit -- --nocapture # THD + aliasing
@@ -190,6 +205,7 @@ synth-core/           — shared DSP blocks (Biquad, DelayLine, Ducker,
 effects/superduper-*/ — 13 plugins (9 effects + 4 instruments)
 cmake/                — plugin_list.cmake (VST3/AU build manifest)
 CMakeLists.txt        — drives the clap-wrapper VST3/AU build
+Makefile              — single entry point: `make all` / `make wave` / `make test`
 scripts/
   build_*_bundle.sh   — per-plugin .clap packagers
   build_all_bundles.sh — all 13 in one shot

@@ -20,7 +20,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_HOLD, P_KNEE, P_LINK, P_LOOKAHEAD,
+    PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_HOLD, P_KNEE, P_LINK, P_LOOKAHEAD, P_MS_MODE,
     P_MAKEUP, P_MIX, P_OS, P_RANGE, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN,
     SharedParams,
 };
@@ -274,6 +274,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         });
                 });
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LINK], &PARAMS[P_LINK], &state.shared.dirty_params[P_LINK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LINK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MS_MODE], &PARAMS[P_MS_MODE], &state.shared.dirty_params[P_MS_MODE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MS_MODE);
             });
 
             core_gui::section(ui, "Lookahead", |ui| {

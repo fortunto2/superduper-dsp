@@ -111,7 +111,7 @@ pub const PARAMS: &[ParamDef] = &[
     // Auto-release tracks how long compression has been sustained and
     // stretches the release accordingly — fast on transients, slower on
     // sustained material. Classic FabFilter Pro-C / Waves SSL behavior.
-    ParamDef { id: 8,  name: b"Auto Rel",  min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    ParamDef { id: 8,  name: b"Auto Rel",  min: 0.0,   max: 1.0,    default: 1.0,   unit: ""   },
     // Adjustable lookahead. Capped at 15 ms — beyond that the audible
     // pre-attenuation outweighs the transient catch. ZLCompressor caps
     // around 10 ms; we go a touch farther for "brickwall-ish" behavior.
@@ -143,6 +143,10 @@ pub const PARAMS: &[ParamDef] = &[
     // knob ZLCompressor calls "Hold" — preserves sustain on slow material
     // while preventing pumping on transients with gaps.
     ParamDef { id: 15, name: b"Hold",      min: 0.0,   max: 500.0,  default: 0.0,   unit: "ms" },
+    // Channel mode: 0 = Stereo (LR), 1 = M/S (encode → compress mid and
+    // side independently → decode). Useful for mastering — keeps the
+    // centred lead un-compressed while sides duck, or vice versa.
+    ParamDef { id: 16, name: b"M/S",       min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
 ];
 
 pub const P_THRESHOLD: usize = 0;
@@ -161,6 +165,7 @@ pub const P_OS: usize = 12;
 pub const P_CURVE: usize = 13;
 pub const P_RANGE: usize = 14;
 pub const P_HOLD: usize = 15;
+pub const P_MS_MODE: usize = 16;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -472,6 +477,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             .round() as u32;
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
         let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
+        let ms_mode = self.shared.params[P_MS_MODE].load(Ordering::Relaxed) >= 0.5;
 
         // Lookahead drives CLAP latency directly. Hosts only re-do PDC
         // when this value changes; a Relaxed store on a clamped knob is
@@ -534,6 +540,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     lookahead_ms_target, ceiling_target, link_target,
                     os_mode, curve, range_target, hold_target,
                     sc_hpf_freq, sc_present, auto_rel,
+                    ms_mode,
                     &mut max_gr_db,
                 );
             } else {
@@ -590,13 +597,24 @@ fn process_stereo_block(
     os_mode: u32, curve: CompressorCurve,
     range_target: f32, hold_target: f32,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
+    ms_mode: bool,
     max_gr_db: &mut f32,
 ) {
     let n = l_read.len().min(r_read.len());
     let look_max_samples = sr * 0.001 * MAX_LOOKAHEAD_MS;
     for i in 0..n {
-        let dry_l = l_read[i];
-        let dry_r = r_read[i];
+        // Capture the raw L/R for scope + ceiling reference. If M/S
+        // mode is on, the "L"/"R" we feed through the comp inner loop
+        // are actually Mid/Side encodings — the loop math doesn't know
+        // or care about the difference. We decode back to L/R at the
+        // bottom before writing to the output buffers.
+        let raw_l = l_read[i];
+        let raw_r = r_read[i];
+        let (dry_l, dry_r) = if ms_mode {
+            ((raw_l + raw_r) * 0.5, (raw_l - raw_r) * 0.5)
+        } else {
+            (raw_l, raw_r)
+        };
 
         let threshold = p.smooth_threshold.step(threshold_target, sr);
         let ratio = p.smooth_ratio.step(ratio_target, sr);
@@ -716,12 +734,19 @@ fn process_stereo_block(
 
         let out_l = delayed_l * (1.0 - mix) + wet_l * mix;
         let out_r = delayed_r * (1.0 - mix) + wet_r * mix;
-        l_write[i] = out_l;
-        r_write[i] = out_r;
+        // M/S decode back to L/R for the host. L = M+S, R = M-S.
+        let (final_l, final_r) = if ms_mode {
+            (out_l + out_r, out_l - out_r)
+        } else {
+            (out_l, out_r)
+        };
+        l_write[i] = final_l;
+        r_write[i] = final_r;
 
-        // Scope frame — peak of L/R per channel.
-        let in_peak = dry_l.abs().max(dry_r.abs());
-        let out_peak = out_l.abs().max(out_r.abs());
+        // Scope frame — peak of raw input vs final output (what the
+        // host actually sees), not the M/S intermediate.
+        let in_peak = raw_l.abs().max(raw_r.abs());
+        let out_peak = final_l.abs().max(final_r.abs());
         push_scope(p, in_peak, out_peak, gr_db);
     }
 }
@@ -843,6 +868,14 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        use core::fmt::Write;
+        let pid = id.get() as usize;
+        if pid == P_MS_MODE {
+            return write!(w, "{}", if v >= 0.5 { "M/S" } else { "L/R" });
+        }
+        if pid == P_AUTO_REL {
+            return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {

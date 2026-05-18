@@ -80,9 +80,11 @@ impl KubyzVoice {
             }
             x += amp * (self.phases[n] * core::f32::consts::TAU).sin();
         }
-        // 2. Normalise — sum of 16 harmonics can peak well above 1.0;
-        // tanh-soft so transients don't clip the formant input.
-        let drive = (x * 0.5).tanh();
+        // 2. Normalise — after the preset's amplitudes are already capped
+        // at 1.0 the worst-case sum of 16 sines is 16 (full alignment),
+        // realistically ≤ 4 RMS. Scale by ¼ so a typical patch sits near
+        // unity, then tanh-soft for the rare in-phase peaks.
+        let drive = (x * 0.25).tanh();
 
         // 3. Velocity-shifted formant frequencies.
         let shift = 1.0 + self.velocity * p.velocity_formant_shift;

@@ -50,11 +50,14 @@ fn voice_produces_audio_on_held_note() {
 }
 
 #[test]
-fn harmonics_normalised_to_h1() {
+fn harmonics_normalised_to_unit_peak() {
     for preset in presets().iter() {
-        // After normalisation the fundamental is always exactly 1.
-        assert!((preset.harmonics[0] - 1.0).abs() < 1e-3,
-                "{}: harmonic 1 should be 1.0, got {}", preset.name, preset.harmonics[0]);
+        // After db_to_lin_array we normalise by the loudest harmonic
+        // (not H1), so the peak must be 1.0 but H1 may be lower for
+        // overtone-dominant presets like Real D2.
+        let peak = preset.harmonics.iter().copied().fold(0.0_f32, f32::max);
+        assert!((peak - 1.0).abs() < 1e-3,
+                "{}: harmonic peak should be 1.0, got {peak}", preset.name);
         assert_eq!(preset.harmonics.len(), N_HARMONICS);
     }
 }

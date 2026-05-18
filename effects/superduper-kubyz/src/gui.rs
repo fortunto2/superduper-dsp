@@ -7,7 +7,7 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::{presets, N_HARMONICS};
 use crate::{
     apply_preset, PARAMS, P_ATTACK, P_BRIGHT, P_DECAY, P_F1, P_F2, P_F3, P_OUTPUT, P_RELEASE,
-    P_SUSTAIN, P_VEL_SHIFT, P_VOX_MIX, SharedParams,
+    P_SUSTAIN, P_TONGUE_ST, P_VEL_SHIFT, P_VOX_MIX, SharedParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -305,6 +305,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
             core_gui::section(ui, "Timbre", |ui| {
                 core_gui::param_row(ui, &state.shared.params[P_BRIGHT], &PARAMS[P_BRIGHT]);
+                core_gui::param_row(ui, &state.shared.params[P_TONGUE_ST], &PARAMS[P_TONGUE_ST]);
             });
             core_gui::section(ui, "Envelope", |ui| {
                 core_gui::param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK]);

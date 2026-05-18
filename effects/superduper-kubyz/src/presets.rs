@@ -68,15 +68,33 @@ fn harmonics_init() -> [f32; N_HARMONICS] {
     h
 }
 
+/// Extracted from `/Users/rustam/Music/1music/my songs/Media/kubiz1000.wav`
+/// via FFT + per-harmonic bin search (see analyse_kubyz.py).  Recording
+/// is a real D2 jaw-harp tone — H1 fundamental is *quiet* compared to
+/// the 11th–15th partials, which carry the whistling colour.
+fn harmonics_real_d2() -> [f32; N_HARMONICS] {
+    let db: [f32; N_HARMONICS] = [
+         0.0, -33.83,  -9.50, -14.71, -16.52, -26.03, -11.07, -20.27,
+       -16.22,  -9.19,  27.25,  -0.99,  34.42,  20.46,  45.10,  13.55,
+    ];
+    db_to_lin_array(db)
+}
+
 fn db_to_lin_array(db: [f32; N_HARMONICS]) -> [f32; N_HARMONICS] {
-    // The JSON's `relative_db` is the standard spectral-analysis convention:
-    // a *positive* number means "this harmonic is N dB BELOW the loudest
-    // peak (harmonic 1)". So `0.0 dB` → 1.0 linear, `+38.6 dB` → ~0.012.
-    // Treating the dB as a gain (+38 dB → ×85) sums 16 sines into permanent
-    // saturation and is what made the original Bashkir preset scream.
+    // The JSON dB values are relative to H1 but can go EITHER direction:
+    // for a jaw harp many overtones sit ABOVE the fundamental (mouth-cavity
+    // resonances on harmonics 11–15 are the whistling part of the sound).
+    // Convert as plain `10^(db/20)`, then normalise by the loudest harmonic
+    // (not H1!) so the whole vector lives in [0, 1] regardless of which
+    // partial dominates. That keeps the additive sum bounded without
+    // throwing away the "loud overtone" character.
     let mut out = [0.0_f32; N_HARMONICS];
     for i in 0..N_HARMONICS {
-        out[i] = 10f32.powf(-db[i] / 20.0);
+        out[i] = 10f32.powf(db[i] / 20.0);
+    }
+    let max = out.iter().copied().fold(0.0_f32, f32::max).max(1e-6);
+    for s in out.iter_mut() {
+        *s /= max;
     }
     out
 }
@@ -101,8 +119,16 @@ const FORMANT_OFF: FormantPreset = FormantPreset {
     bw: [200.0, 300.0, 400.0],
     gain: [1.0, 1.0, 1.0],
 };
+/// Resonance peaks measured from the real D2 recording — tight bandwidths
+/// (50 Hz) because the cavity resonates on a single harmonic each.
+const REAL_D2_FORMANT: FormantPreset = FormantPreset {
+    name: "Real D2",
+    f: [809.0, 1091.0, 1242.0],
+    bw: [50.0, 50.0, 50.0],
+    gain: [1.0, 1.0, 1.0],
+};
 
-pub fn presets() -> [KubyzPreset; 3] {
+pub fn presets() -> [KubyzPreset; 4] {
     [
         KubyzPreset {
             name: "Init (sine)",
@@ -115,14 +141,17 @@ pub fn presets() -> [KubyzPreset; 3] {
             velocity_formant_shift: 0.15,
             default_vox_mix: 0.0,
         },
+        // Plucked envelope: a real jaw harp's tongue is plucked once,
+        // rings out, decays. NOT a piano with sustain — sustain must be 0
+        // so the note dies on its own about a second after the strike.
         KubyzPreset {
             name: "Bashkir Kubyz",
             harmonics: harmonics_bashkir(),
             formant: BASHKIR_FORMANT,
-            attack_s: 0.039,
-            decay_s: 0.21,
-            sustain: 0.13,
-            release_s: 0.15,
+            attack_s: 0.003,
+            decay_s: 1.2,
+            sustain: 0.0,
+            release_s: 0.3,
             velocity_formant_shift: 0.15,
             default_vox_mix: 1.0,
         },
@@ -130,12 +159,23 @@ pub fn presets() -> [KubyzPreset; 3] {
             name: "Khomus Sample",
             harmonics: harmonics_khomus_sample(),
             formant: KHOMUS_FORMANT,
-            attack_s: 0.012,
-            decay_s: 0.33,
-            sustain: 0.06,
-            release_s: 0.15,
+            attack_s: 0.003,
+            decay_s: 1.0,
+            sustain: 0.0,
+            release_s: 0.3,
             velocity_formant_shift: 0.15,
             default_vox_mix: 1.0,
+        },
+        KubyzPreset {
+            name: "Real D2 (sample-fit)",
+            harmonics: harmonics_real_d2(),
+            formant: REAL_D2_FORMANT,
+            attack_s: 0.003,
+            decay_s: 1.8,
+            sustain: 0.0,
+            release_s: 0.3,
+            velocity_formant_shift: 0.10,
+            default_vox_mix: 0.5,
         },
     ]
 }

@@ -53,11 +53,18 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 3, name: b"VoxMix",    min: 0.0,    max: 1.0,    default: 0.6,    unit: ""   },
     ParamDef { id: 4, name: b"Vel Shift", min: 0.0,    max: 0.5,    default: 0.15,   unit: ""   },
     ParamDef { id: 5, name: b"Bright",    min: 0.0,    max: 2.0,    default: 1.0,    unit: ""   },
+    // Tongue Pitch — shifts the fundamental in semitones away from the
+    // MIDI note. Real kubyz/khomus instruments have a fixed tongue
+    // frequency (≈ 80–300 Hz across the family); use this to dial in
+    // the "physical" pitch of the instrument you want to model.
+    // Range = ±36 ST (3 octaves either way) is generous and covers
+    // every Bashkir-to-Yakut variant.
     ParamDef { id: 6, name: b"Attack",    min: 0.001,  max: 2.0,    default: 0.039,  unit: "s"  },
     ParamDef { id: 7, name: b"Decay",     min: 0.01,   max: 4.0,    default: 0.21,   unit: "s"  },
     ParamDef { id: 8, name: b"Sustain",   min: 0.0,    max: 1.0,    default: 0.13,   unit: ""   },
     ParamDef { id: 9, name: b"Release",   min: 0.01,   max: 4.0,    default: 0.15,   unit: "s"  },
     ParamDef { id: 10, name: b"Output",   min: -36.0,  max: 6.0,    default: -8.0,   unit: "dB" },
+    ParamDef { id: 11, name: b"Tongue ST",min: -36.0,  max: 36.0,   default: 0.0,    unit: "ST" },
 ];
 
 pub const P_F1: usize = 0;
@@ -71,6 +78,7 @@ pub const P_DECAY: usize = 7;
 pub const P_SUSTAIN: usize = 8;
 pub const P_RELEASE: usize = 9;
 pub const P_OUTPUT: usize = 10;
+pub const P_TONGUE_ST: usize = 11;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -345,7 +353,8 @@ impl<'a> PluginAudioProcessor<'a> {
                 if v.key == NOTE_FREE && v.env.is_idle() && v.choke_remaining == 0 {
                     continue;
                 }
-                let root = midi_note_to_hz(v.key as f32);
+                let tongue_st = self.shared.params[P_TONGUE_ST].load(Ordering::Relaxed);
+                let root = midi_note_to_hz(v.key as f32 + tongue_st);
                 let params = KubyzParams {
                     sr,
                     root_hz: root,

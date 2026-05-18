@@ -20,6 +20,25 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use atomic_float::AtomicF32;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
+/// Same as [`param_row`] but also raises a dirty flag whenever the user
+/// changes the value, so the audio thread can emit a CLAP `ParamValue`
+/// event into the host's output queue. That tells the DAW (REAPER /
+/// Bitwig / etc) to record the move into its automation lane —
+/// without this, GUI knob moves are invisible to the host.
+pub fn dirty_param_row(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+) {
+    let before = atom.load(Ordering::Relaxed);
+    param_row(ui, atom, def);
+    let after = atom.load(Ordering::Relaxed);
+    if (after - before).abs() > 1e-9 {
+        dirty.store(true, Ordering::Relaxed);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resize bridge — main thread (CLAP `set_size`) → GUI thread (queue.resize)
 // ---------------------------------------------------------------------------

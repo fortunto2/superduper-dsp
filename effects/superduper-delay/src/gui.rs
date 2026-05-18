@@ -87,8 +87,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Time", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_TIME], &PARAMS[P_TIME]);
-                core_gui::param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_TIME], &PARAMS[P_TIME], &state.shared.dirty_params[P_TIME]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH]);
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [90.0, 18.0],
@@ -113,13 +113,13 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
 
             core_gui::section(ui, "Feedback", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_FEEDBACK], &PARAMS[P_FEEDBACK]);
-                core_gui::param_row(ui, &state.shared.params[P_TONE], &PARAMS[P_TONE]);
-                core_gui::param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_FEEDBACK], &PARAMS[P_FEEDBACK], &state.shared.dirty_params[P_FEEDBACK]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_TONE], &PARAMS[P_TONE], &state.shared.dirty_params[P_TONE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE]);
             });
 
             core_gui::section(ui, "Output", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX]);
             });
         });
     });

@@ -123,6 +123,7 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: AtomicBool,
+    pub dirty_params: [AtomicBool; PARAMS.len()],
     pub active_voices: AtomicU32,
     /// Live polyphony index — written by GUI on preset pick, read by audio
     /// thread once per process() to swap the wavetable handles.
@@ -155,6 +156,7 @@ impl PluginShared {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: AtomicBool::new(false),
+                dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 active_voices: AtomicU32::new(0),
                 pending_preset: AtomicU32::new(u32::MAX),
                 pending_swap: AtomicBool::new(false),
@@ -613,6 +615,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush GUI-driven param changes back to the host so REAPER can
+        // record the move into the automation lane.
+        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
+            &self.shared.params, &self.shared.dirty_params, events.output);
         self.maybe_swap_wavetable();
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);

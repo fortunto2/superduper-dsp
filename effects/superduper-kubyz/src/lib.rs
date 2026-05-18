@@ -128,11 +128,25 @@ pub struct PluginShared {
 
 impl PluginShared {
     pub fn new() -> Self {
-        let init = &presets()[0];
+        // Bashkir as the default landing patch — it's the most representative
+        // jaw-harp tone in the library and the one the user reaches for first.
+        let init = &presets()[1];
+        let mut params = std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32));
+        // Pre-load the preset's formant / envelope so the loaded plugin
+        // already sounds like Bashkir without the user having to pick it.
+        params[P_F1].store(init.formant.f[0], Ordering::Relaxed);
+        params[P_F2].store(init.formant.f[1], Ordering::Relaxed);
+        params[P_F3].store(init.formant.f[2], Ordering::Relaxed);
+        params[P_VOX_MIX].store(init.default_vox_mix, Ordering::Relaxed);
+        params[P_VEL_SHIFT].store(init.velocity_formant_shift, Ordering::Relaxed);
+        params[P_ATTACK].store(init.attack_s, Ordering::Relaxed);
+        params[P_DECAY].store(init.decay_s, Ordering::Relaxed);
+        params[P_SUSTAIN].store(init.sustain, Ordering::Relaxed);
+        params[P_RELEASE].store(init.release_s, Ordering::Relaxed);
         let harmonics = std::array::from_fn(|i| AtomicF32::new(init.harmonics[i]));
         Self {
             inner: std::sync::Arc::new(SharedParamsInner {
-                params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
+                params,
                 bypass: AtomicBool::new(false),
                 active_voices: AtomicU32::new(0),
                 harmonics,

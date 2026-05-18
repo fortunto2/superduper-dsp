@@ -121,6 +121,10 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    /// Per-param dirty flag — GUI sets it on user-driven change; the
+    /// audio thread emits a `ParamValueEvent` to the host on the next
+    /// process() so REAPER can record the move into the automation lane.
+    pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
 }
 
 pub struct PluginShared {
@@ -133,6 +137,7 @@ impl PluginShared {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
+                dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
             }),
         }
     }
@@ -405,6 +410,21 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         apply_param_events(self.shared, events.input);
+        // Push every GUI-driven param change into the host output queue
+        // so REAPER can record the move into the automation lane.
+        for (i, flag) in self.shared.dirty_params.iter().enumerate() {
+            if flag.swap(false, Ordering::AcqRel) {
+                let value = self.shared.params[i].load(Ordering::Relaxed) as f64;
+                let ev = clack_common::events::event_types::ParamValueEvent::new(
+                    0,
+                    ClapId::new(i as u32),
+                    clack_common::events::Pckn::new(0u16, 0u16, 0u16, 0u32),
+                    value,
+                    clack_common::utils::Cookie::empty(),
+                );
+                let _ = events.output.try_push(&ev);
+            }
+        }
 
         // Periodic param dump so we can see — without REAPER — what we're
         // actually playing through. Every ~22 sec at 48k/512.

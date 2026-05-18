@@ -113,6 +113,7 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
 }
 
 pub struct PluginShared {
@@ -125,6 +126,7 @@ impl PluginShared {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
+                dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
             }),
         }
     }
@@ -223,6 +225,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         apply_param_events(self.shared, events.input);
+        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
+            &self.shared.params, &self.shared.dirty_params, events.output);
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let curve = self.shared.params[P_TYPE].load(Ordering::Relaxed).round() as u32;

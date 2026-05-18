@@ -3,11 +3,14 @@
 //! convention change lands in one place.
 
 use atomic_float::AtomicF32;
-use clack_common::utils::ClapId;
+use clack_common::events::Pckn;
+use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::params::{ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter};
 use clack_plugin::events::event_types::ParamValueEvent;
+use clack_plugin::events::io::OutputEvents;
 use clack_plugin::prelude::{ChannelPair, InputEvents};
 use std::ffi::CStr;
+use std::sync::atomic::{AtomicBool, Ordering as SyncOrdering};
 use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +112,35 @@ pub fn apply_param_events(params: &[AtomicF32], events: &InputEvents) {
         let i = id.get() as usize;
         if let Some(slot) = params.get(i) {
             slot.store(pv.value() as f32, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Push a `ParamValueEvent` into the host's output queue for every dirty
+/// parameter, then clear the bit. Lets GUI-driven changes show up in the
+/// host's automation lane — without this, knob moves made in the plugin
+/// window are invisible to the DAW.
+///
+/// Pattern: call once near the top of every `process()` *after* reading
+/// the input events but before doing DSP work. Cheap — one swap per
+/// param, no allocation.
+pub fn emit_dirty_param_events(
+    params: &[AtomicF32],
+    dirty: &[AtomicBool],
+    output: &mut OutputEvents,
+) {
+    debug_assert_eq!(params.len(), dirty.len());
+    for (i, flag) in dirty.iter().enumerate() {
+        if flag.swap(false, SyncOrdering::AcqRel) {
+            let value = params[i].load(SyncOrdering::Relaxed) as f64;
+            let ev = ParamValueEvent::new(
+                0,
+                ClapId::new(i as u32),
+                Pckn::new(0u16, 0u16, 0u16, 0u32),
+                value,
+                Cookie::empty(),
+            );
+            let _ = output.try_push(&ev);
         }
     }
 }

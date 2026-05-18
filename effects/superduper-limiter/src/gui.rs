@@ -78,12 +78,12 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Levels", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_INPUT], &PARAMS[P_INPUT]);
-                core_gui::param_row(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_INPUT], &PARAMS[P_INPUT], &state.shared.dirty_params[P_INPUT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING], &state.shared.dirty_params[P_CEILING]);
             });
             core_gui::section(ui, "Envelope", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE]);
-                core_gui::param_row(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD]);
             });
             core_gui::section(ui, "Detection", |ui| {
                 ui.horizontal(|ui| {

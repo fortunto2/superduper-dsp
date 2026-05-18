@@ -104,19 +104,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "De-Esser", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_ESS_THR], &PARAMS[P_ESS_THR]);
-                core_gui::param_row(ui, &state.shared.params[P_ESS_FREQ], &PARAMS[P_ESS_FREQ]);
-                core_gui::param_row(ui, &state.shared.params[P_ESS_AMT], &PARAMS[P_ESS_AMT]);
-                core_gui::param_row(ui, &state.shared.params[P_ESS_RANGE], &PARAMS[P_ESS_RANGE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_ESS_THR], &PARAMS[P_ESS_THR], &state.shared.dirty_params[P_ESS_THR]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_ESS_FREQ], &PARAMS[P_ESS_FREQ], &state.shared.dirty_params[P_ESS_FREQ]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_ESS_AMT], &PARAMS[P_ESS_AMT], &state.shared.dirty_params[P_ESS_AMT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_ESS_RANGE], &PARAMS[P_ESS_RANGE], &state.shared.dirty_params[P_ESS_RANGE]);
             });
             core_gui::section(ui, "De-Clicker", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_CLK_SENS], &PARAMS[P_CLK_SENS]);
-                core_gui::param_row(ui, &state.shared.params[P_CLK_AMT], &PARAMS[P_CLK_AMT]);
-                core_gui::param_row(ui, &state.shared.params[P_CLK_FLOOR], &PARAMS[P_CLK_FLOOR]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_CLK_SENS], &PARAMS[P_CLK_SENS], &state.shared.dirty_params[P_CLK_SENS]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_CLK_AMT], &PARAMS[P_CLK_AMT], &state.shared.dirty_params[P_CLK_AMT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_CLK_FLOOR], &PARAMS[P_CLK_FLOOR], &state.shared.dirty_params[P_CLK_FLOOR]);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT]);
-                core_gui::param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX]);
             });
         });
     });

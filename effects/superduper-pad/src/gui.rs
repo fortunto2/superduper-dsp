@@ -94,22 +94,22 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Filter", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF]);
-                core_gui::param_row(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE]);
             });
             core_gui::section(ui, "Motion", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_MODULATION], &PARAMS[P_MODULATION]);
-                core_gui::param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE]);
-                core_gui::param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MODULATION], &PARAMS[P_MODULATION], &state.shared.dirty_params[P_MODULATION]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH]);
             });
             core_gui::section(ui, "Envelope", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK]);
-                core_gui::param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY]);
-                core_gui::param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN]);
-                core_gui::param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE]);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT]);
             });
         });
     });

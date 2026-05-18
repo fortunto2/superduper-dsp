@@ -75,24 +75,24 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Filters", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_HP], &PARAMS[P_HP]);
-                core_gui::param_row(ui, &state.shared.params[P_LP], &PARAMS[P_LP]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_HP], &PARAMS[P_HP], &state.shared.dirty_params[P_HP]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LP], &PARAMS[P_LP], &state.shared.dirty_params[P_LP]);
             });
             core_gui::section(ui, "Low Shelf", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_LOW_FREQ], &PARAMS[P_LOW_FREQ]);
-                core_gui::param_row(ui, &state.shared.params[P_LOW_GAIN], &PARAMS[P_LOW_GAIN]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LOW_FREQ], &PARAMS[P_LOW_FREQ], &state.shared.dirty_params[P_LOW_FREQ]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LOW_GAIN], &PARAMS[P_LOW_GAIN], &state.shared.dirty_params[P_LOW_GAIN]);
             });
             core_gui::section(ui, "Mid Peak", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_MID_FREQ], &PARAMS[P_MID_FREQ]);
-                core_gui::param_row(ui, &state.shared.params[P_MID_GAIN], &PARAMS[P_MID_GAIN]);
-                core_gui::param_row(ui, &state.shared.params[P_MID_Q], &PARAMS[P_MID_Q]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MID_FREQ], &PARAMS[P_MID_FREQ], &state.shared.dirty_params[P_MID_FREQ]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MID_GAIN], &PARAMS[P_MID_GAIN], &state.shared.dirty_params[P_MID_GAIN]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_MID_Q], &PARAMS[P_MID_Q], &state.shared.dirty_params[P_MID_Q]);
             });
             core_gui::section(ui, "High Shelf", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_HIGH_FREQ], &PARAMS[P_HIGH_FREQ]);
-                core_gui::param_row(ui, &state.shared.params[P_HIGH_GAIN], &PARAMS[P_HIGH_GAIN]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_HIGH_FREQ], &PARAMS[P_HIGH_FREQ], &state.shared.dirty_params[P_HIGH_FREQ]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_HIGH_GAIN], &PARAMS[P_HIGH_GAIN], &state.shared.dirty_params[P_HIGH_GAIN]);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT]);
             });
         });
     });

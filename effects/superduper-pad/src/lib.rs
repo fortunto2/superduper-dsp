@@ -122,6 +122,7 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
+    pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     /// Live polyphony count for the GUI / metering. Updated each block from
     /// the audio thread (Relaxed store).
     pub active_voices: std::sync::atomic::AtomicU32,
@@ -137,6 +138,7 @@ impl PluginShared {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
+                dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_voices: std::sync::atomic::AtomicU32::new(0),
             }),
         }
@@ -559,6 +561,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush GUI-driven param changes back to the host so REAPER can
+        // record the move into the automation lane.
+        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
+            &self.shared.params, &self.shared.dirty_params, events.output);
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         // Walk the output port. Pad is a generator — we ignore any input

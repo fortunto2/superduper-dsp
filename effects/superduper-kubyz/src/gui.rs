@@ -92,7 +92,8 @@ pub fn open_window<P: HasRawWindowHandle>(
         shared,
         resize,
         applied_size: (initial_w, initial_h),
-        selected_preset: Some(0),
+        // Match the Shared default — Bashkir Kubyz.
+        selected_preset: Some(1),
         preset_names,
     };
     EguiWindow::open_parented(
@@ -296,6 +297,40 @@ fn draw_vowel_pad(ui: &mut egui::Ui, shared: &SharedParams, rect: egui::Rect) {
     );
 }
 
+/// Self-illustrating shape button: each draws a thumbnail of the
+/// trajectory it picks (a tiny circle / sine / figure-8 / etc) so the
+/// user picks visually without reading a label.
+fn shape_icon_button(ui: &mut egui::Ui, shape: MouthShape, selected: bool) -> bool {
+    let size = egui::vec2(40.0, 40.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    let bg = if selected { core_gui::GREEN_DIM } else { core_gui::PANEL_BG };
+    let stroke = if selected {
+        egui::Stroke::new(1.5, core_gui::GREEN_BRIGHT)
+    } else if response.hovered() {
+        egui::Stroke::new(1.0, core_gui::GREEN)
+    } else {
+        egui::Stroke::new(1.0, core_gui::GREEN_FAINT)
+    };
+    painter.rect_filled(rect, 3.0, bg);
+    painter.rect_stroke(rect, 3.0, stroke, egui::epaint::StrokeKind::Outside);
+    // Mini trajectory preview.
+    let cx = rect.center();
+    let r = rect.height() * 0.32;
+    let line_colour = if selected { core_gui::GREEN_BRIGHT } else { core_gui::GREEN };
+    let mut prev: Option<egui::Pos2> = None;
+    for i in 0..=32 {
+        let t = i as f32 / 32.0;
+        let (x, y) = shape.point(t);
+        let p = egui::pos2(cx.x + x * r, cx.y + y * r);
+        if let Some(pp) = prev {
+            painter.line_segment([pp, p], egui::Stroke::new(1.4, line_colour));
+        }
+        prev = Some(p);
+    }
+    response.clicked()
+}
+
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
         if let Some(i) = core_gui::top_bar(
@@ -336,11 +371,45 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 ui.weak(format!(
                     "F1={cur_f1:4.0} Hz · F2={cur_f2:4.0} Hz · F3={cur_f3:4.0} Hz  ·  drag the dot"
                 ));
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 160.0),
-                    egui::Sense::hover(),
-                );
-                draw_vowel_pad(ui, &state.shared, rect);
+                // Pad on the left + a column of 5 shape-preview buttons
+                // on the right. Picking an icon writes P_MOUTH_SHAPE +
+                // raises its dirty flag so REAPER records the choice.
+                ui.horizontal_top(|ui| {
+                    let icon_col_w = 48.0_f32;
+                    let pad_w = (ui.available_width() - icon_col_w - 8.0).max(180.0);
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(pad_w, 160.0),
+                        egui::Sense::hover(),
+                    );
+                    draw_vowel_pad(ui, &state.shared, rect);
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        let active = MouthShape::from_index(
+                            state.shared.params[P_MOUTH_SHAPE]
+                                .load(Ordering::Relaxed) as u32,
+                        );
+                        for (idx, shape) in [
+                            MouthShape::Circle,
+                            MouthShape::Sine,
+                            MouthShape::Figure8,
+                            MouthShape::Triangle,
+                            MouthShape::Line,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let is_selected = shape == active;
+                            if shape_icon_button(ui, shape, is_selected) {
+                                write_param(
+                                    &state.shared,
+                                    P_MOUTH_SHAPE,
+                                    idx as f32,
+                                );
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+                });
             });
             core_gui::section(ui, "Formant (fine)", |ui| {
                 dirty_param_row(ui, &state.shared, P_F1);

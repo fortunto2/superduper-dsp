@@ -138,6 +138,55 @@ pub static PRESETS: &[Preset] = &[
         (P_DUCK_ATTACK, 5.0),
         (P_DUCK_RELEASE, 250.0),
     ]),
+
+    // ----- Band-flavoured presets -----
+    // Joy Division "Atmosphere" — gated-feeling huge plate, dark,
+    // modulated. Hooky vocal sits inside the wash rather than in
+    // front of it.
+    Preset::from_overrides("Joy Division (Atmosphere)", &[
+        (P_SIZE, 1.3),
+        (P_DECAY, 0.87),
+        (P_DAMP, 0.55),
+        (P_PREDELAY, 30.0),
+        (P_MOD, 0.45),
+        (P_WIDTH, 1.0),
+        (P_MIX, 0.42),
+    ]),
+
+    // Cocteau Twins "Shimmer" — bright lush huge, fast mod for the
+    // gauzy 4AD watercolour.
+    Preset::from_overrides("Cocteau Twins (Shimmer)", &[
+        (P_SIZE, 1.45),
+        (P_DECAY, 0.93),
+        (P_DAMP, 0.22),
+        (P_PREDELAY, 18.0),
+        (P_MOD, 0.85),
+        (P_WIDTH, 1.0),
+        (P_MIX, 0.55),
+    ]),
+
+    // Vangelis (Blade Runner) — cinematic CS-80 hall. Long, dark,
+    // huge pre-delay for depth.
+    Preset::from_overrides("Vangelis (Blade Runner)", &[
+        (P_SIZE, 1.5),
+        (P_DECAY, 0.95),
+        (P_DAMP, 0.4),
+        (P_PREDELAY, 80.0),
+        (P_MOD, 0.55),
+        (P_WIDTH, 1.0),
+        (P_MIX, 0.55),
+    ]),
+
+    // Boards of Canada — short, lo-fi, dampened. Tape-room feel.
+    Preset::from_overrides("Boards of Canada (Tape Room)", &[
+        (P_SIZE, 0.55),
+        (P_DECAY, 0.55),
+        (P_DAMP, 0.75),
+        (P_PREDELAY, 12.0),
+        (P_MOD, 0.4),
+        (P_WIDTH, 0.85),
+        (P_MIX, 0.35),
+    ]),
 ];
 
 /// Apply a preset by writing every value into the shared atomics.

@@ -111,6 +111,69 @@ pub static PRESETS: &[Preset] = &[
         (P_RELEASE, 0.25),
         (P_OUTPUT, -6.0),
     ]),
+
+    // ----- Band-flavoured presets -----
+    // Vangelis CS-80 brass-pad: slow swelling brass, wide, deep mod,
+    // long release. Pair with the Chorus "Vangelis" preset and the
+    // Reverb "Vangelis (Blade Runner)" preset for the full Blade
+    // Runner end-credits wash.
+    Preset::from_overrides("Vangelis (Blade Runner)", &[
+        (P_CUTOFF, 3200.0),
+        (P_RESONANCE, 0.20),
+        (P_MODULATION, 22.0),
+        (P_DRIVE, 0.35),
+        (P_WIDTH, 18.0),
+        (P_ATTACK, 0.9),
+        (P_DECAY, 1.2),
+        (P_SUSTAIN, 0.95),
+        (P_RELEASE, 3.5),
+        (P_OUTPUT, -7.0),
+    ]),
+
+    // Joy Division "Atmosphere" — dark, slow attack synth pad. Through
+    // the Chorus "Joy Division" + Reverb "Atmosphere" presets to taste.
+    Preset::from_overrides("Joy Division (Atmosphere)", &[
+        (P_CUTOFF, 1700.0),
+        (P_RESONANCE, 0.28),
+        (P_MODULATION, 5.0),
+        (P_DRIVE, 0.42),
+        (P_WIDTH, 10.0),
+        (P_ATTACK, 0.6),
+        (P_DECAY, 1.4),
+        (P_SUSTAIN, 0.85),
+        (P_RELEASE, 2.8),
+        (P_OUTPUT, -8.0),
+    ]),
+
+    // Cocteau Twins guitar-pad. Bright, gauzy, ethereal — pair with
+    // a heavy shimmer reverb (Cocteau Twins preset on Reverb).
+    Preset::from_overrides("Cocteau Twins (Pad)", &[
+        (P_CUTOFF, 7000.0),
+        (P_RESONANCE, 0.12),
+        (P_MODULATION, 14.0),
+        (P_DRIVE, 0.18),
+        (P_WIDTH, 22.0),
+        (P_ATTACK, 0.25),
+        (P_DECAY, 0.9),
+        (P_SUSTAIN, 0.9),
+        (P_RELEASE, 3.0),
+        (P_OUTPUT, -9.0),
+    ]),
+
+    // Boards of Canada lo-fi analog pad — narrow band, wobble heavy
+    // (modulation), short release. Lo-fi but warm.
+    Preset::from_overrides("Boards of Canada (Lo-Fi)", &[
+        (P_CUTOFF, 2200.0),
+        (P_RESONANCE, 0.25),
+        (P_MODULATION, 28.0),
+        (P_DRIVE, 0.45),
+        (P_WIDTH, 6.0),
+        (P_ATTACK, 0.3),
+        (P_DECAY, 0.7),
+        (P_SUSTAIN, 0.75),
+        (P_RELEASE, 1.4),
+        (P_OUTPUT, -8.0),
+    ]),
 ];
 
 pub fn apply(shared: &crate::SharedParamsInner, preset: &Preset) {

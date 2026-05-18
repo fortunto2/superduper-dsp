@@ -107,6 +107,49 @@ pub static PRESETS: &[Preset] = &[
         (P_DUCK_ATTACK, 4.0),
         (P_DUCK_RELEASE, 280.0),
     ]),
+
+    // ----- Band-flavoured presets -----
+    // Joy Division — slap-back into the verb. Hooky echo with one
+    // strong repeat that dies fast into the reverb.
+    Preset::from_overrides("Joy Division (Slap)", &[
+        (P_TIME, 200.0),
+        (P_WIDTH, 20.0),
+        (P_FEEDBACK, 0.32),
+        (P_TONE, 3800.0),
+        (P_DRIVE, 2.5),
+        (P_MIX, 0.4),
+        (P_MODE, 0.0),
+    ]),
+    // The Edge / U2 — fast dotted 8th repeats with tone rolled off.
+    Preset::from_overrides("The Edge (Dotted 8th)", &[
+        (P_TIME, 375.0),
+        (P_WIDTH, -50.0),
+        (P_FEEDBACK, 0.42),
+        (P_TONE, 4800.0),
+        (P_DRIVE, 1.0),
+        (P_MIX, 0.4),
+        (P_MODE, 0.0),
+    ]),
+    // Vangelis (Blade Runner) — long lush ping-pong, dark, very wet.
+    Preset::from_overrides("Vangelis (Blade Runner)", &[
+        (P_TIME, 600.0),
+        (P_WIDTH, 100.0),
+        (P_FEEDBACK, 0.55),
+        (P_TONE, 3000.0),
+        (P_DRIVE, 1.5),
+        (P_MIX, 0.5),
+        (P_MODE, 1.0),
+    ]),
+    // Boards of Canada — tape-style, dark feedback, lots of drive.
+    Preset::from_overrides("Boards of Canada (Tape)", &[
+        (P_TIME, 425.0),
+        (P_WIDTH, 30.0),
+        (P_FEEDBACK, 0.55),
+        (P_TONE, 2400.0),
+        (P_DRIVE, 6.0),
+        (P_MIX, 0.4),
+        (P_MODE, 0.0),
+    ]),
 ];
 
 pub fn apply(shared: &crate::SharedParamsInner, preset: &Preset) {

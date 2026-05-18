@@ -164,15 +164,98 @@ fn vocal_passes_steady_sine_intact() {
     );
 }
 
-// NOTE: a real "is the de-esser biting transient sibilance?" test
-// needs a recorded-vocal-style signal — a sharp 6 kHz envelope with
-// transients sub-5 ms wide. Synthetic bursts I tried didn't reliably
-// trigger the detector. Skipping that test for now; passthrough +
-// non-NaN above gives enough regression coverage. Future work:
-// drop a tiny real sibilance WAV into a fixtures/ dir and compare
-// peak / RMS in the 4-8 kHz band before/after.
+/// Sample-by-sample peak floor for the L channel after a noise-burst
+/// probe — verifies that bursts run through without producing
+/// NaN/Inf and that the plugin processes a non-trivial signal even
+/// when the de-esser is engaged. The plugin's actual GR behaviour on
+/// real sibilance is best validated by ear with /tmp/vocal_*.wav
+/// dropped on a real vocal stem; see the writeup at the bottom of
+/// this file.
+fn band_peak_db(samples: &[f32], lo_hz: f32, hi_hz: f32) -> f32 {
+    let spec_db = superduper_synth_core::analysis::magnitude_spectrum_db(samples);
+    let n_bins = spec_db.len();
+    let bin_hz = |i: usize| (i as f32) * SR / ((n_bins - 1) as f32 * 2.0);
+    let mut peak_db = f32::NEG_INFINITY;
+    for (i, &db) in spec_db.iter().enumerate() {
+        let f = bin_hz(i);
+        if f >= lo_hz && f <= hi_hz && db > peak_db {
+            peak_db = db;
+        }
+    }
+    peak_db
+}
 
-#[allow(dead_code)]
+/// Vocal-shaped probe: 250 Hz body sine plus 50-ms HPF-shaped noise
+/// bursts every 200 ms. Synthetic — real sibilance is much more
+/// complex than this — but plenty for "is the plugin alive and not
+/// destroying audio?" smoke tests.
+fn vocal_like_burst(i: usize) -> f32 {
+    static mut HPF_STATE: f32 = 0.0;
+    static mut SEED: u32 = 0xCAFEBABE;
+    unsafe {
+        let t = i as f32 / SR;
+        let body = 0.3 * (t * 250.0 * std::f32::consts::TAU).sin();
+        let period_s = 0.200;
+        let burst_s = 0.050;
+        let phase_s = (t / period_s).fract() * period_s;
+        let in_burst = phase_s < burst_s;
+        SEED ^= SEED << 13;
+        SEED ^= SEED >> 17;
+        SEED ^= SEED << 5;
+        let noise = ((SEED as i32) as f32) / (i32::MAX as f32);
+        let alpha = 1.0 - (-2.0 * core::f32::consts::PI * 4000.0 / SR).exp();
+        let lp = HPF_STATE + alpha * (noise - HPF_STATE);
+        HPF_STATE = lp;
+        let hpf = noise - lp;
+        let env = if in_burst { 1.0 } else { 0.0 };
+        body + 0.6 * env * hpf
+    }
+}
+
+/// Realistic de-esser test: peak amplitude of vocal-like burst signal
+/// must drop when the de-esser is engaged. Spectrum averaging across
+/// the full buffer hides the GR (bursts are 25% of the time, FFT
+/// averages over both burst + silence) — peak amplitude tracks the
+/// burst itself and is what users hear as "the sibilance is tamed".
+///
+/// Body band peak must stay within noise of the Amt=0 case (the de-
+/// esser shouldn't touch low-mid energy).
+#[test]
+fn vocal_attenuates_burst_peaks() {
+    let off = render_with_signal(vocal_like_burst, -36.0, 0.0);
+    let on  = render_with_signal(vocal_like_burst, -36.0, 18.0);
+    let skip = (SR * 0.30) as usize;
+
+    let off_peak = off[skip..].iter().fold(0.0_f32, |a, x| a.max(x.abs()));
+    let on_peak  = on[skip..].iter().fold(0.0_f32, |a, x| a.max(x.abs()));
+    for x in off[skip..].iter().chain(on[skip..].iter()) {
+        assert!(x.is_finite(), "NaN/Inf in vocal output");
+    }
+    assert!(on_peak < 0.99 && off_peak < 0.99, "Clipping: off {off_peak}, on {on_peak}");
+
+    let peak_drop_db = 20.0 * (off_peak / on_peak.max(1e-9)).log10();
+    eprintln!(
+        "Burst peaks: off={:.4}  on={:.4}  drop={:.2} dB",
+        off_peak, on_peak, peak_drop_db
+    );
+    assert!(
+        peak_drop_db > 1.0,
+        "Peak amplitude only dropped {peak_drop_db:.2} dB with Amt=18 — \
+         de-esser isn't biting (expected >1 dB)"
+    );
+
+    // Body band shouldn't move materially.
+    let fft_n = 16384.min((off.len() - skip).next_power_of_two() / 2);
+    let off_body = band_peak_db(&off[off.len() - fft_n..], 100.0, 500.0);
+    let on_body  = band_peak_db(&on[on.len() - fft_n..], 100.0, 500.0);
+    eprintln!("Body peak: off={:.2} dB on={:.2} dB", off_body, on_body);
+    assert!(
+        (off_body - on_body).abs() < 1.0,
+        "De-esser leaked into body band: drop {:.2} dB",
+        off_body - on_body
+    );
+}
+
 fn render_with_signal(
     gen: impl Fn(usize) -> f32,
     ess_thr_db: f32,

@@ -86,6 +86,15 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 24, name: b"Bend Range", min: 0.0,    max: 24.0,    default: 2.0,    unit: "ST"   },
     ParamDef { id: 25, name: b"LFO Sync",   min: 0.0,    max: 1.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 26, name: b"LFO Div",    min: 0.0,    max: 11.0,    default: 7.0,    unit: ""     },
+    // ---- Mod matrix — 2 slots, each (src, dst, amt) ----
+    // Source enum: 0=None, 1=LFO, 2=Velocity, 3=ModWheel, 4=Aftertouch, 5=FEnv
+    // Dest enum:   0=None, 1=Cutoff(oct), 2=Pitch(ST), 3=WT Pos, 4=Reson, 5=Drive, 6=Volume
+    ParamDef { id: 27, name: b"Mod1 Src",   min: 0.0,    max: 5.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 28, name: b"Mod1 Dst",   min: 0.0,    max: 6.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 29, name: b"Mod1 Amt",   min: -1.0,   max: 1.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 30, name: b"Mod2 Src",   min: 0.0,    max: 5.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 31, name: b"Mod2 Dst",   min: 0.0,    max: 6.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 32, name: b"Mod2 Amt",   min: -1.0,   max: 1.0,     default: 0.0,    unit: ""     },
 ];
 
 pub const P_WT_POS: usize = 0;
@@ -115,6 +124,12 @@ pub const P_LFO_DEST: usize = 23;
 pub const P_BEND_RANGE: usize = 24;
 pub const P_LFO_SYNC: usize = 25;
 pub const P_LFO_DIV: usize = 26;
+pub const P_MOD1_SRC: usize = 27;
+pub const P_MOD1_DST: usize = 28;
+pub const P_MOD1_AMT: usize = 29;
+pub const P_MOD2_SRC: usize = 30;
+pub const P_MOD2_DST: usize = 31;
+pub const P_MOD2_AMT: usize = 32;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -153,6 +168,12 @@ pub struct SharedParamsInner {
     pub active_preset: AtomicU32,
     /// Live pitch-bend in semitones (signed). Set by MIDI 0xE0.
     pub pitch_bend_st: AtomicF32,
+    /// Live MIDI ModWheel (CC #1) value 0..1. Independent of the LFO Depth
+    /// param so the mod matrix can pick it as a source even when CC1
+    /// already happens to be routed to LFO Depth via the legacy mapping.
+    pub mod_wheel: AtomicF32,
+    /// Channel aftertouch 0..1. Same independence rationale as mod_wheel.
+    pub aftertouch: AtomicF32,
     /// Host transport BPM — updated from TransportEvent so the LFO can
     /// run in sync mode at musical divisions.
     pub host_bpm: AtomicF32,
@@ -183,6 +204,8 @@ impl PluginShared {
                 wavetable: Mutex::new((frame_a, frame_b)),
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
+                mod_wheel: AtomicF32::new(0.0),
+                aftertouch: AtomicF32::new(0.0),
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
@@ -426,6 +449,11 @@ impl<'a> PluginAudioProcessor<'a> {
             //   CC 74 Brightness  → WT Pos
             0xb0 => {
                 let v = raw_velocity as f32 / 127.0;
+                // Always raise CC#1 into the mod_wheel source atomic so the
+                // matrix sees it regardless of the legacy CC→LFO Depth route.
+                if key == 1 {
+                    self.shared.mod_wheel.store(v, Ordering::Relaxed);
+                }
                 let lin = |idx: usize, frac: f32| {
                     let def = &PARAMS[idx];
                     let val = def.min as f32 + frac * (def.max - def.min) as f32;
@@ -455,6 +483,7 @@ impl<'a> PluginAudioProcessor<'a> {
             // pressure when keyboard supports it.
             0xd0 => {
                 let pressure = key as f32 / 127.0;
+                self.shared.aftertouch.store(pressure, Ordering::Relaxed);
                 let def = &PARAMS[P_LFO_DEPTH];
                 let val = def.min as f32 + pressure * (def.max - def.min) as f32;
                 self.shared.params[P_LFO_DEPTH].store(val, Ordering::Relaxed);
@@ -520,6 +549,27 @@ impl<'a> PluginAudioProcessor<'a> {
         let sr = self.sample_rate;
         debug_assert_eq!(out_l.len(), out_r.len());
 
+        // Mod matrix slot snapshot — read once per block. Source/dest enums
+        // are decoded out of the integer params; amount is straight float.
+        let mod_slots: [osc::ModSlot; 2] = [
+            osc::ModSlot {
+                src: osc::ModSource::from_index(
+                    self.shared.params[P_MOD1_SRC].load(Ordering::Relaxed) as u32),
+                dst: osc::ModDest::from_index(
+                    self.shared.params[P_MOD1_DST].load(Ordering::Relaxed) as u32),
+                amt: self.shared.params[P_MOD1_AMT].load(Ordering::Relaxed),
+            },
+            osc::ModSlot {
+                src: osc::ModSource::from_index(
+                    self.shared.params[P_MOD2_SRC].load(Ordering::Relaxed) as u32),
+                dst: osc::ModDest::from_index(
+                    self.shared.params[P_MOD2_DST].load(Ordering::Relaxed) as u32),
+                amt: self.shared.params[P_MOD2_AMT].load(Ordering::Relaxed),
+            },
+        ];
+        let mod_wheel = self.shared.mod_wheel.load(Ordering::Relaxed);
+        let aftertouch = self.shared.aftertouch.load(Ordering::Relaxed);
+
         for i in 0..out_l.len() {
             let wt_pos = self.smooth_wt_pos.step(wt_pos_target, sr).clamp(0.0, 1.0);
             let detune = self.smooth_detune.step(detune_target, sr);
@@ -584,6 +634,9 @@ impl<'a> PluginAudioProcessor<'a> {
                     frame_a_prev: &self.frame_a_prev,
                     frame_a_fade: fade_pos,
                     frame_b: &self.frame_b,
+                    mod_slots,
+                    mod_wheel,
+                    aftertouch,
                 };
 
                 // Choke fade — overrides ADSR with linear ramp.
@@ -881,6 +934,33 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        use core::fmt::Write;
+        let pid = id.get() as usize;
+        // Custom-label enum-style params so the DAW shows readable names
+        // instead of "0.00" / "3.00".
+        if pid == P_MOD1_SRC || pid == P_MOD2_SRC {
+            let name = match v.round() as i32 {
+                1 => "LFO",
+                2 => "Velocity",
+                3 => "ModWheel",
+                4 => "Aftertouch",
+                5 => "FilterEnv",
+                _ => "None",
+            };
+            return write!(w, "{}", name);
+        }
+        if pid == P_MOD1_DST || pid == P_MOD2_DST {
+            let name = match v.round() as i32 {
+                1 => "Cutoff",
+                2 => "Pitch",
+                3 => "WT Pos",
+                4 => "Resonance",
+                5 => "Drive",
+                6 => "Volume",
+                _ => "None",
+            };
+            return write!(w, "{}", name);
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {

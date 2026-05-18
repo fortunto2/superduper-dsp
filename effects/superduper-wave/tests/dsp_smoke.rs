@@ -58,6 +58,9 @@ fn voice_emits_audio_on_note() {
         frame_a_prev: &a,
         frame_a_fade: 1.0,
         frame_b: &b,
+        mod_slots: [Default::default(); 2],
+        mod_wheel: 0.0,
+        aftertouch: 0.0,
     };
 
     // 256 samples warm-up (filter ringup + attack ramp).
@@ -113,6 +116,9 @@ fn morph_blends_two_frames() {
         frame_a_prev: &a,
         frame_a_fade: 1.0,
         frame_b: &b,
+        mod_slots: [Default::default(); 2],
+        mod_wheel: 0.0,
+        aftertouch: 0.0,
     };
 
     for _ in 0..512 {
@@ -161,6 +167,9 @@ fn unison_decorrelates_l_r() {
         frame_a_prev: &a,
         frame_a_fade: 1.0,
         frame_b: &b,
+        mod_slots: [Default::default(); 2],
+        mod_wheel: 0.0,
+        aftertouch: 0.0,
     };
     let mut diff = 0.0_f32;
     let mut sum = 0.0_f32;

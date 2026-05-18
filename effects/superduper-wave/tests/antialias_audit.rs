@@ -52,6 +52,9 @@ fn run_voice(antialias: bool) -> f32 {
         frame_a_prev: &a,
         frame_a_fade: 1.0,
         frame_b: &b,
+        mod_slots: [Default::default(); 2],
+        mod_wheel: 0.0,
+        aftertouch: 0.0,
     };
 
     // Warm-up: let filter ring out, envelope reach unity.

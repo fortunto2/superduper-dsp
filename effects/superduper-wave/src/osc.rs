@@ -389,6 +389,81 @@ pub struct WaveParams<'a> {
     pub frame_a_prev: &'a MipWavetable,
     pub frame_a_fade: f32,
     pub frame_b: &'a MipWavetable,
+
+    // ---- Mod-matrix slot snapshots (caller fills both — 2 slots) ----
+    pub mod_slots: [ModSlot; 2],
+    /// Per-block global modulator source values, evaluated by the caller
+    /// once before iterating voices. LFO + Velocity + FEnv are NOT here —
+    /// they're per-voice and the voice computes them itself.
+    pub mod_wheel: f32,
+    pub aftertouch: f32,
+}
+
+/// One mod-matrix slot — src/dst are decoded into typed enums in lib.rs.
+#[derive(Copy, Clone, Default)]
+pub struct ModSlot {
+    pub src: ModSource,
+    pub dst: ModDest,
+    pub amt: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum ModSource {
+    #[default]
+    None,
+    Lfo,
+    Velocity,
+    ModWheel,
+    Aftertouch,
+    FilterEnv,
+}
+impl ModSource {
+    pub fn from_index(i: u32) -> Self {
+        match i {
+            1 => Self::Lfo,
+            2 => Self::Velocity,
+            3 => Self::ModWheel,
+            4 => Self::Aftertouch,
+            5 => Self::FilterEnv,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum ModDest {
+    #[default]
+    None,
+    CutoffOct,
+    PitchSt,
+    WtPos,
+    Resonance,
+    Drive,
+    Volume,
+}
+impl ModDest {
+    pub fn from_index(i: u32) -> Self {
+        match i {
+            1 => Self::CutoffOct,
+            2 => Self::PitchSt,
+            3 => Self::WtPos,
+            4 => Self::Resonance,
+            5 => Self::Drive,
+            6 => Self::Volume,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Per-voice modulator accumulator. One slot per destination.
+#[derive(Copy, Clone, Default)]
+pub struct ModAccum {
+    pub cutoff_oct: f32,
+    pub pitch_st: f32,
+    pub wt_pos: f32,
+    pub resonance: f32,
+    pub drive: f32,
+    pub volume: f32,
 }
 
 impl WaveVoice {
@@ -459,25 +534,66 @@ impl WaveVoice {
         let lfo_value = lfo_raw * p.lfo_depth;
         let fenv_level = self.filter_env.process(p.fenv);
 
+        // ---- Mod matrix: evaluate each configured slot and accumulate
+        // its contribution into the per-voice destination accumulators.
+        // Source values are in roughly [-1, 1] (LFO + Velocity bias to 0
+        // when off-key; ModWheel/Aftertouch/FEnv are 0..1). Destination
+        // scaling is destination-specific — Cutoff: 12 ST = 1 octave per
+        // unit amt; Pitch: 24 ST per unit amt; WtPos / Reson / Drive /
+        // Vol: ±1 per unit amt.
+        let mut acc = ModAccum::default();
+        for slot in p.mod_slots.iter() {
+            let src_v = match slot.src {
+                ModSource::None => continue,
+                ModSource::Lfo => lfo_value,                // ∈ [-1,1] × depth
+                ModSource::Velocity => self.velocity,       // 0..1
+                ModSource::ModWheel => p.mod_wheel,         // 0..1
+                ModSource::Aftertouch => p.aftertouch,      // 0..1
+                ModSource::FilterEnv => fenv_level,         // 0..1
+            };
+            let v = src_v * slot.amt;
+            match slot.dst {
+                ModDest::None => {}
+                ModDest::CutoffOct => acc.cutoff_oct += v * 4.0,   // up to ±4 oct
+                ModDest::PitchSt   => acc.pitch_st   += v * 24.0,  // up to ±24 ST
+                ModDest::WtPos     => acc.wt_pos     += v,
+                ModDest::Resonance => acc.resonance  += v,
+                ModDest::Drive     => acc.drive      += v,
+                ModDest::Volume    => acc.volume     += v,
+            }
+        }
+
         // ---- Per-sample modulated values ----
         // Filter env modulates cutoff in octaves (classic synth shape).
         // LFO can also be routed to cutoff (additive, in octaves).
         let cutoff_oct = p.fenv_amount_oct * fenv_level
-            + if matches!(p.lfo_dest, LfoDest::Cutoff) { lfo_value } else { 0.0 };
+            + if matches!(p.lfo_dest, LfoDest::Cutoff) { lfo_value } else { 0.0 }
+            + acc.cutoff_oct;
         let cutoff_hz = (p.cutoff_hz * 2f32.powf(cutoff_oct)).clamp(20.0, p.sr * 0.49);
         // LFO → pitch: depth measured in semitones (we scale value by 12
         // up front to make ±depth roughly ±12 ST at depth=1).
-        let pitch_ratio = if matches!(p.lfo_dest, LfoDest::Pitch) {
-            2f32.powf(lfo_value * 12.0 / 12.0) // depth ∈ [0,1] → ±1 octave
-        } else {
-            1.0
+        let pitch_ratio = {
+            let lfo_pitch_st = if matches!(p.lfo_dest, LfoDest::Pitch) {
+                lfo_value * 12.0
+            } else {
+                0.0
+            };
+            2f32.powf((lfo_pitch_st + acc.pitch_st) / 12.0)
         };
         // LFO → WT Pos: additive, clamped.
-        let wt_pos = if matches!(p.lfo_dest, LfoDest::WtPos) {
-            (p.wt_pos + lfo_value).clamp(0.0, 1.0)
-        } else {
-            p.wt_pos
+        let wt_pos = {
+            let base = if matches!(p.lfo_dest, LfoDest::WtPos) {
+                p.wt_pos + lfo_value
+            } else {
+                p.wt_pos
+            };
+            (base + acc.wt_pos).clamp(0.0, 1.0)
         };
+        let resonance = (p.resonance + acc.resonance).clamp(0.0, 0.99);
+        let drive = (p.drive + acc.drive).clamp(0.0, 4.0);
+        // Volume scaler — 1.0 baseline, +ve amt brightens, -ve mutes.
+        // Clamp to keep voices from blowing up at extreme settings.
+        let voice_gain = (1.0 + acc.volume).clamp(0.0, 4.0);
 
         let n_active = self.active_voice_count();
         let inv_n = 1.0 / (n_active as f32);
@@ -519,16 +635,16 @@ impl WaveVoice {
         }
 
         // Pre-filter drive — tanh waveshaper.
-        if p.drive > 0.0001 {
-            let g = 1.0 + p.drive * 2.5;
+        if drive > 0.0001 {
+            let g = 1.0 + drive * 2.5;
             mix_l = (mix_l * g).tanh();
             mix_r = (mix_r * g).tanh();
         }
 
         // Stereo filter (L and R have independent state — keeps spread audible).
-        let out_l = self.filter_l.process(mix_l, p.sr, cutoff_hz, p.resonance, p.mode);
-        let out_r = self.filter_r.process(mix_r, p.sr, cutoff_hz, p.resonance, p.mode);
-        (out_l, out_r)
+        let out_l = self.filter_l.process(mix_l, p.sr, cutoff_hz, resonance, p.mode);
+        let out_r = self.filter_r.process(mix_r, p.sr, cutoff_hz, resonance, p.mode);
+        (out_l * voice_gain, out_r * voice_gain)
     }
 
     #[inline]

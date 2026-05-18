@@ -9,7 +9,8 @@ use crate::presets::PRESETS;
 use crate::{
     apply_preset, push_custom_frame_a, PARAMS, P_ANTIALIAS, P_ATTACK, P_CUTOFF, P_DECAY, P_DETUNE,
     P_DRIVE, P_FENV_A, P_FENV_AMOUNT, P_FENV_D, P_FENV_R, P_FENV_S, P_FILTER_MODE, P_LFO_DEPTH,
-    P_LFO_DEST, P_LFO_DIV, P_LFO_RATE, P_LFO_SHAPE, P_LFO_SYNC, P_NOISE, P_OUTPUT, P_RELEASE,
+    P_LFO_DEST, P_LFO_DIV, P_LFO_RATE, P_LFO_SHAPE, P_LFO_SYNC, P_MOD1_AMT, P_MOD1_DST, P_MOD1_SRC,
+    P_MOD2_AMT, P_MOD2_DST, P_MOD2_SRC, P_NOISE, P_OUTPUT, P_RELEASE,
     P_RESONANCE, P_SUB, P_SUSTAIN, P_UNISON, P_WT_POS, SharedParams,
 };
 use crate::osc::{mip_from_table, render_formula, WT_SIZE};
@@ -347,6 +348,93 @@ fn dest_label(i: u32) -> &'static str {
         2 => "WT Pos",
         _ => "Cutoff",
     }
+}
+
+fn mod_src_label(i: u32) -> &'static str {
+    match i {
+        1 => "LFO",
+        2 => "Velocity",
+        3 => "ModWheel",
+        4 => "Aftertouch",
+        5 => "FilterEnv",
+        _ => "None",
+    }
+}
+fn mod_dst_label(i: u32) -> &'static str {
+    match i {
+        1 => "Cutoff",
+        2 => "Pitch",
+        3 => "WT Pos",
+        4 => "Resonance",
+        5 => "Drive",
+        6 => "Volume",
+        _ => "None",
+    }
+}
+
+/// Render one row of the Mod Matrix — Src dropdown, Dst dropdown, Amt slider.
+/// Three params live behind it; we mark each dirty when the user changes it
+/// so the host's automation lane records the routing change.
+fn draw_mod_slot(
+    ui: &mut egui::Ui,
+    state: &GuiState,
+    label: &str,
+    src_idx: usize,
+    dst_idx: usize,
+    amt_idx: usize,
+) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [24.0, 18.0],
+            egui::Label::new(egui::RichText::new(label).color(core_gui::GREEN).monospace()),
+        );
+        // ---- Source dropdown ----
+        let mut src_v = state.shared.params[src_idx].load(Ordering::Relaxed) as u32;
+        let prev_src = src_v;
+        egui::ComboBox::from_id_source(format!("mod_src_{label}"))
+            .selected_text(mod_src_label(src_v))
+            .show_ui(ui, |ui| {
+                for i in 0..=5u32 {
+                    ui.selectable_value(&mut src_v, i, mod_src_label(i));
+                }
+            });
+        if src_v != prev_src {
+            state.shared.params[src_idx].store(src_v as f32, Ordering::Relaxed);
+            state.shared.dirty_params[src_idx].store(true, Ordering::Relaxed);
+        }
+        // ---- Destination dropdown ----
+        let mut dst_v = state.shared.params[dst_idx].load(Ordering::Relaxed) as u32;
+        let prev_dst = dst_v;
+        egui::ComboBox::from_id_source(format!("mod_dst_{label}"))
+            .selected_text(mod_dst_label(dst_v))
+            .show_ui(ui, |ui| {
+                for i in 0..=6u32 {
+                    ui.selectable_value(&mut dst_v, i, mod_dst_label(i));
+                }
+            });
+        if dst_v != prev_dst {
+            state.shared.params[dst_idx].store(dst_v as f32, Ordering::Relaxed);
+            state.shared.dirty_params[dst_idx].store(true, Ordering::Relaxed);
+        }
+        // ---- Amount slider ----
+        let mut amt = state.shared.params[amt_idx].load(Ordering::Relaxed);
+        let prev_amt = amt;
+        let resp = ui.add(
+            egui::Slider::new(&mut amt, -1.0..=1.0)
+                .show_value(true)
+                .clamping(egui::SliderClamping::Always),
+        );
+        if resp.drag_started() {
+            state.shared.gesture_begin[amt_idx].store(true, Ordering::Relaxed);
+        }
+        if (amt - prev_amt).abs() > 1e-9 {
+            state.shared.params[amt_idx].store(amt, Ordering::Relaxed);
+            state.shared.dirty_params[amt_idx].store(true, Ordering::Relaxed);
+        }
+        if resp.drag_stopped() {
+            state.shared.gesture_end[amt_idx].store(true, Ordering::Relaxed);
+        }
+    });
 }
 
 fn refresh_preview(state: &mut GuiState) {
@@ -772,6 +860,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_LFO_SYNC], &PARAMS[P_LFO_SYNC], &state.shared.dirty_params[P_LFO_SYNC], &state.shared.midi_learn, P_LFO_SYNC, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_LFO_DIV], &PARAMS[P_LFO_DIV], &state.shared.dirty_params[P_LFO_DIV], &state.shared.midi_learn, P_LFO_DIV, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+            });
+            core_gui::section(ui, "Mod Matrix", |ui| {
+                draw_mod_slot(ui, state, "1", P_MOD1_SRC, P_MOD1_DST, P_MOD1_AMT);
+                draw_mod_slot(ui, state, "2", P_MOD2_SRC, P_MOD2_DST, P_MOD2_AMT);
             });
             core_gui::section(ui, "Amp Envelope", |ui| {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], &state.shared.midi_learn, P_ATTACK, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });

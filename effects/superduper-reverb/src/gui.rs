@@ -91,6 +91,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             apply_preset(state, i);
         }
 
+
+        core_gui::ab_init_bar(
+            ui,
+            &state.shared.ab_snapshot,
+            &state.shared.params,
+            PARAMS,
+            &state.shared.dirty_params,
+        );
+        let (sdsp_scope_rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 60.0),
+            egui::Sense::hover(),
+        );
+        core_gui::draw_spectrum_strip(ui, &state.shared.scope, sdsp_scope_rect, 48_000.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Space", |ui| {
                 core_gui::dirty_param_row(ui, &state.shared.params[P_SIZE], &PARAMS[P_SIZE], &state.shared.dirty_params[P_SIZE]);

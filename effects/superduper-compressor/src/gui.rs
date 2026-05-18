@@ -157,6 +157,16 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             if let Some(preset) = PRESETS.get(i) {
                 crate::presets::apply(&state.shared, preset);
             }
+
+        core_gui::ab_init_bar(
+            ui,
+            &state.shared.ab_snapshot,
+            &state.shared.params,
+            PARAMS,
+            &state.shared.dirty_params,
+        );
+        // Compressor has its own dedicated scope view further down — no
+        // spectrum strip here.
         }
 
         // Toggle row — scope on/off + numeric GR readout next to it so

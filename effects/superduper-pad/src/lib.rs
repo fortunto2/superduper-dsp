@@ -569,8 +569,11 @@ impl<'a> PluginAudioProcessor<'a> {
             // already attenuate so this only fires under chord stacks.
             let voice_scale = 0.5_f32;
             let out_lin = 10f32.powf(output_db / 20.0);
-            out_l[i] = mix_l * voice_scale * out_lin;
-            out_r[i] = mix_r * voice_scale * out_lin;
+            let final_l = mix_l * voice_scale * out_lin;
+            let final_r = mix_r * voice_scale * out_lin;
+            out_l[i] = final_l;
+            out_r[i] = final_r;
+            self.shared.scope.push((final_l + final_r) * 0.5);
         }
     }
 

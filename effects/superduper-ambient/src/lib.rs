@@ -284,7 +284,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     mix *= 0.25; // normalise — 4 voices
 
                     let out_lin = 10f32.powf(output_db / 20.0);
-                    *o = mix * out_lin;
+                    let final_sample = mix * out_lin;
+                    *o = final_sample;
+                    self.shared.scope.push(final_sample);
                 }
             }
         }

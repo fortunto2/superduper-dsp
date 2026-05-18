@@ -9,8 +9,8 @@ use crate::presets::PRESETS;
 use crate::{
     apply_preset, push_custom_frame_a, PARAMS, P_ANTIALIAS, P_ATTACK, P_CUTOFF, P_DECAY, P_DETUNE,
     P_DRIVE, P_FENV_A, P_FENV_AMOUNT, P_FENV_D, P_FENV_R, P_FENV_S, P_FILTER_MODE, P_LFO_DEPTH,
-    P_LFO_DEST, P_LFO_RATE, P_LFO_SHAPE, P_NOISE, P_OUTPUT, P_RELEASE, P_RESONANCE, P_SUB,
-    P_SUSTAIN, P_UNISON, P_WT_POS, SharedParams,
+    P_LFO_DEST, P_LFO_DIV, P_LFO_RATE, P_LFO_SHAPE, P_LFO_SYNC, P_NOISE, P_OUTPUT, P_RELEASE,
+    P_RESONANCE, P_SUB, P_SUSTAIN, P_UNISON, P_WT_POS, SharedParams,
 };
 use crate::osc::{mip_from_table, render_formula, WT_SIZE};
 
@@ -757,6 +757,21 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DEST], &PARAMS[P_LFO_DEST], &state.shared.dirty_params[P_LFO_DEST]);
                 core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_RATE], &PARAMS[P_LFO_RATE], &state.shared.dirty_params[P_LFO_RATE]);
                 core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DEPTH], &PARAMS[P_LFO_DEPTH], &state.shared.dirty_params[P_LFO_DEPTH]);
+                let sync_on = state.shared.params[P_LFO_SYNC]
+                    .load(Ordering::Relaxed)
+                    >= 0.5;
+                let div_idx = state.shared.params[P_LFO_DIV]
+                    .load(Ordering::Relaxed) as u32;
+                ui.weak(if sync_on {
+                    format!(
+                        "sync:  on  ·  {}  ·  rate slider above ignored",
+                        superduper_synth_core::dsp_blocks::sync_division_label(div_idx)
+                    )
+                } else {
+                    "sync:  off  ·  free Hz".to_string()
+                });
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_SYNC], &PARAMS[P_LFO_SYNC], &state.shared.dirty_params[P_LFO_SYNC]);
+                core_gui::dirty_param_row(ui, &state.shared.params[P_LFO_DIV], &PARAMS[P_LFO_DIV], &state.shared.dirty_params[P_LFO_DIV]);
             });
             core_gui::section(ui, "Amp Envelope", |ui| {
                 core_gui::dirty_param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK]);

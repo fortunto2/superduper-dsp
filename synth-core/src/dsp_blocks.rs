@@ -6,6 +6,55 @@
 //! audio thread.
 
 // ---------------------------------------------------------------------------
+// Tempo-synced rate division — turns a "1/8 dotted"-style note value into
+// a Hz rate given the host's BPM. Used by every LFO / delay-time / sweep
+// rate that wants a Sync toggle.
+//
+// Layout: 12 useful divisions in human-musical order, dense range from a
+// whole note down to a 1/16 triplet. Plenty for synth wobbles and delays.
+// ---------------------------------------------------------------------------
+
+/// Convert a 0..=11 enum index + BPM into the corresponding rate in Hz.
+/// 0 = 1/1, 1 = 1/2 dotted, 2 = 1/2, 3 = 1/2 triplet, 4 = 1/4,
+/// 5 = 1/4 dotted, 6 = 1/4 triplet, 7 = 1/8, 8 = 1/8 dotted,
+/// 9 = 1/8 triplet, 10 = 1/16, 11 = 1/16 triplet.
+pub fn sync_division_hz(idx: u32, bpm: f32) -> f32 {
+    // beats_per_cycle for each entry.
+    let beats = match idx {
+        0 => 4.0,           // 1/1
+        1 => 3.0,           // 1/2 dotted
+        2 => 2.0,           // 1/2
+        3 => 4.0 / 3.0,     // 1/2 triplet
+        4 => 1.0,           // 1/4
+        5 => 1.5,           // 1/4 dotted
+        6 => 2.0 / 3.0,     // 1/4 triplet
+        7 => 0.5,           // 1/8
+        8 => 0.75,          // 1/8 dotted
+        9 => 1.0 / 3.0,     // 1/8 triplet
+        10 => 0.25,         // 1/16
+        _ => 1.0 / 6.0,     // 1/16 triplet
+    };
+    (bpm.max(20.0)) / 60.0 / beats
+}
+
+pub fn sync_division_label(idx: u32) -> &'static str {
+    match idx {
+        0 => "1/1",
+        1 => "1/2d",
+        2 => "1/2",
+        3 => "1/2t",
+        4 => "1/4",
+        5 => "1/4d",
+        6 => "1/4t",
+        7 => "1/8",
+        8 => "1/8d",
+        9 => "1/8t",
+        10 => "1/16",
+        _ => "1/16t",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SmoothedParam — one-pole interpolator for CLAP parameter slews.
 //
 // Reading an `AtomicF32` per sample is fine, but using the raw value

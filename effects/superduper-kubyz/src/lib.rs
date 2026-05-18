@@ -85,6 +85,12 @@ pub const PARAMS: &[ParamDef] = &[
     // Pitch-bend range in semitones — applied symmetrically (±N ST).
     // 2 ST is the General MIDI default; 12 ST = whole octave bend.
     ParamDef { id: 16, name: b"Bend Range",   min: 0.0, max: 24.0,  default: 2.0,    unit: "ST" },
+    // Tempo-sync the Mouth Rate to the host BPM. 0 = free Hz (use Mouth
+    // Rate above), 1 = sync (use Mouth Div).
+    ParamDef { id: 17, name: b"M Sync",        min: 0.0, max: 1.0,   default: 0.0,    unit: ""   },
+    // Note division — see synth_core::dsp_blocks::sync_division_label.
+    // 0=1/1, 4=1/4, 7=1/8, 10=1/16, etc.
+    ParamDef { id: 18, name: b"M Div",         min: 0.0, max: 11.0,  default: 4.0,    unit: ""   },
 ];
 
 pub const P_F1: usize = 0;
@@ -104,6 +110,8 @@ pub const P_MOUTH_RATE: usize = 13;
 pub const P_MOUTH_DEPTH: usize = 14;
 pub const P_MOUTH_STEREO: usize = 15;
 pub const P_BEND_RANGE: usize = 16;
+pub const P_MOUTH_SYNC: usize = 17;
+pub const P_MOUTH_DIV: usize = 18;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -136,6 +144,9 @@ pub struct SharedParamsInner {
     /// pitch-bend events and consumed by the audio thread when computing
     /// each voice's frequency.
     pub pitch_bend_st: AtomicF32,
+    /// Live host tempo in BPM — written from TransportEvents, read by
+    /// the audio thread when computing tempo-synced rates.
+    pub host_bpm: AtomicF32,
     /// A/B snapshot pair — two memorised states of every CLAP param.
     /// User flips between them to compare tweaks without losing either.
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
@@ -177,6 +188,7 @@ impl PluginShared {
                 mouth_phase: AtomicF32::new(0.0),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 pitch_bend_st: AtomicF32::new(0.0),
+                host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
@@ -431,6 +443,11 @@ impl<'a> PluginAudioProcessor<'a> {
             CoreEventSpace::NoteOff(n) => self.release_voice(n.key(), n.note_id()),
             CoreEventSpace::NoteChoke(n) => self.choke_voice(n.key(), n.note_id()),
             CoreEventSpace::Midi(m) => self.handle_midi_event(m.data()),
+            CoreEventSpace::Transport(t) => {
+                self.shared
+                    .host_bpm
+                    .store(t.tempo as f32, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -458,7 +475,19 @@ impl<'a> PluginAudioProcessor<'a> {
         let mouth_shape = trajectory::MouthShape::from_index(
             self.shared.params[P_MOUTH_SHAPE].load(Ordering::Relaxed) as u32,
         );
-        let mouth_rate = self.shared.params[P_MOUTH_RATE].load(Ordering::Relaxed);
+        let mouth_rate = {
+            let sync = self.shared.params[P_MOUTH_SYNC]
+                .load(Ordering::Relaxed)
+                >= 0.5;
+            if sync {
+                let div = self.shared.params[P_MOUTH_DIV]
+                    .load(Ordering::Relaxed) as u32;
+                let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+                superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm)
+            } else {
+                self.shared.params[P_MOUTH_RATE].load(Ordering::Relaxed)
+            }
+        };
         let mouth_depth = self.shared.params[P_MOUTH_DEPTH].load(Ordering::Relaxed).clamp(0.0, 1.0);
         let mouth_stereo = self.shared.params[P_MOUTH_STEREO]
             .load(Ordering::Relaxed)

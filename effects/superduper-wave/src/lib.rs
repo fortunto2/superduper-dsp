@@ -84,6 +84,8 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 22, name: b"LFO Shape",  min: 0.0,    max: 3.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 23, name: b"LFO Dest",   min: 0.0,    max: 2.0,     default: 0.0,    unit: ""     },
     ParamDef { id: 24, name: b"Bend Range", min: 0.0,    max: 24.0,    default: 2.0,    unit: "ST"   },
+    ParamDef { id: 25, name: b"LFO Sync",   min: 0.0,    max: 1.0,     default: 0.0,    unit: ""     },
+    ParamDef { id: 26, name: b"LFO Div",    min: 0.0,    max: 11.0,    default: 7.0,    unit: ""     },
 ];
 
 pub const P_WT_POS: usize = 0;
@@ -111,6 +113,8 @@ pub const P_LFO_DEPTH: usize = 21;
 pub const P_LFO_SHAPE: usize = 22;
 pub const P_LFO_DEST: usize = 23;
 pub const P_BEND_RANGE: usize = 24;
+pub const P_LFO_SYNC: usize = 25;
+pub const P_LFO_DIV: usize = 26;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -147,6 +151,9 @@ pub struct SharedParamsInner {
     pub active_preset: AtomicU32,
     /// Live pitch-bend in semitones (signed). Set by MIDI 0xE0.
     pub pitch_bend_st: AtomicF32,
+    /// Host transport BPM — updated from TransportEvent so the LFO can
+    /// run in sync mode at musical divisions.
+    pub host_bpm: AtomicF32,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
 }
@@ -171,6 +178,7 @@ impl PluginShared {
                 wavetable: Mutex::new((frame_a, frame_b)),
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
+                host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
             }),
@@ -462,6 +470,9 @@ impl<'a> PluginAudioProcessor<'a> {
             CoreEventSpace::NoteOff(n) => self.release_voice(n.key(), n.note_id()),
             CoreEventSpace::NoteChoke(n) => self.choke_voice(n.key(), n.note_id()),
             CoreEventSpace::Midi(m) => self.handle_midi_event(m.data()),
+            CoreEventSpace::Transport(t) => {
+                self.shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -758,7 +769,19 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let fenv_d = self.shared.params[P_FENV_D].load(Ordering::Relaxed);
                 let fenv_s = self.shared.params[P_FENV_S].load(Ordering::Relaxed);
                 let fenv_r = self.shared.params[P_FENV_R].load(Ordering::Relaxed);
-                let lfo_rate = self.shared.params[P_LFO_RATE].load(Ordering::Relaxed);
+                let lfo_rate = {
+                    let sync = self.shared.params[P_LFO_SYNC]
+                        .load(Ordering::Relaxed)
+                        >= 0.5;
+                    if sync {
+                        let div = self.shared.params[P_LFO_DIV]
+                            .load(Ordering::Relaxed) as u32;
+                        let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+                        superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm)
+                    } else {
+                        self.shared.params[P_LFO_RATE].load(Ordering::Relaxed)
+                    }
+                };
                 let lfo_depth = self.shared.params[P_LFO_DEPTH].load(Ordering::Relaxed);
                 let lfo_shape = LfoShape::from_index(
                     self.shared.params[P_LFO_SHAPE].load(Ordering::Relaxed) as u32,

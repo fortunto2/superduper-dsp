@@ -12,12 +12,15 @@
 
 pub mod gui;
 pub mod presets;
+pub mod trajectory;
 pub mod voice;
 
 use atomic_float::AtomicF32;
 use clack_common::events::Match;
+use clack_common::events::Pckn;
+use clack_common::events::event_types::ParamValueEvent;
 use clack_common::events::spaces::CoreEventSpace;
-use clack_common::utils::ClapId;
+use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
     PluginAudioPortsImpl,
@@ -65,6 +68,13 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 9, name: b"Release",   min: 0.01,   max: 4.0,    default: 0.15,   unit: "s"  },
     ParamDef { id: 10, name: b"Output",   min: -36.0,  max: 6.0,    default: -8.0,   unit: "dB" },
     ParamDef { id: 11, name: b"Tongue ST",min: -36.0,  max: 36.0,   default: 0.0,    unit: "ST" },
+    // ---- Mouth trajectory (formant motion) ----
+    // Pick a path shape — the cursor auto-walks around the F1/F2 centre
+    // along it at MouthRate Hz, modulating the formant in real time the
+    // way a player's tongue/mouth moves on a real kubyz.
+    ParamDef { id: 12, name: b"Mouth Shp",min: 0.0,    max: 4.0,    default: 0.0,    unit: ""   },
+    ParamDef { id: 13, name: b"Mouth Rate", min: 0.05, max: 20.0,   default: 1.5,    unit: "Hz" },
+    ParamDef { id: 14, name: b"Mouth Dep", min: 0.0,   max: 1.0,    default: 0.0,    unit: ""   },
 ];
 
 pub const P_F1: usize = 0;
@@ -79,6 +89,9 @@ pub const P_SUSTAIN: usize = 8;
 pub const P_RELEASE: usize = 9;
 pub const P_OUTPUT: usize = 10;
 pub const P_TONGUE_ST: usize = 11;
+pub const P_MOUTH_SHAPE: usize = 12;
+pub const P_MOUTH_RATE: usize = 13;
+pub const P_MOUTH_DEPTH: usize = 14;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -98,6 +111,15 @@ pub struct SharedParamsInner {
     pub harmonics: [AtomicF32; N_HARMONICS],
     pub formant_bw: Mutex<[f32; 3]>,
     pub formant_gain: Mutex<[f32; 3]>,
+    /// Continuously-advanced LFO phase for the mouth trajectory — the
+    /// audio thread bumps it once per sample at MouthRate, the GUI reads
+    /// it to animate the cursor on the vowel pad.
+    pub mouth_phase: AtomicF32,
+    /// Per-param dirty flag — the GUI sets it whenever the user moves a
+    /// slider / drags the vowel pad / picks a preset. The audio thread
+    /// turns each `true` into a `ParamValueEvent` in the host's output
+    /// queue so REAPER records the move into the automation lane.
+    pub dirty_params: [AtomicBool; PARAMS.len()],
 }
 
 pub struct PluginShared {
@@ -116,6 +138,8 @@ impl PluginShared {
                 harmonics,
                 formant_bw: Mutex::new(init.formant.bw),
                 formant_gain: Mutex::new(init.formant.gain),
+                mouth_phase: AtomicF32::new(0.0),
+                dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
             }),
         }
     }
@@ -154,6 +178,22 @@ pub fn apply_preset(shared: &SharedParamsInner, preset: &KubyzPreset) {
     }
     *shared.formant_bw.lock() = preset.formant.bw;
     *shared.formant_gain.lock() = preset.formant.gain;
+    // Tell the audio thread every CLAP param changed so it emits a
+    // ParamValue event to the host — preset picks become automation too.
+    for flag in shared.dirty_params.iter() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// GUI helper — write into a param atomic and signal that the host should
+/// be told about the change (so REAPER's automation lane records it).
+pub fn write_param(shared: &SharedParamsInner, idx: usize, value: f32) {
+    if let Some(atom) = shared.params.get(idx) {
+        atom.store(value, Ordering::Relaxed);
+        if let Some(flag) = shared.dirty_params.get(idx) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +239,7 @@ impl<'a> PluginAudioProcessor<'a> {
     fn allocate_voice(&mut self, key: u8, velocity: f32, note_id: i32) {
         self.next_age = self.next_age.wrapping_add(1);
         let stamp = self.next_age;
+        let sr = self.sample_rate;
         // 1. Retrigger
         for v in self.voices.iter_mut() {
             if v.key == key && v.note_id == note_id {
@@ -206,6 +247,7 @@ impl<'a> PluginAudioProcessor<'a> {
                 v.velocity = velocity;
                 v.age_stamp = stamp;
                 v.choke_remaining = 0;
+                v.on_note_on(sr);
                 return;
             }
         }
@@ -218,6 +260,7 @@ impl<'a> PluginAudioProcessor<'a> {
             v.env = AdsrEnvelope::default();
             v.env.gate_on();
             v.choke_remaining = 0;
+            v.on_note_on(sr);
             return;
         }
         // 3. Steal — quietest releasing, else oldest.
@@ -250,6 +293,7 @@ impl<'a> PluginAudioProcessor<'a> {
         v.age_stamp = stamp;
         v.choke_remaining = 0;
         v.env.gate_on();
+        v.on_note_on(sr);
     }
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
@@ -288,6 +332,12 @@ impl<'a> PluginAudioProcessor<'a> {
             0x80 => self.release_voice(Match::Specific(key as u16), Match::All),
             0xb0 if key == 123 => self.release_voice(Match::All, Match::All),
             0xb0 if key == 120 => self.choke_voice(Match::All, Match::All),
+            // ModWheel (CC 1) → Mouth Depth (play the mouth live with the
+            // expression wheel / aftertouch mapped here).
+            0xb0 if key == 1 => {
+                let d = raw_velocity as f32 / 127.0;
+                self.shared.params[P_MOUTH_DEPTH].store(d, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -330,10 +380,35 @@ impl<'a> PluginAudioProcessor<'a> {
             harmonics[i] = self.shared.harmonics[i].load(Ordering::Relaxed);
         }
 
+        // Mouth trajectory state — read once per sub-block. Phase lives on
+        // Shared so the GUI can animate the cursor at the same rate.
+        let mouth_shape = trajectory::MouthShape::from_index(
+            self.shared.params[P_MOUTH_SHAPE].load(Ordering::Relaxed) as u32,
+        );
+        let mouth_rate = self.shared.params[P_MOUTH_RATE].load(Ordering::Relaxed);
+        let mouth_depth = self.shared.params[P_MOUTH_DEPTH].load(Ordering::Relaxed).clamp(0.0, 1.0);
+        // Formant excursion in Hz at depth=1. Tuned so a circle on the
+        // pad covers roughly a half-octave around the centre — audible
+        // without leaping clean across the vowel space on every cycle.
+        let mouth_excursion_f1 = 220.0_f32;
+        let mouth_excursion_f2 = 600.0_f32;
+
+        let mut mouth_phase = self.shared.mouth_phase.load(Ordering::Relaxed);
+
         for i in 0..out_l.len() {
-            let f1 = self.smooth_f1.step(f1_target, sr);
-            let f2 = self.smooth_f2.step(f2_target, sr);
+            mouth_phase += mouth_rate / sr;
+            if mouth_phase >= 1.0 {
+                mouth_phase -= 1.0;
+            }
+            let (tx, ty) = mouth_shape.point(mouth_phase);
+            let dx = tx * mouth_depth * mouth_excursion_f2;
+            let dy = ty * mouth_depth * mouth_excursion_f1;
+
+            let f1_c = self.smooth_f1.step(f1_target, sr);
+            let f2_c = self.smooth_f2.step(f2_target, sr);
             let f3 = self.smooth_f3.step(f3_target, sr);
+            let f1 = (f1_c + dy).clamp(80.0, 1500.0);
+            let f2 = (f2_c + dx).clamp(200.0, 3500.0);
             let vox = self.smooth_vox.step(vox_target, sr).clamp(0.0, 1.0);
             let bright = self.smooth_bright.step(bright_target, sr).max(0.0);
             let output_db = self.smooth_output.step(output_target, sr);
@@ -393,6 +468,9 @@ impl<'a> PluginAudioProcessor<'a> {
             out_l[i] = mix_l * voice_scale * out_lin;
             out_r[i] = mix_r * voice_scale * out_lin;
         }
+        // Write the advanced phase back so the GUI can read where the
+        // cursor should sit right now.
+        self.shared.mouth_phase.store(mouth_phase, Ordering::Relaxed);
     }
 
     fn count_active(&self) -> u32 {
@@ -434,6 +512,22 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush any GUI-driven param changes into the host's output queue
+        // FIRST so REAPER sees them at the start of this block and records
+        // them into the automation lane.
+        for (i, flag) in self.shared.dirty_params.iter().enumerate() {
+            if flag.swap(false, Ordering::AcqRel) {
+                let value = self.shared.params[i].load(Ordering::Relaxed) as f64;
+                let ev = ParamValueEvent::new(
+                    0,
+                    ClapId::new(i as u32),
+                    Pckn::new(0u16, 0u16, 0u16, 0u32),
+                    value,
+                    Cookie::empty(),
+                );
+                let _ = events.output.try_push(&ev);
+            }
+        }
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         for mut port_pair in &mut audio {

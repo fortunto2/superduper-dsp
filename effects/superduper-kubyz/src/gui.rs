@@ -6,9 +6,24 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::{presets, N_HARMONICS};
 use crate::{
-    apply_preset, PARAMS, P_ATTACK, P_BRIGHT, P_DECAY, P_F1, P_F2, P_F3, P_OUTPUT, P_RELEASE,
-    P_SUSTAIN, P_TONGUE_ST, P_VEL_SHIFT, P_VOX_MIX, SharedParams,
+    apply_preset, write_param, PARAMS, P_ATTACK, P_BRIGHT, P_DECAY, P_F1, P_F2, P_F3,
+    P_MOUTH_DEPTH, P_MOUTH_RATE, P_MOUTH_SHAPE, P_OUTPUT, P_RELEASE, P_SUSTAIN, P_TONGUE_ST,
+    P_VEL_SHIFT, P_VOX_MIX, SharedParams,
 };
+use crate::trajectory::MouthShape;
+
+/// Wraps `core_gui::param_row` so any change the user makes also raises
+/// the param's dirty bit — the audio thread then emits a ParamValueEvent
+/// to the host so REAPER's automation lane captures the move.
+fn dirty_param_row(ui: &mut egui::Ui, shared: &SharedParams, idx: usize) {
+    let atom = &shared.params[idx];
+    let before = atom.load(Ordering::Relaxed);
+    core_gui::param_row(ui, atom, &PARAMS[idx]);
+    let after = atom.load(Ordering::Relaxed);
+    if (after - before).abs() > 1e-9 {
+        shared.dirty_params[idx].store(true, Ordering::Relaxed);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // IPA vowel reference points (Peterson-Barney 1952, male average).
@@ -208,8 +223,8 @@ fn draw_vowel_pad(ui: &mut egui::Ui, shared: &SharedParams, rect: egui::Rect) {
     if let Some(p) = response.interact_pointer_pos() {
         if response.dragged() || response.clicked() {
             let (f1, f2) = from_screen(p);
-            shared.params[P_F1].store(f1, Ordering::Relaxed);
-            shared.params[P_F2].store(f2, Ordering::Relaxed);
+            write_param(shared, P_F1, f1);
+            write_param(shared, P_F2, f2);
             // Inverse-distance weighted F3 — closer to vowel X = more
             // influence of vowel X's F3.
             let mut acc = 0.0_f32;
@@ -221,17 +236,48 @@ fn draw_vowel_pad(ui: &mut egui::Ui, shared: &SharedParams, rect: egui::Rect) {
                 w_sum += w;
             }
             let f3 = acc / w_sum.max(1e-6);
-            shared.params[P_F3].store(f3, Ordering::Relaxed);
+            write_param(shared, P_F3, f3);
         }
     }
 
-    // Cursor — bright green dot at the current F1/F2 read straight from
-    // the atomics (lets external automation move it too).
+    // Centre dot (= the F1/F2 params). Drag-anchor for manual mode and
+    // the origin of the trajectory.
     let cur_f1 = shared.params[P_F1].load(Ordering::Relaxed);
     let cur_f2 = shared.params[P_F2].load(Ordering::Relaxed);
     let cur_p = to_screen(cur_f1, cur_f2);
-    painter.circle_filled(cur_p, 7.0, core_gui::GREEN_BRIGHT);
-    painter.circle_stroke(cur_p, 9.0, egui::Stroke::new(1.0, core_gui::GREEN));
+    painter.circle_filled(cur_p, 6.0, core_gui::GREEN_DIM);
+    painter.circle_stroke(cur_p, 7.0, egui::Stroke::new(1.0, core_gui::GREEN));
+
+    // Trajectory overlay — only visible when MouthDepth > 0. Sample the
+    // shape at 64 points and draw the closed curve, then put a bright
+    // dot at the current animated phase so the user *sees* the rate.
+    let depth = shared.params[P_MOUTH_DEPTH]
+        .load(Ordering::Relaxed)
+        .clamp(0.0, 1.0);
+    if depth > 0.001 {
+        let shape = MouthShape::from_index(
+            shared.params[P_MOUTH_SHAPE].load(Ordering::Relaxed) as u32,
+        );
+        // The excursion constants must match the audio thread (see lib.rs).
+        let ex_f1 = 220.0_f32 * depth;
+        let ex_f2 = 600.0_f32 * depth;
+        let mut prev: Option<egui::Pos2> = None;
+        for i in 0..=64 {
+            let t = i as f32 / 64.0;
+            let (tx, ty) = shape.point(t);
+            let p = to_screen(cur_f1 + ty * ex_f1, cur_f2 + tx * ex_f2);
+            if let Some(prev_p) = prev {
+                painter.line_segment([prev_p, p], egui::Stroke::new(1.0, core_gui::GREEN));
+            }
+            prev = Some(p);
+        }
+        // Live cursor at the current phase.
+        let phase = shared.mouth_phase.load(Ordering::Relaxed);
+        let (tx, ty) = shape.point(phase);
+        let live = to_screen(cur_f1 + ty * ex_f1, cur_f2 + tx * ex_f2);
+        painter.circle_filled(live, 7.0, core_gui::GREEN_BRIGHT);
+        painter.circle_stroke(live, 9.0, egui::Stroke::new(1.0, core_gui::GREEN));
+    }
 
     // Axis labels.
     painter.text(
@@ -297,24 +343,35 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 draw_vowel_pad(ui, &state.shared, rect);
             });
             core_gui::section(ui, "Formant (fine)", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_F1], &PARAMS[P_F1]);
-                core_gui::param_row(ui, &state.shared.params[P_F2], &PARAMS[P_F2]);
-                core_gui::param_row(ui, &state.shared.params[P_F3], &PARAMS[P_F3]);
-                core_gui::param_row(ui, &state.shared.params[P_VOX_MIX], &PARAMS[P_VOX_MIX]);
-                core_gui::param_row(ui, &state.shared.params[P_VEL_SHIFT], &PARAMS[P_VEL_SHIFT]);
+                dirty_param_row(ui, &state.shared, P_F1);
+                dirty_param_row(ui, &state.shared, P_F2);
+                dirty_param_row(ui, &state.shared, P_F3);
+                dirty_param_row(ui, &state.shared, P_VOX_MIX);
+                dirty_param_row(ui, &state.shared, P_VEL_SHIFT);
+            });
+            core_gui::section(ui, "Mouth Trajectory", |ui| {
+                let shape_idx = state.shared.params[P_MOUTH_SHAPE]
+                    .load(Ordering::Relaxed) as u32;
+                ui.weak(format!(
+                    "shape: {}  ·  depth=0 = manual / pad drag only  ·  ModWheel → Depth",
+                    MouthShape::from_index(shape_idx).label()
+                ));
+                dirty_param_row(ui, &state.shared, P_MOUTH_SHAPE);
+                dirty_param_row(ui, &state.shared, P_MOUTH_RATE);
+                dirty_param_row(ui, &state.shared, P_MOUTH_DEPTH);
             });
             core_gui::section(ui, "Timbre", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_BRIGHT], &PARAMS[P_BRIGHT]);
-                core_gui::param_row(ui, &state.shared.params[P_TONGUE_ST], &PARAMS[P_TONGUE_ST]);
+                dirty_param_row(ui, &state.shared, P_BRIGHT);
+                dirty_param_row(ui, &state.shared, P_TONGUE_ST);
             });
             core_gui::section(ui, "Envelope", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK]);
-                core_gui::param_row(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY]);
-                core_gui::param_row(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN]);
-                core_gui::param_row(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE]);
+                dirty_param_row(ui, &state.shared, P_ATTACK);
+                dirty_param_row(ui, &state.shared, P_DECAY);
+                dirty_param_row(ui, &state.shared, P_SUSTAIN);
+                dirty_param_row(ui, &state.shared, P_RELEASE);
             });
             core_gui::section(ui, "Output", |ui| {
-                core_gui::param_row(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT]);
+                dirty_param_row(ui, &state.shared, P_OUTPUT);
             });
         });
     });

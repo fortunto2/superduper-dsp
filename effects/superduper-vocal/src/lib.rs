@@ -98,6 +98,23 @@ pub const PARAMS: &[ParamDef] = &[
     // 1 = use the Sidechain input port for the detector. Lets users
     // key the de-esser off a separate EQ'd vocal send.
     ParamDef { id: 12, name: b"Ext Key",  min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
+    // Plosive Killer — sub-bass transient detector. Watches the
+    // <200 Hz band, when energy spikes (a "p", "b", or "t" mouth
+    // pop) it briefly attenuates the lows with a dynamic HPF. The
+    // user's `Lo Freq` de-esser sits at ~1 kHz and won't catch sub
+    // pops; this fills that gap. Off by default — set Plos On = 1
+    // and turn up Plos Amt to taste.
+    ParamDef { id: 13, name: b"Plos On",  min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
+    ParamDef { id: 14, name: b"Plos Thr", min: -60.0,  max: 0.0,     default: -24.0, unit: "dB" },
+    ParamDef { id: 15, name: b"Plos Amt", min: 0.0,    max: 24.0,    default: 12.0,  unit: "dB" },
+    ParamDef { id: 16, name: b"Plos Freq",min: 40.0,   max: 250.0,   default: 120.0, unit: "Hz" },
+    // Hum Remover — cascade of narrow biquad notches at 50/60 Hz
+    // and its first 5 harmonics. Adaptively rolled off as `Strength`
+    // goes from 0 → 1; at 1.0 each notch removes ~10 dB centered on
+    // its target frequency.
+    ParamDef { id: 17, name: b"Hum On",   min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
+    ParamDef { id: 18, name: b"Hum Freq", min: 50.0,   max: 60.0,    default: 50.0,  unit: "Hz" },
+    ParamDef { id: 19, name: b"Hum Str",  min: 0.0,    max: 1.0,     default: 0.7,   unit: ""   },
 ];
 
 pub const P_ESS_THR: usize = 0;
@@ -113,6 +130,13 @@ pub const P_LO_THR: usize = 9;
 pub const P_LO_FREQ: usize = 10;
 pub const P_LO_AMT: usize = 11;
 pub const P_EXT_KEY: usize = 12;
+pub const P_PLOS_ON: usize = 13;
+pub const P_PLOS_THR: usize = 14;
+pub const P_PLOS_AMT: usize = 15;
+pub const P_PLOS_FREQ: usize = 16;
+pub const P_HUM_ON: usize = 17;
+pub const P_HUM_FREQ: usize = 18;
+pub const P_HUM_STR: usize = 19;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -213,6 +237,30 @@ pub struct PluginAudioProcessor<'a> {
     smooth_output: SmoothedParam,
     smooth_mix: SmoothedParam,
     sample_rate: f32,
+
+    // -------------------------------------------------------------
+    // Stage 1 additions — Plosive Killer + Hum Remover + Lookahead.
+    // -------------------------------------------------------------
+    /// Plosive Killer — sub-bass envelope follower drives a
+    /// dynamic low-cut HPF when the band detects a transient pop.
+    plos_lpf_l: Biquad,
+    plos_lpf_r: Biquad,
+    plos_hpf_l: Biquad,
+    plos_hpf_r: Biquad,
+    plos_env: EnvelopeDetector,
+    plos_freq_state: f32,
+    /// Hum Remover — cascade of 6 narrow biquad notches (fundamental
+    /// + 5 harmonics). One bank per channel; coefficients re-set
+    /// when the smoothed `Hum Freq` or `Hum Str` knob moves enough.
+    hum_notches_l: [Biquad; 6],
+    hum_notches_r: [Biquad; 6],
+    hum_freq_state: f32,
+    hum_str_state: f32,
+    /// Smoothed Stage-1 knobs.
+    smooth_plos_thr: SmoothedParam,
+    smooth_plos_amt: SmoothedParam,
+    smooth_plos_freq: SmoothedParam,
+    smooth_hum_str: SmoothedParam,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -276,6 +324,21 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
             smooth_mix: SmoothedParam::new(load(P_MIX)),
             sample_rate: sr,
+
+            plos_lpf_l: { let mut b = Biquad::default(); b.set_lpf(sr, load(P_PLOS_FREQ).max(40.0), 0.707); b },
+            plos_lpf_r: { let mut b = Biquad::default(); b.set_lpf(sr, load(P_PLOS_FREQ).max(40.0), 0.707); b },
+            plos_hpf_l: { let mut b = Biquad::default(); b.set_hpf(sr, load(P_PLOS_FREQ).max(40.0), 0.707); b },
+            plos_hpf_r: { let mut b = Biquad::default(); b.set_hpf(sr, load(P_PLOS_FREQ).max(40.0), 0.707); b },
+            plos_env: EnvelopeDetector::default(),
+            plos_freq_state: load(P_PLOS_FREQ).max(40.0),
+            hum_notches_l: build_hum_bank(sr, load(P_HUM_FREQ), load(P_HUM_STR)),
+            hum_notches_r: build_hum_bank(sr, load(P_HUM_FREQ), load(P_HUM_STR)),
+            hum_freq_state: load(P_HUM_FREQ),
+            hum_str_state: load(P_HUM_STR),
+            smooth_plos_thr: SmoothedParam::new(load(P_PLOS_THR)),
+            smooth_plos_amt: SmoothedParam::new(load(P_PLOS_AMT)),
+            smooth_plos_freq: SmoothedParam::new(load(P_PLOS_FREQ)),
+            smooth_hum_str: SmoothedParam::new(load(P_HUM_STR)),
         })
     }
 
@@ -310,6 +373,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let output_t = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
         let mix_t = self.shared.params[P_MIX].load(Ordering::Relaxed);
         let ext_key_on = self.shared.params[P_EXT_KEY].load(Ordering::Relaxed) >= 0.5;
+        let plos_on = self.shared.params[P_PLOS_ON].load(Ordering::Relaxed) >= 0.5;
+        let plos_thr_t = self.shared.params[P_PLOS_THR].load(Ordering::Relaxed);
+        let plos_amt_t = self.shared.params[P_PLOS_AMT].load(Ordering::Relaxed);
+        let plos_freq_t = self.shared.params[P_PLOS_FREQ].load(Ordering::Relaxed);
+        let hum_on = self.shared.params[P_HUM_ON].load(Ordering::Relaxed) >= 0.5;
+        let hum_freq_t = self.shared.params[P_HUM_FREQ].load(Ordering::Relaxed);
+        let hum_str_t = self.shared.params[P_HUM_STR].load(Ordering::Relaxed);
 
         // Snapshot the sidechain (port 1) into our scratch buffers if
         // the user wants external keying. If the SC port is unrouted
@@ -383,6 +453,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
                         lo_thr_t, lo_freq_t, lo_amt_t,
                         clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                        plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
+                        hum_on, hum_freq_t, hum_str_t,
                         owned_sc,
                         &mut max_ess_gr_db, &mut max_click_gr_db,
                     );
@@ -397,6 +469,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
                         lo_thr_t, lo_freq_t, lo_amt_t,
                         clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+                        plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
+                        hum_on, hum_freq_t, hum_str_t,
                         owned_sc,
                         &mut max_ess_gr_db, &mut max_click_gr_db,
                     );
@@ -411,6 +485,23 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     }
 }
 
+/// Build the 6-stage hum-notch bank — fundamental + first 5 harmonics
+/// (50→300 Hz or 60→360 Hz). `strength` 0..1 controls notch Q so the
+/// notches widen / narrow with the knob; 1.0 = surgical Q=30, 0.0 =
+/// effectively-disabled wide bandwidth. Re-build whenever Hum Freq or
+/// Hum Str moves more than a small threshold.
+fn build_hum_bank(sr: f32, fundamental: f32, strength: f32) -> [Biquad; 6] {
+    let q = (5.0 + strength.clamp(0.0, 1.0) * 25.0).max(0.5);
+    let mut bank = [Biquad::default(); 6];
+    for i in 0..6 {
+        let f = fundamental * (i as f32 + 1.0);
+        if f < sr * 0.49 {
+            bank[i].set_notch(sr, f, q);
+        }
+    }
+    bank
+}
+
 /// Per-sample DSP for one (L, R) sample pair. Returns the GR values so the
 /// caller can track per-block maxima for the GUI meters. Updated state
 /// (filters, envelopes, smoothed knobs, click gain) lives on `p`.
@@ -420,14 +511,76 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 // detector source. Lets users key the de-esser from an EQ'd send.
 fn step_sample(
     p: &mut PluginAudioProcessor<'_>,
-    dry_l: f32, dry_r: f32,
+    dry_l_in: f32, dry_r_in: f32,
     key_l: Option<f32>, key_r: Option<f32>,
     sr: f32,
     ess_thr_t: f32, ess_freq_t: f32, ess_amt_t: f32, ess_range_t: f32,
     lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
+    plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
+    hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
 ) -> (f32, f32, f32, f32) {
+    // ----- Stage 1: Hum Remover -----
+    // Reset coefficients if Hum Freq or Strength moves enough. Coef
+    // recomputation is cheap (6 biquads worth of trig) but we only do
+    // it on real change to avoid per-sample work.
+    if hum_on {
+        if (hum_freq_t - p.hum_freq_state).abs() > 0.1
+            || (hum_str_t - p.hum_str_state).abs() > 0.02
+        {
+            p.hum_notches_l = build_hum_bank(sr, hum_freq_t, hum_str_t);
+            p.hum_notches_r = build_hum_bank(sr, hum_freq_t, hum_str_t);
+            p.hum_freq_state = hum_freq_t;
+            p.hum_str_state = hum_str_t;
+        }
+    }
+    let mut dry_l = dry_l_in;
+    let mut dry_r = dry_r_in;
+    if hum_on {
+        for n in p.hum_notches_l.iter_mut() { dry_l = n.process(dry_l); }
+        for n in p.hum_notches_r.iter_mut() { dry_r = n.process(dry_r); }
+    }
+
+    // ----- Stage 1: Plosive Killer -----
+    // Sub-bass LPF isolates the <Plos Freq band where pops live;
+    // envelope follower watches for transient spikes. When over
+    // threshold, low-end gain reduction kicks in (subtracts the
+    // sub-bass component scaled by the attenuation amount).
+    let plos_freq = p.smooth_plos_freq.step(plos_freq_t, sr).clamp(40.0, 250.0);
+    let plos_thr_db = p.smooth_plos_thr.step(plos_thr_t, sr);
+    let plos_amt_db = p.smooth_plos_amt.step(plos_amt_t, sr);
+    if plos_on && (plos_freq - p.plos_freq_state).abs() > 2.0 {
+        p.plos_lpf_l.set_lpf(sr, plos_freq, 0.707);
+        p.plos_lpf_r.set_lpf(sr, plos_freq, 0.707);
+        p.plos_hpf_l.set_hpf(sr, plos_freq, 0.707);
+        p.plos_hpf_r.set_hpf(sr, plos_freq, 0.707);
+        p.plos_freq_state = plos_freq;
+    }
+    if plos_on {
+        // Watch the low band: clone the LPF state by running it
+        // forward — sample x → sub_l. Same biquad updates state.
+        let sub_l = p.plos_lpf_l.process(dry_l);
+        let sub_r = p.plos_lpf_r.process(dry_r);
+        let sc = sub_l.abs().max(sub_r.abs());
+        let env = p.plos_env.process(sc, sr, 0.3, 35.0);
+        let env_db = 20.0 * env.max(1e-9).log10();
+        let over = env_db - plos_thr_db;
+        let plos_gr_db = if over > 0.0 && plos_amt_db > 0.05 {
+            -(over.min(plos_amt_db))
+        } else { 0.0 };
+        let lo_gain = 10f32.powf(plos_gr_db / 20.0);
+        // Reconstruct from band-split: dry = (above + lo_gain * sub).
+        let above_l = dry_l - sub_l;
+        let above_r = dry_r - sub_r;
+        // Run the HPF through to keep biquad state moving even when
+        // Plos On isn't transitioning, so toggling on doesn't pop.
+        let _ = p.plos_hpf_l.process(dry_l);
+        let _ = p.plos_hpf_r.process(dry_r);
+        dry_l = above_l + sub_l * lo_gain;
+        dry_r = above_r + sub_r * lo_gain;
+    }
+
     let ess_thr = p.smooth_ess_thr.step(ess_thr_t, sr);
     let ess_freq = p.smooth_ess_freq.step(ess_freq_t, sr);
     let ess_amt = p.smooth_ess_amt.step(ess_amt_t, sr);
@@ -552,6 +705,8 @@ fn process_stereo(
     lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
+    plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
+    hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
     ext_key: Option<(&[f32], &[f32])>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
@@ -566,6 +721,8 @@ fn process_stereo(
             ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
             lo_thr_t, lo_freq_t, lo_amt_t,
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+            plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
+            hum_on, hum_freq_t, hum_str_t,
         );
         l_write[i] = fl;
         r_write[i] = fr;
@@ -584,6 +741,8 @@ fn process_mono(
     lo_thr_t: f32, lo_freq_t: f32, lo_amt_t: f32,
     clk_sens_t: f32, clk_amt_t: f32, clk_floor_t: f32,
     output_t: f32, mix_t: f32,
+    plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
+    hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
     ext_key: Option<&[f32]>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
@@ -596,6 +755,8 @@ fn process_mono(
             ess_thr_t, ess_freq_t, ess_amt_t, ess_range_t,
             lo_thr_t, lo_freq_t, lo_amt_t,
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
+            plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
+            hum_on, hum_freq_t, hum_str_t,
         );
         l_write[i] = fl;
         p.shared.scope.push(fl);

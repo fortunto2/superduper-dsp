@@ -7,7 +7,8 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::PRESETS;
 use crate::{
     PARAMS, P_CLK_AMT, P_CLK_FLOOR, P_CLK_SENS, P_ESS_AMT, P_ESS_FREQ, P_ESS_RANGE, P_ESS_THR,
-    P_EXT_KEY, P_LO_AMT, P_LO_FREQ, P_LO_THR, P_MIX, P_OUTPUT, SharedParams,
+    P_EXT_KEY, P_HUM_FREQ, P_HUM_ON, P_HUM_STR, P_LO_AMT, P_LO_FREQ, P_LO_THR, P_MIX, P_OUTPUT,
+    P_PLOS_AMT, P_PLOS_FREQ, P_PLOS_ON, P_PLOS_THR, SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 560;
@@ -129,6 +130,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
             core_gui::section(ui, "Sidechain", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_EXT_KEY], &PARAMS[P_EXT_KEY], &state.shared.dirty_params[P_EXT_KEY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_EXT_KEY);
+            });
+            core_gui::section(ui, "Plosive Killer (sub <250 Hz)", |ui| {
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PLOS_ON], &PARAMS[P_PLOS_ON], &state.shared.dirty_params[P_PLOS_ON], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PLOS_ON);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PLOS_THR], &PARAMS[P_PLOS_THR], &state.shared.dirty_params[P_PLOS_THR], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PLOS_THR);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PLOS_AMT], &PARAMS[P_PLOS_AMT], &state.shared.dirty_params[P_PLOS_AMT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PLOS_AMT);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PLOS_FREQ], &PARAMS[P_PLOS_FREQ], &state.shared.dirty_params[P_PLOS_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PLOS_FREQ);
+            });
+            core_gui::section(ui, "Hum Remover (50/60 Hz + 5 harmonics)", |ui| {
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_HUM_ON], &PARAMS[P_HUM_ON], &state.shared.dirty_params[P_HUM_ON], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HUM_ON);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_HUM_FREQ], &PARAMS[P_HUM_FREQ], &state.shared.dirty_params[P_HUM_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HUM_FREQ);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_HUM_STR], &PARAMS[P_HUM_STR], &state.shared.dirty_params[P_HUM_STR], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HUM_STR);
             });
             core_gui::section(ui, "De-Clicker", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_CLK_SENS], &PARAMS[P_CLK_SENS], &state.shared.dirty_params[P_CLK_SENS], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CLK_SENS);

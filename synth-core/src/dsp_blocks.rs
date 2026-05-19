@@ -549,6 +549,24 @@ impl Biquad {
         self.normalise(b0, b1, b2, a0, a1, a2);
     }
 
+    /// Configure as a notch filter (band-stop). `freq_hz` = centre,
+    /// `q` = sharpness (10..50 for surgical hum removal; 30 ≈ 2 Hz
+    /// wide at 50 Hz which leaves the rest of the band untouched).
+    pub fn set_notch(&mut self, sr: f32, freq_hz: f32, q: f32) {
+        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q.max(0.5));
+
+        let b0 = 1.0;
+        let b1 = -2.0 * cos_w0;
+        let b2 = 1.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+        self.normalise(b0, b1, b2, a0, a1, a2);
+    }
+
     fn normalise(&mut self, b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) {
         let inv = 1.0 / a0;
         self.b0 = b0 * inv;

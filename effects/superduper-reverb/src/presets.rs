@@ -8,30 +8,7 @@
 use crate::{P_DAMP, P_DECAY, P_DUCK_AMOUNT, P_DUCK_ATTACK, P_DUCK_RELEASE, P_MIX, P_MOD,
             P_PREDELAY, P_SIZE, P_WIDTH, PARAMS};
 
-pub struct Preset {
-    pub name: &'static str,
-    pub values: [f32; PARAMS.len()],
-}
-
-impl Preset {
-    /// Build a preset from a slice of (param_index, value) pairs. Unspecified
-    /// params fall back to the table default — way less typo-prone than
-    /// hand-writing a full [f32; 10] array per preset.
-    const fn from_overrides(name: &'static str, overrides: &[(usize, f32)]) -> Self {
-        let mut values = [0.0_f32; PARAMS.len()];
-        let mut i = 0;
-        while i < PARAMS.len() {
-            values[i] = PARAMS[i].default as f32;
-            i += 1;
-        }
-        i = 0;
-        while i < overrides.len() {
-            values[overrides[i].0] = overrides[i].1;
-            i += 1;
-        }
-        Self { name, values }
-    }
-}
+superduper_dsp_sdk::define_preset!(PARAMS);
 
 /// Catalog of factory presets shown in the GUI dropdown.
 pub static PRESETS: &[Preset] = &[

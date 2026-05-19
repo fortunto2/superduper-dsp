@@ -3,27 +3,7 @@ use crate::{
     P_OUTPUT, PARAMS,
 };
 
-pub struct Preset {
-    pub name: &'static str,
-    pub values: [f32; PARAMS.len()],
-}
-
-impl Preset {
-    const fn from_overrides(name: &'static str, overrides: &[(usize, f32)]) -> Self {
-        let mut values = [0.0_f32; PARAMS.len()];
-        let mut i = 0;
-        while i < PARAMS.len() {
-            values[i] = PARAMS[i].default as f32;
-            i += 1;
-        }
-        i = 0;
-        while i < overrides.len() {
-            values[overrides[i].0] = overrides[i].1;
-            i += 1;
-        }
-        Self { name, values }
-    }
-}
+superduper_dsp_sdk::define_preset!(PARAMS);
 
 pub static PRESETS: &[Preset] = &[
     Preset::from_overrides("Init", &[]),

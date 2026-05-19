@@ -47,6 +47,66 @@ pub mod build_meta;
 pub mod clap_helpers;
 pub mod log;
 
+/// Stamp out the standard `Preset` struct + `from_overrides` const
+/// constructor used by ~12 effect plugins. Before this macro every
+/// such plugin had its own copy of the same ~25 lines:
+///
+/// ```ignore
+/// pub struct Preset { pub name: &'static str, pub values: [f32; N] }
+/// impl Preset { const fn from_overrides(...) -> Self { ... } }
+/// ```
+///
+/// Plugins with a custom preset shape (Kubyz uses `KubyzPreset` with
+/// harmonic + formant fields, Wave's preset carries two `WaveFormula`
+/// function pointers) keep their hand-written code and don't invoke
+/// this macro.
+///
+/// Usage at the top of each plugin's `presets.rs`:
+///
+/// ```ignore
+/// use crate::PARAMS;
+/// superduper_dsp_sdk::define_preset!(PARAMS);
+///
+/// pub static PRESETS: &[Preset] = &[
+///     Preset::from_overrides("Init", &[]),
+///     Preset::from_overrides("Crunch", &[(P_DRIVE, 0.8), (P_TONE, 0.3)]),
+/// ];
+/// ```
+#[macro_export]
+macro_rules! define_preset {
+    ($params:expr) => {
+        /// Sparse preset = a name + a full [f32; PARAMS.len()] value
+        /// vector. Built from a list of `(param_index, value)` pairs;
+        /// unspecified slots fall back to the table default. Typo-proof
+        /// vs hand-writing a full array per preset.
+        #[derive(Clone, Copy)]
+        pub struct Preset {
+            pub name: &'static str,
+            pub values: [f32; $params.len()],
+        }
+        impl Preset {
+            #[allow(dead_code)]
+            pub const fn from_overrides(
+                name: &'static str,
+                overrides: &[(usize, f32)],
+            ) -> Self {
+                let mut values = [0.0_f32; $params.len()];
+                let mut i = 0;
+                while i < $params.len() {
+                    values[i] = $params[i].default as f32;
+                    i += 1;
+                }
+                i = 0;
+                while i < overrides.len() {
+                    values[overrides[i].0] = overrides[i].1;
+                    i += 1;
+                }
+                Self { name, values }
+            }
+        }
+    };
+}
+
 /// Stamp out the standard `PluginStateImpl` block for a plugin whose
 /// state is exactly "all CLAP params + the bypass flag" — i.e. it
 /// doesn't carry any custom non-param data (no harmonic curves, no

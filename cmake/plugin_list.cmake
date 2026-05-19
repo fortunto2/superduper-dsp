@@ -31,4 +31,8 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-pad|SuperDuperPad|co.superduperai.pad|co.superduperai.wrappers.pad|aumu|sdPd"
     "superduper-wave|SuperDuperWave|co.superduperai.wave|co.superduperai.wrappers.wave|aumu|sdWv"
     "superduper-kubyz|SuperDuperKubyz|co.superduperai.kubyz|co.superduperai.wrappers.kubyz|aumu|sdKb"
+    "superduper-chorus|SuperDuperChorus|co.superduperai.chorus|co.superduperai.wrappers.chorus|aufx|sdCh"
+    "superduper-drum|SuperDuperDrum|co.superduperai.drum|co.superduperai.wrappers.drum|aumu|sdDr"
+    "superduper-sampler|SuperDuperSampler|co.superduperai.sampler|co.superduperai.wrappers.sampler|aumu|sdSl"
+    "superduper-looper|SuperDuperLooper|co.superduperai.looper|co.superduperai.wrappers.looper|aufx|sdLp"
 )

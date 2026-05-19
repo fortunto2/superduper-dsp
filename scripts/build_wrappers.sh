@@ -58,10 +58,19 @@ if [ -d "$PATCH_DIR" ]; then
 fi
 
 echo "==> configuring CMake in ${BUILD_DIR}"
+# `-Wno-unknown-warning-option` is needed because the clap-wrapper
+# patches add `-Wno-error=perf-constraint-implies-noexcept` and
+# `-Wno-error=gnu-statement-expression-from-macro-expansion` which
+# only exist on Apple Clang 20+ (macOS 26 SDK). On the GitHub
+# `macos-14` runner the bundled clang is older and rejects unknown
+# flags by default — this turns that into a silent warning so the
+# patch works the same on both old and new Apple Clang.
 cmake -B "$BUILD_DIR" -S "$ROOT" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON \
-    -DSDSP_WRAPPERS_INSTALL_LOCAL="$INSTALL_LOCAL"
+    -DSDSP_WRAPPERS_INSTALL_LOCAL="$INSTALL_LOCAL" \
+    -DCMAKE_CXX_FLAGS="-Wno-unknown-warning-option" \
+    -DCMAKE_C_FLAGS="-Wno-unknown-warning-option"
 
 echo "==> building wrappers"
 cmake --build "$BUILD_DIR" --config Release --parallel

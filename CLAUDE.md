@@ -806,6 +806,32 @@ CI release.yml runs both steps on macos-14 and uploads two zips per
 plugin (CLAP + VST3) plus combined zips. Windows currently ships CLAP
 only — VST3 on Windows is plumbing-ready but not in CI scope yet.
 
+## Free sample sources for SuperDuper Sampler / Drum
+
+The Sampler scans `~/Music/SuperDuper Samples/` and `~/Music/Favorite 808s/`
+on activate. Good free WAV libraries to seed those folders with —
+all royalty-free, all hosted at stable URLs:
+
+- **Goldbaby Free Stuff** — <https://www.goldbaby.co.nz/freestuff.html>
+  Curated single-hit packs (kicks, snares, claps, vinyl noise). Pro
+  quality from a long-running boutique sample shop.
+- **Hyperreal Music Machines (Roland TR-808)** —
+  <http://machines.hyperreal.org/manufacturers/Roland/TR-808/>
+  Classic 808 individual-drum WAVs straight from the original machine.
+- **Hyperreal Music Machines (Roland TR-909)** —
+  <http://machines.hyperreal.org/manufacturers/Roland/TR-909/>
+  909 kits — kicks, snares, hi-hats, rides, claps.
+- **Hyperreal Music Machines (Roland index)** —
+  <http://machines.hyperreal.org/manufacturers/Roland/>
+  Full Roland catalogue index — TR-606, TR-707, CR-78, SH-101 etc.
+  Worth a deep dive for vintage drum/synth one-shots.
+
+Recommended bootstrap workflow: download a zip, unpack into a named
+subfolder of `~/Music/SuperDuper Samples/` (e.g.
+`~/Music/SuperDuper Samples/TR-808/`). Sampler's recursive scan
+(max depth 4) picks them up automatically and the GUI dropdown
+shows them by file stem.
+
 ## Distribution model — Stage C (decided 2026-05)
 
 Every effect is its own `.clap` bundle with a unique CLAP id. Users get

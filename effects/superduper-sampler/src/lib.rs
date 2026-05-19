@@ -160,6 +160,11 @@ pub struct SharedParamsInner {
     /// Plugin sample rate, captured at activate() so the GUI can show
     /// it in the status line.
     pub host_sr: AtomicF32,
+    /// GUI-driven audition trigger. Stores a MIDI key (0..127) when
+    /// the user clicks the waveform or Play button; the audio thread
+    /// reads + clears it at the top of the next process() block and
+    /// fires a NoteOn at that key. -1 = no pending trigger.
+    pub audition_request: std::sync::atomic::AtomicI32,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -180,6 +185,7 @@ impl PluginShared {
                 sample_roots: Mutex::new(bank::load_folders_config()),
                 current_index: std::sync::atomic::AtomicI32::new(-1),
                 host_sr: AtomicF32::new(48000.0),
+                audition_request: std::sync::atomic::AtomicI32::new(-1),
             }),
         }
     }
@@ -289,6 +295,13 @@ pub struct PluginAudioProcessor<'a> {
     voices: [SampleVoice; VOICE_COUNT],
     next_age: u64,
     sample_rate: f32,
+    /// Audition state. When the user clicks Play / the waveform, we
+    /// trigger a NoteOn at the Root key and remember it here so we
+    /// can deliver a matching NoteOff `audition_release_in` blocks
+    /// later. Without that the voice's Sustain holds forever (at the
+    /// default Sustain = 1.0) and the user has no way to stop it.
+    audition_key: u8,
+    audition_release_in: u32,
 }
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
@@ -309,6 +322,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             voices: std::array::from_fn(|_| SampleVoice::default()),
             next_age: 0,
             sample_rate: sr,
+            audition_key: 0,
+            audition_release_in: 0,
         })
     }
 
@@ -326,6 +341,27 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
+
+        // GUI audition — fire one NoteOn for whichever key the GUI
+        // requested (waveform click or Play button), then schedule a
+        // matching NoteOff a few blocks later so the voice doesn't
+        // hold forever on Sustain = 1.0.
+        let req = self.shared.audition_request.swap(-1, Ordering::AcqRel);
+        if req >= 0 && req < 128 {
+            self.trigger(req as u8, 0.85, -1);
+            self.audition_key = req as u8;
+            // ~80 ms of attack/decay before we hand off to Release,
+            // long enough for the user to perceive the transient body
+            // of a percussion sample and for sustained samples to
+            // start fading cleanly via the ADSR release tail.
+            self.audition_release_in = 4;
+        }
+        if self.audition_release_in > 0 {
+            self.audition_release_in -= 1;
+            if self.audition_release_in == 0 {
+                self.release(self.audition_key);
+            }
+        }
 
         // Walk events — NoteOn / NoteOff drive voice triggers.
         for batch in events.input.batch() {

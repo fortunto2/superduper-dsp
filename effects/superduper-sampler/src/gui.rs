@@ -47,12 +47,24 @@ struct GuiState {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Marker { TrimStart, TrimEnd, LoopStart, LoopEnd }
 
-/// Read arrow-key press out of the egui input queue. Skips when a
-/// text input has focus so the user can still type in the "Add
-/// folder" field without skipping samples.
+/// Read arrow-key press out of the egui input queue. Skips only when
+/// a TEXT widget actually wants the key (e.g. the Add-folder field
+/// is being edited) — sliders/combos having focus must NOT block the
+/// arrows, otherwise picking one sample disables further keyboard
+/// browsing. `wants_keyboard_input` is exactly the right signal for
+/// "egui is in text-edit mode".
 fn ctx_input_pressed_arrow(ctx: &egui::Context, key: egui::Key) -> bool {
-    if ctx.memory(|m| m.focused().is_some()) { return false; }
+    if ctx.wants_keyboard_input() { return false; }
     ctx.input(|i| i.key_pressed(key))
+}
+
+/// Request an audition trigger at the current Root key. Reads Root
+/// out of the param atomics so the auditioned pitch matches what
+/// the host will play when a MIDI NoteOn comes in at Root.
+fn audition_at_root(shared: &SharedParams) {
+    let root = shared.params[crate::P_ROOT].load(Ordering::Relaxed).round() as i32;
+    let key = root.clamp(0, 127);
+    shared.audition_request.store(key, Ordering::Release);
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -111,6 +123,14 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             egui::Sense::click_and_drag(),
         );
         draw_waveform(ui, state, wave_rect, &wave_resp);
+        // A plain click on the waveform body — not on a marker drag —
+        // auditions the sample at the current Root key. `state.dragging`
+        // is set by handle_marker_drag() inside draw_waveform when a
+        // grab-handle is captured, so we use it to distinguish "click
+        // to play" from "click to grab a marker".
+        if wave_resp.clicked() && state.dragging.is_none() {
+            audition_at_root(&state.shared);
+        }
 
         ui.add_space(4.0);
         let (scope_rect, _) = ui.allocate_exact_size(
@@ -142,25 +162,59 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             if !packs.contains(p) { packs.push(p.clone()); }
         }
 
+        // Pack selector + Rescan + Reset on its own row so the Pack
+        // combo doesn't fight Sample for horizontal space.
         ui.horizontal(|ui| {
-            // ----- Pack selector -----
             ui.label(egui::RichText::new("Pack:").color(core_gui::GREEN_BRIGHT).monospace());
             let pack_text = state.pack_filter.clone().unwrap_or_else(|| "All".into());
+            let prev_filter = state.pack_filter.clone();
             egui::ComboBox::from_id_salt("sampler_pack_combo")
+                .width(220.0)
                 .selected_text(pack_text)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(state.pack_filter.is_none(), "All").clicked() {
-                        state.pack_filter = None;
-                    }
+                    ui.selectable_value(&mut state.pack_filter, None, "All");
                     for p in &packs {
-                        let active = state.pack_filter.as_deref() == Some(p.as_str());
-                        if ui.selectable_label(active, p).clicked() {
-                            state.pack_filter = Some(p.clone());
-                        }
+                        ui.selectable_value(&mut state.pack_filter, Some(p.clone()), p);
                     }
                 });
+            // Reflect the change to the user via the status line, so
+            // there's no ambiguity about whether the filter took.
+            if state.pack_filter != prev_filter {
+                state.status = match &state.pack_filter {
+                    None => "Pack filter: All".to_string(),
+                    Some(p) => format!("Pack filter: {}", p),
+                };
+            }
 
-            // ----- Sample selector (filtered by pack) -----
+            if ui.button("Rescan").clicked() {
+                let c = refresh_library(&state.shared);
+                state.pack_filter = None;
+                state.status = format!("Scanned: {} samples found", c);
+            }
+
+            // Push Reset to the right of this row.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Reset")
+                    .on_hover_text("Reset Root / Tune / Fine / Trim / Loop / Env / Output to defaults")
+                    .clicked()
+                {
+                    let reset_ids = [
+                        P_ROOT, P_TUNE, P_FINE, P_LOOP, P_LOOP_START, P_LOOP_END,
+                        P_ATTACK, P_DECAY, P_SUSTAIN, P_RELEASE, P_OUTPUT,
+                        P_TRIM_START, P_TRIM_END,
+                    ];
+                    for &pid in &reset_ids {
+                        state.shared.params[pid].store(PARAMS[pid].default as f32, Ordering::Relaxed);
+                        state.shared.dirty_params[pid].store(true, Ordering::Relaxed);
+                    }
+                    state.status = "Reset to default values".into();
+                }
+            });
+        });
+
+        // Sample selector — own row with prev/next/Play to its right.
+        // Combo gets the rest of the width via expand_to_include_x.
+        ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Sample:").color(core_gui::GREEN_BRIGHT).monospace());
             let selected_label = if current_idx >= 0 && (current_idx as usize) < entries.len() {
                 let e = &entries[current_idx as usize];
@@ -168,8 +222,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             } else {
                 "(pick one)".into()
             };
+            let sample_combo_w = (ui.available_width() - 160.0).max(220.0);
             egui::ComboBox::from_id_salt("sampler_sample_combo")
-                .width(280.0)
+                .width(sample_combo_w)
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
                     for (i, (pack, stem)) in entries.iter().enumerate() {
@@ -189,9 +244,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         }
                     }
                 });
-            // Prev / Next quick-step through the current filter set.
-            // Wraps around at the ends. Keyboard ← → also works while
-            // the GUI window has focus.
+
             let step_filtered = |delta: i32, state: &mut GuiState| {
                 let filter = state.pack_filter.clone();
                 let lib = state.shared.library.lock();
@@ -216,14 +269,20 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             if ui.button("▶").on_hover_text("Next sample (→ key)").clicked() {
                 step_filtered(1, state);
             }
-            if ui.button("Rescan").clicked() {
-                let c = refresh_library(&state.shared);
-                // Drop the pack filter on rescan — pack list may have changed.
-                state.pack_filter = None;
-                state.status = format!("Scanned: {} samples found", c);
+            if ui.button("▶ Play")
+                .on_hover_text("Audition the current sample (Space)")
+                .clicked()
+            {
+                audition_at_root(&state.shared);
             }
-            // Keyboard arrows — work whenever the plugin window is focused.
-            // Don't intercept when an egui text input has focus.
+            // Spacebar also auditions while the plugin window is focused.
+            if !ui.ctx().wants_keyboard_input()
+                && ui.ctx().input(|i| i.key_pressed(egui::Key::Space))
+            {
+                audition_at_root(&state.shared);
+            }
+            // Keyboard arrows — work whenever the plugin window is focused,
+            // unless a text-edit widget actually wants the key.
             let arrow_left = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowLeft);
             let arrow_right = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowRight);
             if arrow_left { step_filtered(-1, state); }
@@ -272,25 +331,6 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     state.status = format!("Root = {} ({:.1} Hz)", note_name, hz);
                 }
             }
-
-            // Push Reset to the far right of this row.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Reset")
-                    .on_hover_text("Reset Root / Tune / Fine / Trim / Loop / Env / Output to defaults")
-                    .clicked()
-                {
-                    let reset_ids = [
-                        P_ROOT, P_TUNE, P_FINE, P_LOOP, P_LOOP_START, P_LOOP_END,
-                        P_ATTACK, P_DECAY, P_SUSTAIN, P_RELEASE, P_OUTPUT,
-                        P_TRIM_START, P_TRIM_END,
-                    ];
-                    for &pid in &reset_ids {
-                        state.shared.params[pid].store(PARAMS[pid].default as f32, Ordering::Relaxed);
-                        state.shared.dirty_params[pid].store(true, Ordering::Relaxed);
-                    }
-                    state.status = "Reset to default values".into();
-                }
-            });
         });
 
         ui.label(egui::RichText::new(&state.status).color(core_gui::GREEN_DIM).monospace().small());

@@ -9,9 +9,10 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::bank::pitch_to_note_name;
 use crate::{
-    add_sample_root, pick_sample, refresh_library, remove_sample_root, reset_sample_roots,
-    P_ATTACK, P_DECAY, P_FINE, P_LOOP, P_LOOP_END, P_LOOP_START, P_OUTPUT, P_RELEASE, P_ROOT,
-    P_SUSTAIN, P_TRIM_END, P_TRIM_START, P_TUNE, PARAMS, SharedParams,
+    add_sample_root, cutoff_units_to_hz, pick_sample, refresh_library, remove_sample_root,
+    reset_sample_roots, P_ATTACK, P_CUTOFF, P_DECAY, P_ENV_CUTOFF, P_FILTER_TYPE, P_FINE,
+    P_LOOP, P_LOOP_END, P_LOOP_START, P_OUTPUT, P_RELEASE, P_RESO, P_REVERSE, P_ROOT,
+    P_SUSTAIN, P_TRIM_END, P_TRIM_START, P_TUNE, P_VEL_AMP, P_VEL_CUTOFF, PARAMS, SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 640;
@@ -202,6 +203,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         P_ROOT, P_TUNE, P_FINE, P_LOOP, P_LOOP_START, P_LOOP_END,
                         P_ATTACK, P_DECAY, P_SUSTAIN, P_RELEASE, P_OUTPUT,
                         P_TRIM_START, P_TRIM_END,
+                        P_REVERSE, P_FILTER_TYPE, P_CUTOFF, P_RESO, P_ENV_CUTOFF,
+                        P_VEL_AMP, P_VEL_CUTOFF,
                     ];
                     for &pid in &reset_ids {
                         state.shared.params[pid].store(PARAMS[pid].default as f32, Ordering::Relaxed);
@@ -449,6 +452,52 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DECAY);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_SUSTAIN], &PARAMS[P_SUSTAIN], &state.shared.dirty_params[P_SUSTAIN], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_SUSTAIN);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RELEASE);
+            });
+            core_gui::section(ui, "Filter", |ui| {
+                // Filter type as a 5-state selector with named options
+                // — easier to read than a numeric slider stepping 0..4.
+                let cur_ft = state.shared.params[P_FILTER_TYPE].load(Ordering::Relaxed).round() as i32;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Type").color(core_gui::GREEN).monospace());
+                    for (val, label) in [(0, "Off"), (1, "LP"), (2, "HP"), (3, "BP"), (4, "Notch")] {
+                        let selected = cur_ft == val;
+                        if ui.selectable_label(selected, label).clicked() {
+                            state.shared.params[P_FILTER_TYPE].store(val as f32, Ordering::Relaxed);
+                            state.shared.dirty_params[P_FILTER_TYPE].store(true, Ordering::Relaxed);
+                        }
+                    }
+                    // Live readout of the actual cutoff in Hz, computed
+                    // off the same units→Hz mapping the audio thread uses.
+                    let hz = cutoff_units_to_hz(state.shared.params[P_CUTOFF].load(Ordering::Relaxed));
+                    let label = if hz < 1000.0 {
+                        format!("@ {:.0} Hz", hz)
+                    } else {
+                        format!("@ {:.2} kHz", hz / 1000.0)
+                    };
+                    ui.label(egui::RichText::new(label).color(core_gui::GREEN_DIM).monospace().small());
+                });
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CUTOFF);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_RESO], &PARAMS[P_RESO], &state.shared.dirty_params[P_RESO], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RESO);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_ENV_CUTOFF], &PARAMS[P_ENV_CUTOFF], &state.shared.dirty_params[P_ENV_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ENV_CUTOFF);
+            });
+            core_gui::section(ui, "Velocity", |ui| {
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_VEL_AMP], &PARAMS[P_VEL_AMP], &state.shared.dirty_params[P_VEL_AMP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_VEL_AMP);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_VEL_CUTOFF], &PARAMS[P_VEL_CUTOFF], &state.shared.dirty_params[P_VEL_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_VEL_CUTOFF);
+            });
+            core_gui::section(ui, "Playback", |ui| {
+                // Reverse as a labelled selectable button — clearer
+                // than a 0..1 slider for a binary toggle.
+                let reversed = state.shared.params[P_REVERSE].load(Ordering::Relaxed) >= 0.5;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Reverse").color(core_gui::GREEN).monospace());
+                    if ui.selectable_label(reversed,
+                        if reversed { "ON  (◀ play backwards)" } else { "off  (▶ play forwards)" }
+                    ).clicked() {
+                        let v = if reversed { 0.0 } else { 1.0 };
+                        state.shared.params[P_REVERSE].store(v, Ordering::Relaxed);
+                        state.shared.dirty_params[P_REVERSE].store(true, Ordering::Relaxed);
+                    }
+                });
             });
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_OUTPUT);

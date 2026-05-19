@@ -42,7 +42,30 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use superduper_dsp_sdk::clap_helpers::{output_slice, ParamDef};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
-use superduper_synth_core::dsp_blocks::AdsrParams;
+use superduper_synth_core::dsp_blocks::{AdsrParams, SvfMode};
+
+/// Map the P_FILTER_TYPE param value to the SVF mode the voice uses.
+/// 0 = Off (filter bypassed), 1 = LP, 2 = HP, 3 = BP, 4 = Notch.
+#[inline]
+pub fn filter_mode_from_param(v: f32) -> Option<SvfMode> {
+    match v.round() as i32 {
+        1 => Some(SvfMode::Lp),
+        2 => Some(SvfMode::Hp),
+        3 => Some(SvfMode::Bp),
+        4 => Some(SvfMode::Notch),
+        _ => None,
+    }
+}
+
+/// Map the P_CUTOFF "MIDI-style" param (0..127) to Hz, log-spaced
+/// from 20 Hz to 20 kHz so the slider feels musical (one octave
+/// per ~18 units). Mirror in the GUI's value_to_text formatter so
+/// the readout shows real Hz instead of the raw param value.
+#[inline]
+pub fn cutoff_units_to_hz(v: f32) -> f32 {
+    let v = v.clamp(0.0, 127.0) / 127.0;
+    20.0 * 1000f32.powf(v)
+}
 
 use bank::{empty_sample, load_sample, scan_folders, SampleData};
 use voice::{SampleVoice, VoiceParams, NOTE_FREE};
@@ -111,6 +134,26 @@ pub const PARAMS: &[ParamDef] = &[
     // Both expressed as fractions of total sample length.
     ParamDef { id: 12, name: b"Start",   min: 0.0, max: 1.0, default: 0.0, unit: "" },
     ParamDef { id: 13, name: b"End",     min: 0.0, max: 1.0, default: 1.0, unit: "" },
+    // Reverse — flip playback direction. Reads the slice backwards
+    // from Trim End to Trim Start. Loop is disabled while reverse.
+    ParamDef { id: 14, name: b"Reverse", min: 0.0, max: 1.0, default: 0.0, unit: "" },
+    // Multi-mode filter. Type: 0 = Off, 1 = LP, 2 = HP, 3 = BP, 4 = Notch.
+    ParamDef { id: 15, name: b"Filter",      min: 0.0,   max: 4.0,    default: 0.0,     unit: "" },
+    // Cutoff stored in MIDI-like log units so the slider feels musical;
+    // 0 = 20 Hz, 127 = 20 kHz, mapping `20 * 1000^(v/127)` (≈ 7 octaves).
+    ParamDef { id: 16, name: b"Cutoff",      min: 0.0,   max: 127.0,  default: 95.0,    unit: "" },
+    ParamDef { id: 17, name: b"Reso",        min: 0.0,   max: 0.97,   default: 0.1,     unit: "" },
+    // Env→Cutoff in semitones. Positive = brighter on attack, negative
+    // = darker. Driven by the amplitude ADSR — keeps the param table
+    // compact instead of adding a dedicated filter envelope.
+    ParamDef { id: 18, name: b"Env>Cutoff",  min: -60.0, max: 60.0,   default: 0.0,     unit: "ST" },
+    // Velocity → amp. 0 = ignore velocity entirely (always full level),
+    // 1 = velocity scales amp linearly (classic behaviour).
+    ParamDef { id: 19, name: b"Vel>Amp",     min: 0.0,   max: 1.0,    default: 1.0,     unit: "" },
+    // Velocity → cutoff in semitones. velocity * P_VEL_CUTOFF gets
+    // added to the cutoff before the envelope. Positive = harder hit
+    // is brighter; negative = harder hit is darker (rare but musical).
+    ParamDef { id: 20, name: b"Vel>Cut",     min: -60.0, max: 60.0,   default: 0.0,     unit: "ST" },
 ];
 
 pub const P_SAMPLE: usize = 0;
@@ -127,6 +170,13 @@ pub const P_RELEASE: usize = 10;
 pub const P_OUTPUT: usize = 11;
 pub const P_TRIM_START: usize = 12;
 pub const P_TRIM_END: usize = 13;
+pub const P_REVERSE: usize = 14;
+pub const P_FILTER_TYPE: usize = 15;
+pub const P_CUTOFF: usize = 16;
+pub const P_RESO: usize = 17;
+pub const P_ENV_CUTOFF: usize = 18;
+pub const P_VEL_AMP: usize = 19;
+pub const P_VEL_CUTOFF: usize = 20;
 
 // ---------------------------------------------------------------------------
 // Shared params + sample library
@@ -416,6 +466,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             trim_end_frac: load(P_TRIM_END),
             env: AdsrParams::adsr(sr, load(P_ATTACK), load(P_DECAY), load(P_SUSTAIN), load(P_RELEASE)),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
+            reverse: load(P_REVERSE) >= 0.5,
+            filter_mode: filter_mode_from_param(load(P_FILTER_TYPE)),
+            cutoff_hz: cutoff_units_to_hz(load(P_CUTOFF)),
+            resonance: load(P_RESO),
+            env_to_cutoff_st: load(P_ENV_CUTOFF),
+            vel_to_amp: load(P_VEL_AMP),
+            vel_to_cutoff_st: load(P_VEL_CUTOFF),
         };
 
         for mut port_pair in &mut audio {
@@ -472,6 +529,13 @@ impl<'a> PluginAudioProcessor<'a> {
             trim_end_frac: load(P_TRIM_END),
             env: AdsrParams::adsr(self.sample_rate, load(P_ATTACK), load(P_DECAY), load(P_SUSTAIN), load(P_RELEASE)),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
+            reverse: load(P_REVERSE) >= 0.5,
+            filter_mode: filter_mode_from_param(load(P_FILTER_TYPE)),
+            cutoff_hz: cutoff_units_to_hz(load(P_CUTOFF)),
+            resonance: load(P_RESO),
+            env_to_cutoff_st: load(P_ENV_CUTOFF),
+            vel_to_amp: load(P_VEL_AMP),
+            vel_to_cutoff_st: load(P_VEL_CUTOFF),
         };
         let sample = Arc::clone(&self.shared.active_sample.lock());
         // Two-pass borrow: find the slot index without holding a

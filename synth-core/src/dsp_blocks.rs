@@ -821,6 +821,64 @@ impl SlewLimiter2Pole {
 }
 
 // ---------------------------------------------------------------------------
+// SvfFilter — Trapezoidal Zero-Delay-Feedback state-variable filter,
+// multi-mode (LP / HP / BP / Notch). Standalone, per-channel state
+// — caller owns one per channel they want to filter. RT-safe, no
+// heap, no panic. Stable for any cutoff up to 0.49 × sr.
+//
+// Maths follows Vadim Zavalishin, "The Art of VA Filter Design",
+// chap. 5 — the same form used inside PadVoice but stripped to a
+// reusable two-integrator block. We expose all four modes (LP / HP /
+// BP / Notch) because they're all computed in the same step at no
+// extra cost; the caller picks which output to read.
+// ---------------------------------------------------------------------------
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SvfMode {
+    Lp,
+    Hp,
+    Bp,
+    Notch,
+}
+
+#[derive(Default, Copy, Clone)]
+pub struct SvfFilter {
+    /// Bandpass integrator state.
+    z1: f32,
+    /// Lowpass integrator state.
+    z2: f32,
+}
+
+impl SvfFilter {
+    /// Zero the internal integrators. Call between notes if you want
+    /// a clean attack, leave alone for voice-steal continuity.
+    pub fn reset(&mut self) { self.z1 = 0.0; self.z2 = 0.0; }
+
+    /// Process one sample. `cutoff_hz` clamped to [40 Hz, 0.49 × sr]
+    /// and `resonance` clamped to [0, 0.97]. Resonance maps so that
+    /// 0 = no resonance, 0.97 ≈ self-oscillation threshold.
+    #[inline]
+    pub fn process(&mut self, x: f32, mode: SvfMode, cutoff_hz: f32, resonance: f32, sr: f32) -> f32 {
+        let cutoff = cutoff_hz.clamp(20.0, sr * 0.49);
+        let g = (core::f32::consts::PI * cutoff / sr).tan();
+        let k = 2.0 - 2.0 * resonance.clamp(0.0, 0.97);
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let v1 = a1 * (self.z1 + g * (x - self.z2));
+        let lp = self.z2 + g * v1;
+        let hp = x - k * v1 - lp;
+        let bp = v1;
+        self.z1 = 2.0 * v1 - self.z1;
+        self.z2 = 2.0 * lp - self.z2;
+        match mode {
+            SvfMode::Lp => lp,
+            SvfMode::Hp => hp,
+            SvfMode::Bp => bp,
+            SvfMode::Notch => x - k * v1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OnePoleLp — basic one-pole low-pass. Useful as the tone control inside
 // a delay's feedback loop (the "every repeat gets darker" trick).
 // ---------------------------------------------------------------------------

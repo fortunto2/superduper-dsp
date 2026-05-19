@@ -1,10 +1,12 @@
 # SuperDuper DSP
 
-Open-source CLAP plugin suite — 13 focused effects and synths written in
-Rust. Full vocal-chain, two original synths (wavetable bass + jaw-harp
-physical model), custom egui-based GUIs with a retro phosphor-green
-theme, factory presets, sidechain ducking, automation write, MIDI CC /
-pitch-bend, tempo sync, and CLAP state persistence across the family.
+Open-source CLAP plugin suite — 17 focused effects and synths written in
+Rust. Full vocal-chain, three original synths (wavetable bass, jaw-harp
+physical model, drum machine), a polyphonic WAV sampler with pitch
+tuner, a Mobius-style live looper, custom egui-based GUIs with a retro
+phosphor-green theme, factory presets, sidechain ducking, automation
+write, MIDI CC / pitch-bend, tempo sync, and CLAP state persistence
+across the family.
 
 [**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
@@ -24,6 +26,8 @@ pitch-bend, tempo sync, and CLAP state persistence across the family.
 | **Limiter** | mastering | Lookahead brickwall with 4× true-peak detection on a sidechain upsampler, live GR meter. |
 | **Spectrum** | metering | Pass-through analyzer — Spectrum / Spectrogram / Split view, three colour palettes. |
 | **Vocal** | restoration | Split-band de-esser + ratio-detector de-clicker tuned for rap/spoken word. |
+| **Chorus** | modulation | Multi-tap modulated delay with band-named factory presets (Joy Division Atmosphere → Cocteau Twins shimmer → Vangelis Blade Runner CS-80 lushness). |
+| **Looper** | live performance | Mobius-style 4-track live looper, 60 s/track, host-BPM sync with bar-aligned quantize, per-track Feedback for tape-style overdub decay, MIDI CC control for hands-free hardware triggering. |
 
 ### Instruments
 
@@ -33,8 +37,10 @@ pitch-bend, tempo sync, and CLAP state persistence across the family.
 | **Ambient** | autonomous drone | No-input chord-drone generator. |
 | **Wave** | wavetable bass / lead | Mouse-editable curve (sharp / smooth nodes via Catmull-Rom, RDP simplify, Undo/Redo), mip-mapped anti-aliasing, unison + sub + noise + filter env + LFO with 3 destinations + tempo sync, MIDI CC + pitch-bend + aftertouch. |
 | **Kubyz** | jaw-harp / khomus | 16-harmonic additive + 3-band bandpass formant + interactive IPA vowel pad + animated mouth trajectory (Circle / Sine / Figure-8 / Triangle / Line) with stereo motion + tempo-sync Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets + tools/kubyz_analyser for fitting your own. |
+| **Drum** | drum machine | 6 analog-synthesis voices — Kick / Snare / HH closed / HH open / Clap / Cowbell on consecutive white keys C-D-E-F-G-A. On-screen mini-keyboard hint, mouse-click pads, MIDI passthrough so a single MIDI clip can drive both Drum and bass (Wave/Kubyz) layered. |
+| **Sampler** | polyphonic WAV player | Recursive `~/Music/SuperDuper Samples/` scan with subfolder pack picker, configurable root folders persisted to disk. Per-voice multi-mode TPT/ZDF SVF filter (LP/HP/BP/Notch) with `Env→Cutoff` modulation, Reverse playback (one-shot), Velocity→Amp/Cutoff, click-to-audition on the waveform. YIN-style pitch tuner shows the sample's native note + cents + the played note after Tune/Fine, with `→ Root` button to snap Root to the detected pitch. |
 
-All thirteen share:
+All seventeen share:
 
 - **Sidechain ports** wherever it makes sense (Reverb, Supermass, Delay,
   Saturator, Compressor). Classic use case — route plugin on an aux/send,
@@ -97,9 +103,9 @@ Prerequisites:
 
 ```bash
 make all              # CLAP + VST3 + AU, installed to ~/Library/Audio/Plug-Ins/
-make clap             # Just the 13 .clap bundles
+make clap             # Just the 17 .clap bundles
 make wrappers         # VST3 + AU (depends on clap)
-make wave             # One plugin (any of the 13 — name matches the crate)
+make wave             # One plugin (any of the 17 — name matches the crate)
 make test             # cargo test --release --workspace
 make test-fast        # Skip slow clack-host audits (smoke + lib tests only)
 make release VERSION=0.11.0   # Versioned signed zips in ./dist/
@@ -110,11 +116,12 @@ make clean            # Wipe cargo + cmake outputs
 below if you'd rather skip make:
 
 ```bash
-# All 13 plugins in one go:
+# All 17 plugins in one go:
 ./scripts/build_all_bundles.sh
 # Or one plugin at a time:
 ./scripts/build_kubyz_bundle.sh
 ./scripts/build_reverb_bundle.sh
+./scripts/build_sampler_bundle.sh
 # ...
 ```
 
@@ -138,8 +145,8 @@ git submodule update --init --recursive
 ```
 
 The wrapper script applies local clap-wrapper patches needed for the
-macOS 26 SDK, runs CMake against the submodule, builds 13 × `.vst3` +
-13 × `.component`, and with `--install` drops them into
+macOS 26 SDK, runs CMake against the submodule, builds 17 × `.vst3` +
+17 × `.component`, and with `--install` drops them into
 `~/Library/Audio/Plug-Ins/VST3/` and `~/Library/Audio/Plug-Ins/Components/`.
 
 VST3 and AU wrappers are pure CLAP loaders — they dynamically `dlopen`
@@ -202,13 +209,13 @@ synth-core/           — shared DSP blocks (Biquad, DelayLine, Ducker,
                         measurement) + GUI helpers (theme, section, param_row,
                         learn_param_row_g, MidiLearnState, LiveScope,
                         AbSnapshot, top_bar, ab_init_bar, presets)
-effects/superduper-*/ — 13 plugins (9 effects + 4 instruments)
+effects/superduper-*/ — 17 plugins (11 effects + 6 instruments)
 cmake/                — plugin_list.cmake (VST3/AU build manifest)
 CMakeLists.txt        — drives the clap-wrapper VST3/AU build
 Makefile              — single entry point: `make all` / `make wave` / `make test`
 scripts/
   build_*_bundle.sh   — per-plugin .clap packagers
-  build_all_bundles.sh — all 13 in one shot
+  build_all_bundles.sh — all 17 in one shot
   build_release.sh    — versioned signed release zips
   build_wrappers.sh   — VST3 + AU wrappers via clap-wrapper (macOS)
 tools/sdsp-runner/    — standalone CLAP host (effects only, file → cpal)

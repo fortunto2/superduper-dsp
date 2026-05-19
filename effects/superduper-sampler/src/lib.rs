@@ -107,6 +107,10 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 10, name: b"Release", min: 0.01,  max: 8.0,  default: 0.4,   unit: "s" },
     // Output
     ParamDef { id: 11, name: b"Output",  min: -36.0, max: 6.0,  default: -3.0,  unit: "dB" },
+    // Playback trim — the slice of the sample that actually plays.
+    // Both expressed as fractions of total sample length.
+    ParamDef { id: 12, name: b"Start",   min: 0.0, max: 1.0, default: 0.0, unit: "" },
+    ParamDef { id: 13, name: b"End",     min: 0.0, max: 1.0, default: 1.0, unit: "" },
 ];
 
 pub const P_SAMPLE: usize = 0;
@@ -121,6 +125,8 @@ pub const P_DECAY: usize = 8;
 pub const P_SUSTAIN: usize = 9;
 pub const P_RELEASE: usize = 10;
 pub const P_OUTPUT: usize = 11;
+pub const P_TRIM_START: usize = 12;
+pub const P_TRIM_END: usize = 13;
 
 // ---------------------------------------------------------------------------
 // Shared params + sample library
@@ -141,10 +147,14 @@ pub struct SharedParamsInner {
     /// clones the Arc when triggering a new voice; existing voices
     /// keep playing the previous sample until they finish.
     pub active_sample: Mutex<Arc<SampleData>>,
-    /// Snapshot of the discovered sample files. The GUI picks an
-    /// index from this list and triggers a load; the audio thread
-    /// never touches it directly.
-    pub library: Mutex<Vec<PathBuf>>,
+    /// Snapshot of the discovered sample files, each tagged with its
+    /// pack (first subfolder). The GUI picks an index from this list
+    /// and triggers a load; the audio thread never touches it.
+    pub library: Mutex<Vec<bank::PackedSample>>,
+    /// User-editable list of root folders scanned for WAV samples.
+    /// Persisted to `~/.superduper-dsp/sampler-config.json` so the
+    /// next session picks them up. Audio thread doesn't read it.
+    pub sample_roots: Mutex<Vec<PathBuf>>,
     /// Currently-loaded library index. -1 = no sample yet.
     pub current_index: std::sync::atomic::AtomicI32,
     /// Plugin sample rate, captured at activate() so the GUI can show
@@ -167,6 +177,7 @@ impl PluginShared {
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 active_sample: Mutex::new(empty_sample()),
                 library: Mutex::new(Vec::new()),
+                sample_roots: Mutex::new(bank::load_folders_config()),
                 current_index: std::sync::atomic::AtomicI32::new(-1),
                 host_sr: AtomicF32::new(48000.0),
             }),
@@ -187,27 +198,79 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 /// Called by the GUI when the user clicks a dropdown entry.
 pub fn pick_sample(shared: &SharedParamsInner, idx: usize) -> Result<String, String> {
     let lib = shared.library.lock();
-    let path = lib.get(idx)
+    let entry = lib.get(idx)
         .cloned()
         .ok_or_else(|| format!("sample index {} out of range ({})", idx, lib.len()))?;
     drop(lib);
-    let data = load_sample(&path).map_err(|e| e.to_string())?;
-    let name = data.display_name.clone();
+    let data = load_sample(&entry.path).map_err(|e| e.to_string())?;
+    let label = format!("{} / {}", entry.pack, data.display_name);
     *shared.active_sample.lock() = Arc::new(data);
     shared.current_index.store(idx as i32, Ordering::Relaxed);
     shared.params[P_SAMPLE].store(idx as f32, Ordering::Relaxed);
     shared.dirty_params[P_SAMPLE].store(true, Ordering::Relaxed);
-    Ok(name)
+    Ok(label)
 }
 
-/// GUI helper: rerun the folder scan and refresh the library. Returns
-/// the new entry count.
+/// GUI helper: rerun the folder scan using the user's edited folder
+/// list and refresh the library. Returns the new entry count.
 pub fn refresh_library(shared: &SharedParamsInner) -> usize {
-    let folders = bank::default_sample_folders();
+    let folders = shared.sample_roots.lock().clone();
     let entries = scan_folders(&folders);
     let count = entries.len();
     *shared.library.lock() = entries;
     count
+}
+
+/// GUI helper: add a new sample root, persist the config, and rescan.
+/// Skips paths that are empty, missing, or already in the list.
+pub fn add_sample_root(shared: &SharedParamsInner, raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() { return Err("empty path".into()); }
+    // Expand `~` to the home directory — by-far the most common form
+    // a user types.
+    let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME not set".to_string())?;
+        home.join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if !expanded.exists() {
+        return Err(format!("path doesn't exist: {}", expanded.display()));
+    }
+    {
+        let mut roots = shared.sample_roots.lock();
+        if roots.iter().any(|p| p == &expanded) {
+            return Err("already in the list".into());
+        }
+        roots.push(expanded.clone());
+        let _ = bank::save_folders_config(&roots);
+    }
+    refresh_library(shared);
+    Ok(expanded.display().to_string())
+}
+
+/// Remove an entry by index, persist, rescan.
+pub fn remove_sample_root(shared: &SharedParamsInner, idx: usize) {
+    {
+        let mut roots = shared.sample_roots.lock();
+        if idx < roots.len() {
+            roots.remove(idx);
+            let _ = bank::save_folders_config(&roots);
+        }
+    }
+    refresh_library(shared);
+}
+
+/// Reset folder list to the built-in defaults, persist, rescan.
+pub fn reset_sample_roots(shared: &SharedParamsInner) {
+    {
+        let defaults = bank::default_sample_folders();
+        *shared.sample_roots.lock() = defaults.clone();
+        let _ = bank::save_folders_config(&defaults);
+    }
+    refresh_library(shared);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +376,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             loop_on: load(P_LOOP) >= 0.5,
             loop_start_frac: load(P_LOOP_START),
             loop_end_frac: load(P_LOOP_END),
+            trim_start_frac: load(P_TRIM_START),
+            trim_end_frac: load(P_TRIM_END),
             env: AdsrParams::adsr(sr, load(P_ATTACK), load(P_DECAY), load(P_SUSTAIN), load(P_RELEASE)),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
         };
@@ -367,6 +432,8 @@ impl<'a> PluginAudioProcessor<'a> {
             loop_on: load(P_LOOP) >= 0.5,
             loop_start_frac: load(P_LOOP_START),
             loop_end_frac: load(P_LOOP_END),
+            trim_start_frac: load(P_TRIM_START),
+            trim_end_frac: load(P_TRIM_END),
             env: AdsrParams::adsr(self.sample_rate, load(P_ATTACK), load(P_DECAY), load(P_SUSTAIN), load(P_RELEASE)),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
         };
@@ -440,11 +507,11 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
         }
         if pid == P_SAMPLE {
-            // Show the file stem instead of a number.
+            // Show "Pack / file stem" instead of a number.
             let lib = self.shared.library.lock();
-            if let Some(p) = lib.get(v.round() as usize) {
-                if let Some(stem) = p.file_stem() {
-                    return write!(w, "{}", stem.to_string_lossy());
+            if let Some(entry) = lib.get(v.round() as usize) {
+                if let Some(stem) = entry.path.file_stem() {
+                    return write!(w, "{} / {}", entry.pack, stem.to_string_lossy());
                 }
             }
         }

@@ -47,6 +47,10 @@ pub struct VoiceParams {
     pub loop_on: bool,
     pub loop_start_frac: f32,
     pub loop_end_frac: f32,
+    /// Playback trim — only frames between `trim_start_frac` and
+    /// `trim_end_frac` (both as fractions of total length) are read.
+    pub trim_start_frac: f32,
+    pub trim_end_frac: f32,
     pub env: AdsrParams,
     pub output_lin: f32,
 }
@@ -69,7 +73,12 @@ impl SampleVoice {
         self.note_id = note_id;
         self.velocity = velocity;
         self.age_stamp = age_stamp;
-        self.frame_pos = 0.0;
+        // Start playback at trim_start. Trimming the front of a
+        // sample is the most common use — drop the silence on an
+        // 808 hit, snap straight to the transient, etc.
+        let total = sample.frame_count() as f64;
+        let start = (params.trim_start_frac.clamp(0.0, 0.99) as f64) * total;
+        self.frame_pos = start;
         self.pitch_ratio = compute_pitch_ratio(
             key as f32, params.root_key, params.tune_st, params.fine_cents,
             params.host_sr, sample.sample_rate as f32,
@@ -92,17 +101,24 @@ impl SampleVoice {
         }
         let (l, r) = self.sample.read_stereo_lerp(self.frame_pos);
         self.frame_pos += self.pitch_ratio;
-        // Loop / end handling.
+        // Loop / end handling — playback is constrained to the trim
+        // range, then loop start/end live INSIDE that trim.
         let total = self.sample.frame_count() as f64;
+        let trim_lo = (params.trim_start_frac.clamp(0.0, 0.99) as f64) * total;
+        let trim_hi = (params.trim_end_frac.clamp(0.0, 1.0) as f64) * total;
+        let trim_hi = trim_hi.max(trim_lo + 1.0).min(total);
         if params.loop_on && total > 1.0 {
             let lo = (params.loop_start_frac.clamp(0.0, 0.99) as f64) * total;
             let hi = (params.loop_end_frac.clamp(0.0, 1.0) as f64) * total;
-            let hi = hi.max(lo + 1.0);
+            // Clamp loop points inside the trim window so the user
+            // can't accidentally loop into silence outside trim.
+            let lo = lo.max(trim_lo).min(trim_hi - 1.0);
+            let hi = hi.max(lo + 1.0).min(trim_hi);
             if self.frame_pos >= hi {
                 self.frame_pos = lo + (self.frame_pos - hi);
             }
-        } else if self.frame_pos >= total {
-            // End of sample → release the voice cleanly via the env.
+        } else if self.frame_pos >= trim_hi {
+            // End of trim range → release the voice cleanly via env.
             self.env.gate_off();
         }
         let g = env_level * self.velocity * params.output_lin;

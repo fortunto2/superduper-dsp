@@ -65,7 +65,8 @@ jobs:
             -p superduper-chorus \
             -p superduper-drum \
             -p superduper-sampler \
-            -p superduper-looper
+            -p superduper-looper \
+            -p superduper-filter
 
       - name: Run tests
         run: |
@@ -87,6 +88,7 @@ jobs:
             -p superduper-drum \
             -p superduper-sampler \
             -p superduper-looper \
+            -p superduper-filter \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -113,7 +115,8 @@ jobs:
               "superduper_chorus|SuperDuperChorus|co.superduperai.chorus" \
               "superduper_drum|SuperDuperDrum|co.superduperai.drum" \
               "superduper_sampler|SuperDuperSampler|co.superduperai.sampler" \
-              "superduper_looper|SuperDuperLooper|co.superduperai.looper"
+              "superduper_looper|SuperDuperLooper|co.superduperai.looper" \
+              "superduper_filter|SuperDuperFilter|co.superduperai.filter"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -147,7 +150,7 @@ jobs:
               SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
               SuperDuperPad.clap SuperDuperVocal.clap SuperDuperWave.clap \
               SuperDuperKubyz.clap SuperDuperChorus.clap SuperDuperDrum.clap \
-              SuperDuperSampler.clap SuperDuperLooper.clap)
+              SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -246,7 +249,8 @@ jobs:
             -p superduper-chorus `
             -p superduper-drum `
             -p superduper-sampler `
-            -p superduper-looper
+            -p superduper-looper `
+            -p superduper-filter
 
       - name: Run tests
         run: |
@@ -268,6 +272,7 @@ jobs:
             -p superduper-drum `
             -p superduper-sampler `
             -p superduper-looper `
+            -p superduper-filter `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -293,7 +298,8 @@ jobs:
             @{ dll = "superduper_chorus.dll";     name = "SuperDuperChorus" },
             @{ dll = "superduper_drum.dll";       name = "SuperDuperDrum" },
             @{ dll = "superduper_sampler.dll";    name = "SuperDuperSampler" },
-            @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" }
+            @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" },
+            @{ dll = "superduper_filter.dll";     name = "SuperDuperFilter" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -344,7 +350,7 @@ jobs:
           body: |
             SuperDuper DSP ${{ github.ref_name }}
 
-            Seventeen plugins — eleven effects + six instruments:
+            Eighteen plugins — twelve effects + six instruments:
 
             **Effects:**
             * SuperDuper Reverb — Dattorro plate with sidechain ducking
@@ -358,6 +364,7 @@ jobs:
             * SuperDuper Vocal — split-band de-esser + mouth de-clicker for rap
             * SuperDuper Chorus — multi-tap modulated delay with band-named factory presets
             * SuperDuper Looper — Mobius-style 4-track live looper with host-BPM sync
+            * SuperDuper Filter — multi-mode resonant filter (LP/HP/BP/Notch) with Drive, LFO (tempo sync) and Env Follow; Daft Punk sweeps on the master bus
 
             **Instruments:**
             * SuperDuper Ambient — autonomous 4-voice chord-drone generator

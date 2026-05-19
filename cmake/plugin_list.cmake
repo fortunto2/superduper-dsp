@@ -35,4 +35,5 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-drum|SuperDuperDrum|co.superduperai.drum|co.superduperai.wrappers.drum|aumu|sdDr"
     "superduper-sampler|SuperDuperSampler|co.superduperai.sampler|co.superduperai.wrappers.sampler|aumu|sdSl"
     "superduper-looper|SuperDuperLooper|co.superduperai.looper|co.superduperai.wrappers.looper|aufx|sdLp"
+    "superduper-filter|SuperDuperFilter|co.superduperai.filter|co.superduperai.wrappers.filter|aufx|sdFl"
 )

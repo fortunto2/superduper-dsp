@@ -228,11 +228,53 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             let arrow_right = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowRight);
             if arrow_left { step_filtered(-1, state); }
             if arrow_right { step_filtered(1, state); }
+        });
 
+        // Tuner / Reset row — own line so it doesn't fight with the
+        // Pack/Sample combos for horizontal space.
+        ui.horizontal(|ui| {
+            let pitch_hz = {
+                let g = state.shared.active_sample.lock();
+                g.detected_pitch_hz
+            };
+            let (note_name, cents) = match pitch_hz {
+                Some(hz) => pitch_to_note_name(hz),
+                None => ("—".to_string(), 0),
+            };
+            let tuner_color = if pitch_hz.is_some() {
+                if cents.abs() <= 5 { core_gui::GREEN_BRIGHT }
+                else if cents.abs() <= 25 { core_gui::GREEN }
+                else { egui::Color32::from_rgb(220, 160, 60) }
+            } else {
+                core_gui::GREEN_DIM
+            };
+            let tuner_text = if let Some(hz) = pitch_hz {
+                format!("♪ {:<4} {:+4} ct   {:>7.1} Hz", note_name, cents, hz)
+            } else {
+                "♪ —  (no pitch detected)".to_string()
+            };
+            ui.label(egui::RichText::new("Tuner:").color(core_gui::GREEN_BRIGHT).monospace());
+            ui.label(egui::RichText::new(tuner_text).color(tuner_color).monospace().strong());
+
+            if let Some(hz) = pitch_hz {
+                if ui.button("→ Root")
+                    .on_hover_text("Set Root key to the detected note so the sample plays in tune at its native pitch")
+                    .clicked()
+                {
+                    let midi_f = 69.0 + 12.0 * (hz / 440.0).log2();
+                    let midi = midi_f.round().clamp(0.0, 127.0);
+                    state.shared.params[P_ROOT].store(midi, Ordering::Relaxed);
+                    state.shared.dirty_params[P_ROOT].store(true, Ordering::Relaxed);
+                    state.shared.params[P_FINE].store(0.0, Ordering::Relaxed);
+                    state.shared.dirty_params[P_FINE].store(true, Ordering::Relaxed);
+                    state.shared.params[P_TUNE].store(0.0, Ordering::Relaxed);
+                    state.shared.dirty_params[P_TUNE].store(true, Ordering::Relaxed);
+                    state.status = format!("Root = {} ({:.1} Hz)", note_name, hz);
+                }
+            }
+
+            // Push Reset to the far right of this row.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Reset — snap pitch / trim / loop / env / output params
-                // back to their defaults from the PARAMS table. Doesn't
-                // touch the active sample or pack filter.
                 if ui.button("Reset")
                     .on_hover_text("Reset Root / Tune / Fine / Trim / Loop / Env / Output to defaults")
                     .clicked()
@@ -248,49 +290,6 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     }
                     state.status = "Reset to default values".into();
                 }
-
-                // Pitch tuner — show the detected note + cents offset of
-                // the current sample, plus a one-click "→ Root" button
-                // that sets Root to the detected MIDI note so the sample
-                // plays in tune at its native key.
-                let pitch_hz = {
-                    let g = state.shared.active_sample.lock();
-                    g.detected_pitch_hz
-                };
-                let (note_name, cents) = match pitch_hz {
-                    Some(hz) => pitch_to_note_name(hz),
-                    None => ("—".to_string(), 0),
-                };
-
-                if let Some(hz) = pitch_hz {
-                    if ui.small_button("→ Root")
-                        .on_hover_text("Set Root key to the detected note so the sample plays in tune at its native pitch")
-                        .clicked()
-                    {
-                        let midi_f = 69.0 + 12.0 * (hz / 440.0).log2();
-                        let midi = midi_f.round().clamp(0.0, 127.0);
-                        state.shared.params[P_ROOT].store(midi, Ordering::Relaxed);
-                        state.shared.dirty_params[P_ROOT].store(true, Ordering::Relaxed);
-                        // Also zero Fine cents so the offset shows correctly.
-                        state.shared.params[P_FINE].store(0.0, Ordering::Relaxed);
-                        state.shared.dirty_params[P_FINE].store(true, Ordering::Relaxed);
-                        state.status = format!("Root = {} ({:.1} Hz)", note_name, hz);
-                    }
-                }
-
-                let tuner_color = if pitch_hz.is_some() {
-                    if cents.abs() <= 5 { core_gui::GREEN_BRIGHT }
-                    else if cents.abs() <= 25 { core_gui::GREEN }
-                    else { egui::Color32::from_rgb(220, 160, 60) }
-                } else {
-                    core_gui::GREEN_DIM
-                };
-                let tuner_text = if let Some(hz) = pitch_hz {
-                    format!("♪ {:<4} {:+3}ct  ({:.1} Hz)", note_name, cents, hz)
-                } else {
-                    "♪ — (no pitch)".to_string()
-                };
-                ui.label(egui::RichText::new(tuner_text).color(tuner_color).monospace().strong());
             });
         });
 

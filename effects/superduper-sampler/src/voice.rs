@@ -34,6 +34,13 @@ pub struct SampleVoice {
     /// note's tail through the filter.
     pub filter_l: SvfFilter,
     pub filter_r: SvfFilter,
+    /// One-shot mode (reverse playback). NoteOff is queued silently —
+    /// the voice keeps playing through to trim_lo and only THEN does
+    /// the env release fire. Without this, a short MIDI hit fires
+    /// NoteOff before the cursor has walked from trim_hi back to
+    /// trim_lo, so the user only hears the back third of the reversed
+    /// sample. Most samplers behave this way in reverse mode.
+    pub one_shot: bool,
 }
 
 impl Default for SampleVoice {
@@ -50,6 +57,7 @@ impl Default for SampleVoice {
             sample: crate::bank::empty_sample(),
             filter_l: SvfFilter::default(),
             filter_r: SvfFilter::default(),
+            one_shot: false,
         }
     }
 }
@@ -130,11 +138,21 @@ impl SampleVoice {
         // slot doesn't ring the previous note's tail through.
         self.filter_l.reset();
         self.filter_r.reset();
+        // Reverse playback = one-shot. User's NoteOff will be ignored
+        // and the env stays in sustain until the cursor reaches
+        // trim_lo, at which point the natural end-of-sample release
+        // fires from inside `process()`.
+        self.one_shot = params.reverse;
         self.env.gate_on();
     }
 
+    /// External release request from the host (NoteOff). One-shot
+    /// voices ignore it — they're already on the rails to trim_lo
+    /// where the natural end-of-sample release will fire.
     pub fn gate_off(&mut self) {
-        self.env.gate_off();
+        if !self.one_shot {
+            self.env.gate_off();
+        }
     }
 
     /// Render one stereo sample.

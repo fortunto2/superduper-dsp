@@ -38,15 +38,31 @@ impl SampleData {
     }
     /// Stereo read with linear interpolation at a fractional frame
     /// position. Returns silence past the end.
+    ///
+    /// Bug fix 2026-05: the prior version returned silence at
+    /// `i + 1 >= total`. That cost the very last frame on forward
+    /// playback (barely audible), but in REVERSE playback the FIRST
+    /// read happens at trim_hi - 1 which is exactly that edge case,
+    /// so reverse started with a click of silence. The "last frame"
+    /// branch now returns the actual last sample (no interpolation
+    /// because there's no neighbour to lerp to).
     #[inline]
     pub fn read_stereo_lerp(&self, frame_pos: f64) -> (f32, f32) {
         let total = self.frame_count();
         if total == 0 { return (0.0, 0.0); }
         let i = frame_pos.floor() as usize;
-        if i + 1 >= total { return (0.0, 0.0); }
-        let frac = (frame_pos - i as f64) as f32;
+        if i >= total { return (0.0, 0.0); }
         let ch = self.channels as usize;
         let base = i * ch;
+        if i + 1 >= total {
+            // Last frame: no neighbour to interpolate with, return as-is.
+            if ch == 1 {
+                let a = self.samples[base];
+                return (a, a);
+            }
+            return (self.samples[base], self.samples[base + 1]);
+        }
+        let frac = (frame_pos - i as f64) as f32;
         let (l0, r0, l1, r1) = if ch == 1 {
             let a = self.samples[base];
             let b = self.samples[base + 1];

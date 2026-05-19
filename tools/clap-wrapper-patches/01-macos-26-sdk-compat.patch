@@ -24,7 +24,7 @@ diff --git a/cmake/shared_prologue.cmake b/cmake/shared_prologue.cmake
 index f9e5b94..c1140d7 100644
 --- a/cmake/shared_prologue.cmake
 +++ b/cmake/shared_prologue.cmake
-@@ -73,6 +73,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND (NOT (CMAKE_CXX_COMPILER_FRONTE
+@@ -73,6 +73,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND (NOT (CMAKE_CXX_COMPILER_FRONTE
      else()
          message(STATUS "clap-wrapper: Warnings are Errors")
          target_compile_options(clap-wrapper-compile-options INTERFACE -Werror)
@@ -32,7 +32,12 @@ index f9e5b94..c1140d7 100644
 +        # uses GNU statement expressions inside macros and lacks
 +        # `noexcept` on some nonblocking-attributed functions. Both are
 +        # innocuous; downgrade them from -Werror so we can build.
++        # `-Wno-unknown-warning-option` is listed FIRST so older Apple
++        # Clang on CI runners (which doesn't know the two flags below
++        # yet) silently ignores them instead of erroring out under the
++        # `-Werror` that clap-wrapper just enabled.
 +        target_compile_options(clap-wrapper-compile-options INTERFACE
++                -Wno-unknown-warning-option
 +                -Wno-error=gnu-statement-expression-from-macro-expansion
 +                -Wno-error=perf-constraint-implies-noexcept)
      endif()

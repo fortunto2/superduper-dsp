@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use superduper_synth_core::dsp_blocks::{
-    AdsrEnvelope, AdsrParams, SvfFilter, SvfMode,
+    AdsrEnvelope, AdsrParams, SvfFilter, SvfMode, VoiceSlot,
 };
 use crate::bank::SampleData;
 
@@ -94,6 +94,11 @@ pub struct VoiceParams {
     /// Velocity-to-cutoff in semitones at velocity = 1.0. Negative
     /// makes harder hits darker (rare but musical).
     pub vel_to_cutoff_st: f32,
+}
+
+impl VoiceSlot for SampleVoice {
+    fn is_idle(&self) -> bool { self.is_idle() }
+    fn age_stamp(&self) -> u64 { self.age_stamp }
 }
 
 impl SampleVoice {

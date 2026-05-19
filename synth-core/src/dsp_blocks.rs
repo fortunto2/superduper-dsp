@@ -1167,3 +1167,46 @@ impl AdsrEnvelope {
 pub fn midi_note_to_hz(note: f32) -> f32 {
     440.0 * 2f32.powf((note - 69.0) / 12.0)
 }
+
+// ---------------------------------------------------------------------------
+// Voice-slot allocator — find an idle voice or steal the oldest.
+//
+// Every poly synth in the workspace does the same two-pass walk over its
+// `voices: [V; N]` array: pick the first idle slot, falling back to the
+// voice with the smallest `age_stamp`. That was ~10 lines duplicated in
+// 6 synth plugins (pad, wave, kubyz, sampler, drum, ambient). One helper
+// + a small trait keeps it in one place.
+// ---------------------------------------------------------------------------
+
+/// Implement on your per-voice struct so the allocator can pick a slot.
+/// `age_stamp` should be a monotonically-increasing counter assigned at
+/// trigger time so the *oldest* voice (smallest stamp) becomes the
+/// steal target when no idle slot is available.
+pub trait VoiceSlot {
+    fn is_idle(&self) -> bool;
+    fn age_stamp(&self) -> u64;
+}
+
+/// Return the index of the best voice slot for a new note: the first
+/// idle slot if any exists, otherwise the slot whose `age_stamp` is
+/// smallest. Caller is responsible for then calling whatever
+/// `gate_on(...)` method the voice has — the helper deliberately
+/// doesn't know about velocity, sample data, or filter params.
+///
+/// Allocates nothing, no panics on empty input (returns 0). RT-safe.
+#[inline]
+pub fn pick_voice_slot<V: VoiceSlot>(voices: &[V]) -> usize {
+    let mut idle: Option<usize> = None;
+    let mut oldest_idx = 0usize;
+    let mut oldest_age = u64::MAX;
+    for (i, v) in voices.iter().enumerate() {
+        if v.is_idle() && idle.is_none() {
+            idle = Some(i);
+        }
+        if v.age_stamp() < oldest_age {
+            oldest_age = v.age_stamp();
+            oldest_idx = i;
+        }
+    }
+    idle.unwrap_or(oldest_idx)
+}

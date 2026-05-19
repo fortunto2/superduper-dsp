@@ -511,21 +511,7 @@ impl<'a> PluginAudioProcessor<'a> {
             vel_to_cutoff_st: load(P_VEL_CUTOFF),
         };
         let sample = Arc::clone(&self.shared.active_sample.lock());
-        // Two-pass borrow: find the slot index without holding a
-        // mutable reference, then re-grab the slot for the gate_on.
-        let mut idle_idx: Option<usize> = None;
-        let mut oldest_idx = 0usize;
-        let mut oldest_age = u64::MAX;
-        for (i, v) in self.voices.iter().enumerate() {
-            if v.is_idle() && idle_idx.is_none() {
-                idle_idx = Some(i);
-            }
-            if v.age_stamp < oldest_age {
-                oldest_age = v.age_stamp;
-                oldest_idx = i;
-            }
-        }
-        let slot_idx = idle_idx.unwrap_or(oldest_idx);
+        let slot_idx = superduper_synth_core::dsp_blocks::pick_voice_slot(&self.voices);
         self.voices[slot_idx].gate_on(key, velocity, note_id, stamp, sample, params);
     }
 

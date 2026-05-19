@@ -46,6 +46,14 @@ struct GuiState {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Marker { TrimStart, TrimEnd, LoopStart, LoopEnd }
 
+/// Read arrow-key press out of the egui input queue. Skips when a
+/// text input has focus so the user can still type in the "Add
+/// folder" field without skipping samples.
+fn ctx_input_pressed_arrow(ctx: &egui::Context, key: egui::Key) -> bool {
+    if ctx.memory(|m| m.focused().is_some()) { return false; }
+    ctx.input(|i| i.key_pressed(key))
+}
+
 pub fn open_window<P: HasRawWindowHandle>(
     parent: &P, shared: SharedParams, resize: ResizeBridge,
 ) -> WindowHandle {
@@ -180,12 +188,45 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         }
                     }
                 });
+            // Prev / Next quick-step through the current filter set.
+            // Wraps around at the ends. Keyboard ← → also works while
+            // the GUI window has focus.
+            let step_filtered = |delta: i32, state: &mut GuiState| {
+                let filter = state.pack_filter.clone();
+                let lib = state.shared.library.lock();
+                let allowed: Vec<usize> = lib.iter().enumerate()
+                    .filter(|(_, e)| filter.as_deref().map_or(true, |f| e.pack == f))
+                    .map(|(i, _)| i)
+                    .collect();
+                drop(lib);
+                if allowed.is_empty() { return; }
+                let cur = state.shared.current_index.load(Ordering::Relaxed);
+                let pos = allowed.iter().position(|&i| i as i32 == cur).unwrap_or(0);
+                let new_pos = ((pos as i32 + delta).rem_euclid(allowed.len() as i32)) as usize;
+                let new_idx = allowed[new_pos];
+                match pick_sample(&state.shared, new_idx) {
+                    Ok(name) => state.status = format!("Loaded: {}", name),
+                    Err(e) => state.status = format!("Load failed: {}", e),
+                }
+            };
+            if ui.button("◀").on_hover_text("Previous sample (← key)").clicked() {
+                step_filtered(-1, state);
+            }
+            if ui.button("▶").on_hover_text("Next sample (→ key)").clicked() {
+                step_filtered(1, state);
+            }
             if ui.button("Rescan").clicked() {
                 let c = refresh_library(&state.shared);
                 // Drop the pack filter on rescan — pack list may have changed.
                 state.pack_filter = None;
                 state.status = format!("Scanned: {} samples found", c);
             }
+            // Keyboard arrows — work whenever the plugin window is focused.
+            // Don't intercept when an egui text input has focus.
+            let arrow_left = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowLeft);
+            let arrow_right = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowRight);
+            if arrow_left { step_filtered(-1, state); }
+            if arrow_right { step_filtered(1, state); }
         });
 
         ui.label(egui::RichText::new(&state.status).color(core_gui::GREEN_DIM).monospace().small());
@@ -344,30 +385,65 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut GuiState, rect: egui::Rect, resp
         );
     }
 
-    // 3. The waveform itself — peak min/max columns sampled out of
-    //    the pre-computed peaks array. Empty buffer (no sample) →
-    //    skip rendering, the background stays clean.
+    // 3. The waveform itself — render the peak envelope as a filled
+    //    polygon (upper + lower polylines closed at the ends) so the
+    //    shape reads as one continuous body, not a row of striped
+    //    bars. For each pixel column we collect the min/max across
+    //    every bucket that lands in it — that way a 1024-bucket
+    //    sample doesn't drop samples at wider widths.
     if !peaks.is_empty() {
-        let cols = (rect.width() as usize).clamp(8, 800);
+        let cols = (rect.width() as usize).clamp(8, 1600);
+        let mut upper: Vec<egui::Pos2> = Vec::with_capacity(cols);
+        let mut lower: Vec<egui::Pos2> = Vec::with_capacity(cols);
+        // Pre-resolve which colour to fill the inside with based on
+        // overlap with the trim window — split the polygon at the
+        // trim boundaries so the inside-trim portion stays bright.
+        let to_y = |v: f32| centre_y - v.clamp(-1.0, 1.0) * half_h;
+        let to_x = |frac: f32| rect.left() + frac * rect.width();
         for px in 0..cols {
-            let frac = px as f32 / (cols.max(1) as f32);
-            let bucket_idx = ((frac * peaks.len() as f32) as usize).min(peaks.len() - 1);
-            let (min, max) = peaks[bucket_idx];
-            let x = rect.left() + frac * rect.width();
-            // In trim range = bright; outside = faint.
-            let in_trim = frac >= trim_start && frac <= trim_end;
-            let stroke = if in_trim {
-                egui::Stroke::new(1.0, core_gui::GREEN_BRIGHT)
-            } else {
-                egui::Stroke::new(1.0, core_gui::GREEN_DIM)
-            };
-            painter.line_segment(
-                [
-                    egui::pos2(x, centre_y - max.clamp(-1.0, 1.0) * half_h),
-                    egui::pos2(x, centre_y - min.clamp(-1.0, 1.0) * half_h),
-                ],
-                stroke,
-            );
+            let frac_lo = px as f32 / cols as f32;
+            let frac_hi = (px + 1) as f32 / cols as f32;
+            let b_lo = (frac_lo * peaks.len() as f32) as usize;
+            let b_hi = ((frac_hi * peaks.len() as f32).ceil() as usize).min(peaks.len());
+            let b_hi = b_hi.max(b_lo + 1);
+            let mut mn = f32::INFINITY;
+            let mut mx = f32::NEG_INFINITY;
+            for &(a, b) in &peaks[b_lo..b_hi] {
+                if a < mn { mn = a; }
+                if b > mx { mx = b; }
+            }
+            if !mn.is_finite() { mn = 0.0; }
+            if !mx.is_finite() { mx = 0.0; }
+            // Guarantee at least 1 px thickness so silent regions
+            // still draw a visible centre line instead of vanishing.
+            let mx = mx.max(0.003);
+            let mn = mn.min(-0.003);
+            let x = to_x((frac_lo + frac_hi) * 0.5);
+            upper.push(egui::pos2(x, to_y(mx)));
+            lower.push(egui::pos2(x, to_y(mn)));
+        }
+        // Two-pass fill: first dim "outside trim" polygon (whole
+        // width with dim colour), then bright "inside trim" polygon
+        // clipped to the trim window.
+        let dim = egui::Color32::from_rgba_unmultiplied(70, 130, 80, 220);
+        let bright = egui::Color32::from_rgba_unmultiplied(120, 220, 140, 240);
+        let make_polygon = |upper: &[egui::Pos2], lower: &[egui::Pos2]| -> Vec<egui::Pos2> {
+            let mut p = upper.to_vec();
+            for q in lower.iter().rev() { p.push(*q); }
+            p
+        };
+        // Dim layer covers the whole sample.
+        let full_poly = make_polygon(&upper, &lower);
+        painter.add(egui::Shape::convex_polygon(full_poly, dim, egui::Stroke::NONE));
+        // Bright overlay just for the trim region — clip by index
+        // into upper/lower based on column fraction.
+        let trim_lo_col = (trim_start * cols as f32) as usize;
+        let trim_hi_col = ((trim_end * cols as f32).ceil() as usize).min(cols);
+        if trim_hi_col > trim_lo_col {
+            let upper_clip = &upper[trim_lo_col..trim_hi_col];
+            let lower_clip = &lower[trim_lo_col..trim_hi_col];
+            let bright_poly = make_polygon(upper_clip, lower_clip);
+            painter.add(egui::Shape::convex_polygon(bright_poly, bright, egui::Stroke::NONE));
         }
     } else {
         painter.text(

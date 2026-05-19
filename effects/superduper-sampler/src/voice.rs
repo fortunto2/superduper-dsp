@@ -99,14 +99,23 @@ impl SampleVoice {
             self.key = NOTE_FREE;
             return (0.0, 0.0);
         }
-        let (l, r) = self.sample.read_stereo_lerp(self.frame_pos);
-        self.frame_pos += self.pitch_ratio;
-        // Loop / end handling — playback is constrained to the trim
-        // range, then loop start/end live INSIDE that trim.
+        // Compute trim bounds first so reads past trim_hi return
+        // silence — without this, even after gate_off the voice keeps
+        // reading audio past the user's Trim End marker while the
+        // ADSR release tails off, so "End" didn't audibly cut.
         let total = self.sample.frame_count() as f64;
         let trim_lo = (params.trim_start_frac.clamp(0.0, 0.99) as f64) * total;
         let trim_hi = (params.trim_end_frac.clamp(0.0, 1.0) as f64) * total;
         let trim_hi = trim_hi.max(trim_lo + 1.0).min(total);
+
+        let (l, r) = if self.frame_pos < trim_hi {
+            self.sample.read_stereo_lerp(self.frame_pos)
+        } else {
+            (0.0, 0.0)
+        };
+        self.frame_pos += self.pitch_ratio;
+        // Loop / end handling — playback is constrained to the trim
+        // range, then loop start/end live INSIDE that trim.
         if params.loop_on && total > 1.0 {
             let lo = (params.loop_start_frac.clamp(0.0, 0.99) as f64) * total;
             let hi = (params.loop_end_frac.clamp(0.0, 1.0) as f64) * total;
@@ -118,7 +127,10 @@ impl SampleVoice {
                 self.frame_pos = lo + (self.frame_pos - hi);
             }
         } else if self.frame_pos >= trim_hi {
-            // End of trim range → release the voice cleanly via env.
+            // Past Trim End: cursor stays parked (no more wandering
+            // through post-trim audio) and the env enters release so
+            // the voice fades out musically.
+            self.frame_pos = trim_hi;
             self.env.gate_off();
         }
         let g = env_level * self.velocity * params.output_lin;

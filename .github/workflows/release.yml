@@ -61,7 +61,11 @@ jobs:
             -p superduper-pad \
             -p superduper-vocal \
             -p superduper-wave \
-            -p superduper-kubyz
+            -p superduper-kubyz \
+            -p superduper-chorus \
+            -p superduper-drum \
+            -p superduper-sampler \
+            -p superduper-looper
 
       - name: Run tests
         run: |
@@ -79,6 +83,10 @@ jobs:
             -p superduper-vocal \
             -p superduper-wave \
             -p superduper-kubyz \
+            -p superduper-chorus \
+            -p superduper-drum \
+            -p superduper-sampler \
+            -p superduper-looper \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -101,7 +109,11 @@ jobs:
               "superduper_pad|SuperDuperPad|co.superduperai.pad" \
               "superduper_vocal|SuperDuperVocal|co.superduperai.vocal" \
               "superduper_wave|SuperDuperWave|co.superduperai.wave" \
-              "superduper_kubyz|SuperDuperKubyz|co.superduperai.kubyz"
+              "superduper_kubyz|SuperDuperKubyz|co.superduperai.kubyz" \
+              "superduper_chorus|SuperDuperChorus|co.superduperai.chorus" \
+              "superduper_drum|SuperDuperDrum|co.superduperai.drum" \
+              "superduper_sampler|SuperDuperSampler|co.superduperai.sampler" \
+              "superduper_looper|SuperDuperLooper|co.superduperai.looper"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -134,7 +146,8 @@ jobs:
               SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
               SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
               SuperDuperPad.clap SuperDuperVocal.clap SuperDuperWave.clap \
-              SuperDuperKubyz.clap)
+              SuperDuperKubyz.clap SuperDuperChorus.clap SuperDuperDrum.clap \
+              SuperDuperSampler.clap SuperDuperLooper.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -229,7 +242,11 @@ jobs:
             -p superduper-pad `
             -p superduper-vocal `
             -p superduper-wave `
-            -p superduper-kubyz
+            -p superduper-kubyz `
+            -p superduper-chorus `
+            -p superduper-drum `
+            -p superduper-sampler `
+            -p superduper-looper
 
       - name: Run tests
         run: |
@@ -247,6 +264,10 @@ jobs:
             -p superduper-vocal `
             -p superduper-wave `
             -p superduper-kubyz `
+            -p superduper-chorus `
+            -p superduper-drum `
+            -p superduper-sampler `
+            -p superduper-looper `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -268,7 +289,11 @@ jobs:
             @{ dll = "superduper_pad.dll";        name = "SuperDuperPad" },
             @{ dll = "superduper_vocal.dll";      name = "SuperDuperVocal" },
             @{ dll = "superduper_wave.dll";       name = "SuperDuperWave" },
-            @{ dll = "superduper_kubyz.dll";      name = "SuperDuperKubyz" }
+            @{ dll = "superduper_kubyz.dll";      name = "SuperDuperKubyz" },
+            @{ dll = "superduper_chorus.dll";     name = "SuperDuperChorus" },
+            @{ dll = "superduper_drum.dll";       name = "SuperDuperDrum" },
+            @{ dll = "superduper_sampler.dll";    name = "SuperDuperSampler" },
+            @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -319,7 +344,7 @@ jobs:
           body: |
             SuperDuper DSP ${{ github.ref_name }}
 
-            Thirteen plugins — nine effects + four instruments:
+            Seventeen plugins — eleven effects + six instruments:
 
             **Effects:**
             * SuperDuper Reverb — Dattorro plate with sidechain ducking
@@ -331,12 +356,16 @@ jobs:
             * SuperDuper EQ — 3-band parametric RBJ biquad + HP/LP
             * SuperDuper Limiter — lookahead brickwall, 4× true-peak detection, PDC
             * SuperDuper Vocal — split-band de-esser + mouth de-clicker for rap
+            * SuperDuper Chorus — multi-tap modulated delay with band-named factory presets
+            * SuperDuper Looper — Mobius-style 4-track live looper with host-BPM sync
 
             **Instruments:**
             * SuperDuper Ambient — autonomous 4-voice chord-drone generator
             * SuperDuper Pad — polyphonic MIDI synth, 8-voice PadVoice + TPT/ZDF SVF
             * SuperDuper Wave — wavetable bass/lead with mouse-editable curve + 2-slot mod matrix
             * SuperDuper Kubyz — physical-model jaw-harp / khomus with vowel pad + mouth trajectory
+            * SuperDuper Drum — analog drum machine (Kick/Snare/HH/Clap/Cowbell) with on-screen pad UI
+            * SuperDuper Sampler — polyphonic WAV player with YIN pitch tuner, multi-mode filter, velocity-mod, reverse playback
 
             **Plugin formats:**
             - **CLAP** (`*-macos-arm64.zip`, `*-windows-x64.zip`) — native CLAP hosts (REAPER, Bitwig, …).

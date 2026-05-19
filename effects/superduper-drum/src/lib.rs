@@ -290,10 +290,23 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         CoreEventSpace::NoteOn(n) => {
                             let key = match n.key() {
                                 Match::Specific(k) => k as u8,
-                                _ => continue,
+                                Match::All => {
+                                    slog!("rx NoteOn key=All vel={:.2} → ignored", n.velocity());
+                                    continue;
+                                }
                             };
                             let velocity = n.velocity().clamp(0.0, 1.0) as f32;
-                            if let Some(voice) = note_to_voice(key) {
+                            let voice = note_to_voice(key);
+                            slog!(
+                                "rx NoteOn(clap) key={} vel={:.2} → {}",
+                                key, velocity,
+                                match voice {
+                                    Some(v) => format!("trigger {:?}", v),
+                                    None if note_passthrough => "passthrough".into(),
+                                    None => "ignored (no map, passthrough off)".into(),
+                                }
+                            );
+                            if let Some(voice) = voice {
                                 self.trigger(voice, velocity);
                             } else if note_passthrough {
                                 // Forward — same timing, same channel, same key.
@@ -327,6 +340,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                             // passes through verbatim.
                             let data = m.data();
                             let status = data[0] & 0xF0;
+                            slog!("rx MIDI status=0x{:02X} d1={} d2={}", status, data[1], data[2]);
                             match status {
                                 0x90 if data[2] > 0 => {
                                     let key = data[1];

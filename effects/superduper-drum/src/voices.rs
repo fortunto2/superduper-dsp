@@ -323,37 +323,33 @@ pub enum VoiceKind {
     Cowbell = 5,
 }
 
-/// Map a MIDI note number to a drum voice. Follows the GM Percussion
-/// pitch *classes* (C, D, D#, F#, G#, A#) regardless of octave —
-/// some DAWs put C1 at MIDI 24 (Cubase/Ableton "scientific") and
-/// others at 36 (REAPER/Logic), so we tolerate both by checking
-/// the note class modulo 12. The 6 voices live on the white-key
-/// triad + the three black keys above it for easy keyboard play.
+/// Map a MIDI note number to a drum voice. We use **six consecutive
+/// white keys** so a player can sweep across the keyboard left-to-
+/// right and hit every voice in order — much easier to find than the
+/// spread GM Percussion layout that puts the kit on alternating
+/// white and black keys.
 ///
-/// Mapping (class within an octave):
+/// Mapping (class within an octave), works in any octave (mod 12):
 ///   C  →  Kick
 ///   D  →  Snare
-///   D# →  Clap
-///   F# →  HH Closed
-///   G# →  HH Open
-///   A# →  Cowbell
+///   E  →  HH Closed
+///   F  →  HH Open
+///   G  →  Clap
+///   A  →  Cowbell
 ///
-/// Anything else (E, F, G, A, B + every white-key chord tone) passes
-/// through to the note-output port so a chained Wave/Kubyz can play
-/// the bassline from the same MIDI clip.
+/// Black keys (C#, D#, F#, G#, A#) and B fall through to the
+/// note-output port for chained Wave/Kubyz bass — bass parts in
+/// minor / major / blues all play cleanly without colliding with a
+/// drum hit.
 pub fn note_to_voice(key: u8) -> Option<VoiceKind> {
-    // Restrict to MIDI 24..72 (C0–C5) so very high or low keys still
-    // get a chance to pass through to a chained bass synth at the
-    // extremes. The drum range is roughly 4 octaves which covers
-    // any sensible play range.
-    if !(24..=72).contains(&key) { return None; }
+    if !(12..=108).contains(&key) { return None; }
     match key % 12 {
         0 => Some(VoiceKind::Kick),       // C
         2 => Some(VoiceKind::Snare),      // D
-        3 => Some(VoiceKind::Clap),       // D#
-        6 => Some(VoiceKind::HatClosed),  // F#
-        8 => Some(VoiceKind::HatOpen),    // G#
-        10 => Some(VoiceKind::Cowbell),   // A#
+        4 => Some(VoiceKind::HatClosed),  // E
+        5 => Some(VoiceKind::HatOpen),    // F
+        7 => Some(VoiceKind::Clap),       // G
+        9 => Some(VoiceKind::Cowbell),    // A
         _ => None,
     }
 }

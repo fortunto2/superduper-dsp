@@ -62,18 +62,18 @@ fn drum_triggers_and_passes_through_bass_notes() {
                 let start = block * BLOCK as usize;
                 let end = start + BLOCK as usize;
                 let mut in_buf = EventBuffer::new();
-                // Block 0: kick (C1 = 36), snare (D1 = 38), hat (F#1 = 42),
-                // and a bass note E3 = 52 — E is NOT in the drum map
-                // (those are C/D/D#/F#/G#/A#), so it should pass through.
+                // Block 0: kick (C1 = 36), snare (D1 = 38), HHc (E1 = 40),
+                // and a bass note C#3 = 49 — C# is NOT in the drum map
+                // (only C/D/E/F/G/A are), so it should pass through.
                 if block == 0 {
-                    for key in [36u16, 38, 42, 52] {
+                    for key in [36u16, 38, 40, 49] {
                         let on = NoteOnEvent::new(0, Pckn::new(0u16, 0u16, key, 0u32), 0.9);
                         in_buf.push(&on);
                     }
                 }
                 // Block 4: release the bass note.
                 if block == 4 {
-                    let off = NoteOffEvent::new(0, Pckn::new(0u16, 0u16, 52u16, 0u32), 1.0);
+                    let off = NoteOffEvent::new(0, Pckn::new(0u16, 0u16, 49u16, 0u32), 1.0);
                     in_buf.push(&off);
                 }
                 let inputs = InputEvents::from_buffer(&in_buf);

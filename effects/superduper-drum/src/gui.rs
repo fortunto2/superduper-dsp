@@ -90,6 +90,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         // frame; voice triggers reset them to 1.0 in the audio
         // thread. Visual feedback for "what just hit".
         draw_pad_strip(ui, state);
+        ui.add_space(2.0);
+        draw_mini_keyboard(ui, state);
+        ui.label(egui::RichText::new("MIDI map (any octave): C·Kick · D·Snare · E·HHc · F·HHo · G·Clap · A·Cowbell    (C#/D#/F#/G#/A#/B pass through to bass synth)")
+            .color(core_gui::GREEN_DIM).monospace().small());
         ui.add_space(4.0);
 
         // Six channel strips side by side.
@@ -192,4 +196,114 @@ fn draw_voice_strip(ui: &mut egui::Ui, state: &GuiState, v: usize) {
                 });
             }
         });
+}
+
+/// A clickable one-octave keyboard with voice labels on the white
+/// keys that trigger drums (C/D/E/F/G/A). The two non-drum keys
+/// (B + all 5 black keys) are dimmed and labelled "pass" — clicking
+/// them does nothing here (in a DAW they'd go out the note-output
+/// port to a chained synth).
+fn draw_mini_keyboard(ui: &mut egui::Ui, state: &GuiState) {
+    let total_w = ui.available_width();
+    let h = 56.0;
+    let (rect, _resp) = ui.allocate_exact_size(
+        egui::vec2(total_w, h),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, core_gui::PANEL_BG);
+
+    // 7 white keys side by side.
+    let white_count = 7.0;
+    let white_w = rect.width() / white_count;
+    // Drum voice that each white-key class maps to.
+    let white_voice: [(&str, Option<usize>); 7] = [
+        ("C·Kick",  Some(0)),
+        ("D·Snare", Some(1)),
+        ("E·HHc",   Some(2)),
+        ("F·HHo",   Some(3)),
+        ("G·Clap",  Some(4)),
+        ("A·Cowb",  Some(5)),
+        ("B·pass",  None),
+    ];
+    let inv_id = ui.next_auto_id().with("drum_keyboard");
+    let _ = inv_id; // suppress unused warning; we use explicit ids below.
+
+    for (i, (label, voice)) in white_voice.iter().enumerate() {
+        let key_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + i as f32 * white_w, rect.top()),
+            egui::vec2(white_w - 1.0, rect.height()),
+        );
+        let resp = ui.interact(
+            key_rect,
+            egui::Id::new(("drum_key_white", i)),
+            egui::Sense::click(),
+        );
+        let is_voice = voice.is_some();
+        let lit = if let Some(v) = voice {
+            state.shared.voice_pulse[*v].load(Ordering::Relaxed)
+        } else {
+            0.0
+        };
+        let hover = if resp.hovered() && is_voice { 0.3 } else { 0.0 };
+        let bright = (lit + hover).clamp(0.0, 1.0);
+        // White keys: warm cream when armed, brighter when lit.
+        let base = if is_voice { (230.0, 230.0, 200.0) } else { (140.0, 140.0, 130.0) };
+        let r = (base.0 + bright * (255.0 - base.0)) as u8;
+        let g = (base.1 + bright * (255.0 - base.1)) as u8;
+        let b = (base.2 + bright * (255.0 - base.2)) as u8;
+        painter.rect_filled(key_rect, 2.0, egui::Color32::from_rgb(r, g, b));
+        painter.rect_stroke(
+            key_rect, 2.0,
+            egui::Stroke::new(1.0, core_gui::GREEN_FAINT),
+            egui::StrokeKind::Inside,
+        );
+        // Label rotated upright in the centre.
+        painter.text(
+            egui::pos2(key_rect.center().x, key_rect.bottom() - 10.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::monospace(10.0),
+            if is_voice { egui::Color32::from_rgb(40, 40, 40) }
+            else { egui::Color32::from_rgb(90, 90, 90) },
+        );
+        if resp.clicked() {
+            if let Some(v) = voice {
+                state.shared.voice_trigger_request[*v].store(0.9, Ordering::Release);
+            }
+        }
+    }
+
+    // Black keys — drawn ON TOP of the whites at the standard
+    // C#-D# (skip) F#-G#-A# (skip) layout. All pass-through.
+    let black_w = white_w * 0.55;
+    let black_h = rect.height() * 0.62;
+    // x-offsets (in white-key positions from C): C# = 1.0 - half_black,
+    // D# = 2.0 - half_black, F# = 4.0 - half_black, etc.
+    let black_positions = [1.0_f32, 2.0, 4.0, 5.0, 6.0];
+    let black_labels = ["C#", "D#", "F#", "G#", "A#"];
+    for (i, &pos) in black_positions.iter().enumerate() {
+        let cx = rect.left() + pos * white_w;
+        let key_rect = egui::Rect::from_min_size(
+            egui::pos2(cx - black_w * 0.5, rect.top()),
+            egui::vec2(black_w, black_h),
+        );
+        let resp = ui.interact(
+            key_rect,
+            egui::Id::new(("drum_key_black", i)),
+            egui::Sense::hover(),
+        );
+        let hover = if resp.hovered() { 0.25 } else { 0.0 };
+        let r = (32.0 + hover * 40.0) as u8;
+        let g = (40.0 + hover * 60.0) as u8;
+        let b = (32.0 + hover * 40.0) as u8;
+        painter.rect_filled(key_rect, 2.0, egui::Color32::from_rgb(r, g, b));
+        painter.text(
+            egui::pos2(key_rect.center().x, key_rect.bottom() - 6.0),
+            egui::Align2::CENTER_CENTER,
+            black_labels[i],
+            egui::FontId::monospace(8.0),
+            egui::Color32::from_rgb(150, 150, 150),
+        );
+    }
 }

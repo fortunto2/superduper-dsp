@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use superduper_synth_core::gui as core_gui;
 
+use crate::bank::pitch_to_note_name;
 use crate::{
     add_sample_root, pick_sample, refresh_library, remove_sample_root, reset_sample_roots,
     P_ATTACK, P_DECAY, P_FINE, P_LOOP, P_LOOP_END, P_LOOP_START, P_OUTPUT, P_RELEASE, P_ROOT,
@@ -227,6 +228,70 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             let arrow_right = ctx_input_pressed_arrow(ui.ctx(), egui::Key::ArrowRight);
             if arrow_left { step_filtered(-1, state); }
             if arrow_right { step_filtered(1, state); }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Reset — snap pitch / trim / loop / env / output params
+                // back to their defaults from the PARAMS table. Doesn't
+                // touch the active sample or pack filter.
+                if ui.button("Reset")
+                    .on_hover_text("Reset Root / Tune / Fine / Trim / Loop / Env / Output to defaults")
+                    .clicked()
+                {
+                    let reset_ids = [
+                        P_ROOT, P_TUNE, P_FINE, P_LOOP, P_LOOP_START, P_LOOP_END,
+                        P_ATTACK, P_DECAY, P_SUSTAIN, P_RELEASE, P_OUTPUT,
+                        P_TRIM_START, P_TRIM_END,
+                    ];
+                    for &pid in &reset_ids {
+                        state.shared.params[pid].store(PARAMS[pid].default as f32, Ordering::Relaxed);
+                        state.shared.dirty_params[pid].store(true, Ordering::Relaxed);
+                    }
+                    state.status = "Reset to default values".into();
+                }
+
+                // Pitch tuner — show the detected note + cents offset of
+                // the current sample, plus a one-click "→ Root" button
+                // that sets Root to the detected MIDI note so the sample
+                // plays in tune at its native key.
+                let pitch_hz = {
+                    let g = state.shared.active_sample.lock();
+                    g.detected_pitch_hz
+                };
+                let (note_name, cents) = match pitch_hz {
+                    Some(hz) => pitch_to_note_name(hz),
+                    None => ("—".to_string(), 0),
+                };
+
+                if let Some(hz) = pitch_hz {
+                    if ui.small_button("→ Root")
+                        .on_hover_text("Set Root key to the detected note so the sample plays in tune at its native pitch")
+                        .clicked()
+                    {
+                        let midi_f = 69.0 + 12.0 * (hz / 440.0).log2();
+                        let midi = midi_f.round().clamp(0.0, 127.0);
+                        state.shared.params[P_ROOT].store(midi, Ordering::Relaxed);
+                        state.shared.dirty_params[P_ROOT].store(true, Ordering::Relaxed);
+                        // Also zero Fine cents so the offset shows correctly.
+                        state.shared.params[P_FINE].store(0.0, Ordering::Relaxed);
+                        state.shared.dirty_params[P_FINE].store(true, Ordering::Relaxed);
+                        state.status = format!("Root = {} ({:.1} Hz)", note_name, hz);
+                    }
+                }
+
+                let tuner_color = if pitch_hz.is_some() {
+                    if cents.abs() <= 5 { core_gui::GREEN_BRIGHT }
+                    else if cents.abs() <= 25 { core_gui::GREEN }
+                    else { egui::Color32::from_rgb(220, 160, 60) }
+                } else {
+                    core_gui::GREEN_DIM
+                };
+                let tuner_text = if let Some(hz) = pitch_hz {
+                    format!("♪ {:<4} {:+3}ct  ({:.1} Hz)", note_name, cents, hz)
+                } else {
+                    "♪ — (no pitch)".to_string()
+                };
+                ui.label(egui::RichText::new(tuner_text).color(tuner_color).monospace().strong());
+            });
         });
 
         ui.label(egui::RichText::new(&state.status).color(core_gui::GREEN_DIM).monospace().small());

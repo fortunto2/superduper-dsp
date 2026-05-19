@@ -20,6 +20,11 @@ pub struct SampleData {
     /// Cheap to render at any GUI width by sampling a uniform grid
     /// out of this fixed-size buffer.
     pub peaks: Vec<(f32, f32)>,
+    /// Detected fundamental frequency in Hz, if pitch could be
+    /// identified. None for noise / inharmonic / silent samples.
+    /// Used by the GUI tuner so the user can see what note the
+    /// sample sits on without ear-tuning by hand.
+    pub detected_pitch_hz: Option<f32>,
 }
 
 /// Number of peak buckets we cache per sample. 1024 is plenty for
@@ -71,7 +76,104 @@ pub fn empty_sample() -> Arc<SampleData> {
         channels: 1,
         samples: Vec::new(),
         peaks: Vec::new(),
+        detected_pitch_hz: None,
     })
+}
+
+/// Detect the fundamental frequency of a sample using a simplified
+/// YIN-style autocorrelation. Runs once at load time on the GUI
+/// thread; not RT-safe (allocates two scratch buffers). Returns
+/// None for noise / silence / inharmonic content.
+///
+/// The detector picks the loudest non-silent slice of the sample
+/// (so 808s with long silent tails don't drown out the kick body)
+/// and looks for periods between 30 Hz and 4 kHz, which covers
+/// everything from sub-bass to vocal formants.
+pub fn detect_pitch_hz(samples: &[f32], channels: u16, sample_rate: u32) -> Option<f32> {
+    let ch = channels.max(1) as usize;
+    let frame_count = samples.len() / ch;
+    if frame_count < 2048 { return None; }
+    let window_len = frame_count.min(4096);
+
+    // Scan in coarse hops for the slice with the highest peak — gives
+    // pitch detection a fighting chance on samples that start with
+    // silence or a transient before the tonal body.
+    let mut max_amp = 0.0f32;
+    let mut start = 0usize;
+    let hop = (frame_count / 32).max(128);
+    let probe = 512.min(frame_count);
+    let mut p = 0;
+    while p + probe <= frame_count {
+        let mut peak = 0.0f32;
+        for i in p..p + probe {
+            let v = samples[i * ch].abs();
+            if v > peak { peak = v; }
+        }
+        if peak > max_amp { max_amp = peak; start = p; }
+        p += hop;
+    }
+    if max_amp < 0.005 { return None; }
+    start = start.min(frame_count - window_len);
+
+    // Build a mono float window.
+    let mut x = vec![0.0f32; window_len];
+    for i in 0..window_len {
+        let base = (start + i) * ch;
+        x[i] = if ch == 1 { samples[base] }
+        else { 0.5 * (samples[base] + samples[base + 1]) };
+    }
+
+    let min_period = ((sample_rate as f32 / 4000.0) as usize).max(2);
+    let max_period = ((sample_rate as f32 / 30.0) as usize).min(window_len / 2 - 1);
+    if max_period <= min_period { return None; }
+
+    // Cumulative-mean-normalised difference function (YIN steps 1+2).
+    let n = max_period + 1;
+    let mut cnd = vec![1.0f32; n];
+    let mut acc = 0.0f64;
+    let mut prev_below = false;
+    let mut best_tau = 0usize;
+    let mut best_val = f32::INFINITY;
+    let threshold = 0.15f32;
+    for tau in 1..n {
+        // d[tau] — sum of squared differences over the window.
+        let mut s = 0.0f64;
+        let len = window_len - tau;
+        for i in 0..len {
+            let diff = x[i] - x[i + tau];
+            s += (diff * diff) as f64;
+        }
+        acc += s;
+        let val = if acc > 0.0 { (s * tau as f64 / acc) as f32 } else { 1.0 };
+        cnd[tau] = val;
+        if tau >= min_period {
+            // Track global minimum as fallback.
+            if val < best_val { best_val = val; best_tau = tau; }
+            // YIN: first valley below threshold whose next sample
+            // turns upward — that's our pitch candidate.
+            if val < threshold { prev_below = true; }
+            if prev_below && tau > 1 && cnd[tau - 1] < cnd[tau]
+                && cnd[tau - 1] < threshold {
+                best_tau = tau - 1;
+                break;
+            }
+        }
+    }
+    if best_tau < min_period || cnd[best_tau] > 0.5 { return None; }
+
+    // Parabolic interpolation around the chosen tau for sub-sample
+    // resolution — keeps detected pitch within a few cents of truth.
+    let refined = if best_tau > 0 && best_tau + 1 < n {
+        let a = cnd[best_tau - 1];
+        let b = cnd[best_tau];
+        let c = cnd[best_tau + 1];
+        let denom = 2.0 * (a - 2.0 * b + c);
+        if denom.abs() > 1e-9 {
+            best_tau as f32 + (a - c) / denom
+        } else { best_tau as f32 }
+    } else { best_tau as f32 };
+    let hz = sample_rate as f32 / refined;
+    if hz.is_finite() && hz > 20.0 && hz < 6000.0 { Some(hz) } else { None }
 }
 
 /// Pre-compute a coarse peak envelope for the GUI waveform display.
@@ -247,6 +349,7 @@ pub fn load_sample(path: &Path) -> Result<SampleData, String> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
     let peaks = compute_peaks(&wav.samples, wav.channels);
+    let detected_pitch_hz = detect_pitch_hz(&wav.samples, wav.channels, wav.sample_rate);
     Ok(SampleData {
         display_name,
         source_path: path.to_path_buf(),
@@ -254,5 +357,23 @@ pub fn load_sample(path: &Path) -> Result<SampleData, String> {
         channels: wav.channels,
         samples: wav.samples,
         peaks,
+        detected_pitch_hz,
     })
+}
+
+/// Convert a frequency in Hz to the nearest MIDI note name and cents
+/// offset. e.g. 442 Hz → ("A4", +8). Returns ("—", 0) for silence /
+/// unknown.
+pub fn pitch_to_note_name(hz: f32) -> (String, i32) {
+    if !hz.is_finite() || hz <= 0.0 { return ("—".into(), 0); }
+    let midi_f = 69.0 + 12.0 * (hz / 440.0).log2();
+    let nearest = midi_f.round() as i32;
+    let cents = ((midi_f - nearest as f32) * 100.0).round() as i32;
+    let nn = nearest.clamp(0, 127);
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = nn / 12 - 1;
+    let pc = (nn % 12) as usize;
+    (format!("{}{}", NAMES[pc], octave), cents)
 }

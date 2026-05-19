@@ -289,31 +289,33 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             if arrow_right { step_filtered(1, state); }
         });
 
-        // Tuner / Reset row — own line so it doesn't fight with the
-        // Pack/Sample combos for horizontal space.
+        // Tuner row — shows both the original detected pitch of the
+        // sample (read-only) and the pitch it actually plays at when
+        // the Root key is auditioned (= original × 2^((Tune+Fine)/12),
+        // so the user sees their detuning take effect live).
+        let pitch_hz = {
+            let g = state.shared.active_sample.lock();
+            g.detected_pitch_hz
+        };
+        let tune_st = state.shared.params[P_TUNE].load(Ordering::Relaxed);
+        let fine_ct = state.shared.params[P_FINE].load(Ordering::Relaxed);
+        let played_hz = pitch_hz.map(|hz| hz * 2f32.powf((tune_st + fine_ct / 100.0) / 12.0));
+
         ui.horizontal(|ui| {
-            let pitch_hz = {
-                let g = state.shared.active_sample.lock();
-                g.detected_pitch_hz
-            };
-            let (note_name, cents) = match pitch_hz {
+            // Native (detected) — what the WAV actually has on disk.
+            let (n_name, n_cents) = match pitch_hz {
                 Some(hz) => pitch_to_note_name(hz),
                 None => ("—".to_string(), 0),
             };
-            let tuner_color = if pitch_hz.is_some() {
-                if cents.abs() <= 5 { core_gui::GREEN_BRIGHT }
-                else if cents.abs() <= 25 { core_gui::GREEN }
-                else { egui::Color32::from_rgb(220, 160, 60) }
-            } else {
-                core_gui::GREEN_DIM
-            };
-            let tuner_text = if let Some(hz) = pitch_hz {
-                format!("♪ {:<4} {:+4} ct   {:>7.1} Hz", note_name, cents, hz)
+            let native_text = if let Some(hz) = pitch_hz {
+                format!("♪ {:<4} {:+4} ct   {:>7.1} Hz", n_name, n_cents, hz)
             } else {
                 "♪ —  (no pitch detected)".to_string()
             };
-            ui.label(egui::RichText::new("Tuner:").color(core_gui::GREEN_BRIGHT).monospace());
-            ui.label(egui::RichText::new(tuner_text).color(tuner_color).monospace().strong());
+            ui.label(egui::RichText::new("Native:").color(core_gui::GREEN_BRIGHT).monospace());
+            ui.label(egui::RichText::new(native_text)
+                .color(if pitch_hz.is_some() { core_gui::GREEN } else { core_gui::GREEN_DIM })
+                .monospace().strong());
 
             if let Some(hz) = pitch_hz {
                 if ui.button("→ Root")
@@ -328,9 +330,44 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     state.shared.dirty_params[P_FINE].store(true, Ordering::Relaxed);
                     state.shared.params[P_TUNE].store(0.0, Ordering::Relaxed);
                     state.shared.dirty_params[P_TUNE].store(true, Ordering::Relaxed);
-                    state.status = format!("Root = {} ({:.1} Hz)", note_name, hz);
+                    state.status = format!("Root = {} ({:.1} Hz)", n_name, hz);
                 }
             }
+        });
+
+        // Second tuner row — what the sample sounds like AFTER the
+        // current Tune / Fine offsets are applied at the Root key.
+        // Highlighted in amber when it differs from native so the
+        // user always knows whether they're hearing "as detected" or
+        // "with my detune". Cents are vs. nearest semitone of the
+        // played pitch, NOT vs. native — that way the user can see
+        // both how far the played note sits from a clean semitone
+        // and how the offset moved the pitch relative to native.
+        ui.horizontal(|ui| {
+            let (p_name, p_cents) = match played_hz {
+                Some(hz) => pitch_to_note_name(hz),
+                None => ("—".to_string(), 0),
+            };
+            let total_offset_ct = ((tune_st * 100.0) + fine_ct).round() as i32;
+            let played_text = if let Some(hz) = played_hz {
+                if total_offset_ct == 0 {
+                    format!("♪ {:<4} {:+4} ct   {:>7.1} Hz   (unchanged)", p_name, p_cents, hz)
+                } else {
+                    format!("♪ {:<4} {:+4} ct   {:>7.1} Hz   (offset {:+} ct)",
+                            p_name, p_cents, hz, total_offset_ct)
+                }
+            } else {
+                "♪ —".to_string()
+            };
+            let played_color = if played_hz.is_none() {
+                core_gui::GREEN_DIM
+            } else if total_offset_ct == 0 {
+                core_gui::GREEN_BRIGHT
+            } else {
+                egui::Color32::from_rgb(220, 170, 60)
+            };
+            ui.label(egui::RichText::new("Played:").color(core_gui::GREEN_BRIGHT).monospace());
+            ui.label(egui::RichText::new(played_text).color(played_color).monospace().strong());
         });
 
         ui.label(egui::RichText::new(&state.status).color(core_gui::GREEN_DIM).monospace().small());

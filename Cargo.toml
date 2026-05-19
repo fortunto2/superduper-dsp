@@ -24,6 +24,7 @@ members = [
     "effects/superduper-kubyz",
     "effects/superduper-chorus",
     "effects/superduper-drum",
+    "effects/superduper-sampler",
     "tools/sdsp-runner",
 ]
 

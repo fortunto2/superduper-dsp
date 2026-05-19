@@ -76,35 +76,8 @@ const VOICE_COUNT: usize = 8;
 // Logging
 // ---------------------------------------------------------------------------
 
-fn log_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".superduper-dsp")
-        .join("sampler.log")
-}
-
-static LOG_FILE: std::sync::OnceLock<Mutex<Option<std::fs::File>>> =
-    std::sync::OnceLock::new();
-
-fn init_logging() {
-    LOG_FILE.get_or_init(|| {
-        let path = log_path();
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
-        Mutex::new(std::fs::OpenOptions::new()
-            .create(true).append(true).open(&path).ok())
-    });
-}
-
-fn slog_args(args: std::fmt::Arguments<'_>) {
-    use std::io::Write;
-    if let Some(slot) = LOG_FILE.get() {
-        if let Some(file) = slot.lock().as_mut() {
-            let _ = writeln!(file, "{}", args);
-        }
-    }
-}
-macro_rules! slog { ($($arg:tt)*) => { $crate::slog_args(format_args!($($arg)*)) } }
+fn init_logging() { superduper_dsp_sdk::log::init("sampler"); }
+use superduper_dsp_sdk::slog;
 
 // ---------------------------------------------------------------------------
 // Param table
@@ -631,21 +604,7 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
-impl PluginStateImpl for PluginMainThread<'_> {
-    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        superduper_dsp_sdk::clap_helpers::save_simple_state(
-            &self.shared.params,
-            self.shared.bypass.load(Ordering::Relaxed),
-            output,
-        )
-    }
-    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
-        let bypass = superduper_dsp_sdk::clap_helpers::load_simple_state(
-            &self.shared.params, input)?;
-        self.shared.bypass.store(bypass, Ordering::Relaxed);
-        Ok(())
-    }
-}
+superduper_dsp_sdk::simple_state_impl!(PluginMainThread<'_>);
 
 use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,

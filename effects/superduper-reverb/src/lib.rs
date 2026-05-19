@@ -21,47 +21,8 @@ use atomic_float::AtomicF32;
 // feature flag.
 // ---------------------------------------------------------------------------
 
-fn log_path() -> std::path::PathBuf {
-    dirs_home()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(".superduper-dsp")
-        .join("reverb.log")
-}
-
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
-}
-
-static LOG_FILE: std::sync::OnceLock<parking_lot::Mutex<Option<std::fs::File>>> =
-    std::sync::OnceLock::new();
-
-fn init_logging() {
-    LOG_FILE.get_or_init(|| {
-        let path = log_path();
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok();
-        parking_lot::Mutex::new(file)
-    });
-}
-
-fn rlog_args(args: std::fmt::Arguments<'_>) {
-    use std::io::Write;
-    if let Some(slot) = LOG_FILE.get() {
-        if let Some(file) = slot.lock().as_mut() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let _ = writeln!(file, "[{}] {}", now, args);
-        }
-    }
-}
-
-macro_rules! rlog { ($($arg:tt)*) => { $crate::rlog_args(format_args!($($arg)*)) } }
+fn init_logging() { superduper_dsp_sdk::log::init("reverb"); }
+use superduper_dsp_sdk::slog;
 use clack_common::utils::ClapId;
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -412,7 +373,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        rlog!(
+        slog!(
             "activate: sr={}, frames={}..={}",
             audio_config.sample_rate, audio_config.min_frames_count, audio_config.max_frames_count
         );
@@ -478,7 +439,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         static PROCESS_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = PROCESS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if n.is_multiple_of(1024) {
-            rlog!(
+            slog!(
                 "process #{}: size={:.2} decay={:.2} damp={:.2} predelay={:.1}ms mod={:.2} width={:.2} mix={:.2} bypass={}",
                 n,
                 self.shared.params[P_SIZE].load(Ordering::Relaxed),
@@ -683,23 +644,7 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
 // REAPER drops everything when saving the project / FX chain preset.
 // ---------------------------------------------------------------------------
 
-impl PluginStateImpl for PluginMainThread<'_> {
-    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        superduper_dsp_sdk::clap_helpers::save_simple_state(
-            &self.shared.params,
-            self.shared.bypass.load(std::sync::atomic::Ordering::Relaxed),
-            output,
-        )
-    }
-    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
-        let bypass = superduper_dsp_sdk::clap_helpers::load_simple_state(
-            &self.shared.params,
-            input,
-        )?;
-        self.shared.bypass.store(bypass, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
-}
+superduper_dsp_sdk::simple_state_impl!(PluginMainThread<'_>);
 
 
 // ===========================================================================
@@ -734,12 +679,12 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     }
 
     fn create(&mut self, _config: GuiConfiguration) -> Result<(), PluginError> {
-        rlog!("gui::create");
+        slog!("gui::create");
         Ok(())
     }
 
     fn destroy(&mut self) {
-        rlog!("gui::destroy");
+        slog!("gui::destroy");
         self.gui_handle = None;
     }
 
@@ -778,7 +723,7 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     }
 
     fn set_parent(&mut self, window: ClapGuiWindow) -> Result<(), PluginError> {
-        rlog!("gui::set_parent (api={:?})", window.api_type());
+        slog!("gui::set_parent (api={:?})", window.api_type());
         let shared = self.shared.shared_handle();
         let handle = gui::open_window(&window, shared, self.gui_resize.clone());
         self.gui_handle = Some(handle);
@@ -786,8 +731,8 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     }
 
     fn set_transient(&mut self, _window: ClapGuiWindow) -> Result<(), PluginError> { Ok(()) }
-    fn show(&mut self) -> Result<(), PluginError> { rlog!("gui::show"); Ok(()) }
-    fn hide(&mut self) -> Result<(), PluginError> { rlog!("gui::hide"); Ok(()) }
+    fn show(&mut self) -> Result<(), PluginError> { slog!("gui::show"); Ok(()) }
+    fn hide(&mut self) -> Result<(), PluginError> { slog!("gui::hide"); Ok(()) }
 }
 
 pub struct SuperDuperReverb;
@@ -829,7 +774,7 @@ impl DefaultPluginFactory for SuperDuperReverb {
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
-        rlog!(
+        slog!(
             "new_shared: SuperDuper Reverb — build {} ({})",
             build_num!(),
             build_date!()

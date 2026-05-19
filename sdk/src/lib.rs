@@ -45,6 +45,51 @@
 pub mod dsp;
 pub mod build_meta;
 pub mod clap_helpers;
+pub mod log;
+
+/// Stamp out the standard `PluginStateImpl` block for a plugin whose
+/// state is exactly "all CLAP params + the bypass flag" — i.e. it
+/// doesn't carry any custom non-param data (no harmonic curves, no
+/// drawn waveforms, no MIDI-learn map).
+///
+/// Before this macro every such plugin (~13 of them) copy-pasted the
+/// same 15-line `impl PluginStateImpl for PluginMainThread<'_> { save,
+/// load }` block. Call sites now collapse to:
+///
+/// ```ignore
+/// superduper_dsp_sdk::simple_state_impl!(PluginMainThread<'_>);
+/// ```
+///
+/// Plugins with custom state (Kubyz, Wave) keep their hand-rolled
+/// JSON impl and just don't invoke the macro.
+#[macro_export]
+macro_rules! simple_state_impl {
+    ($ty:ty) => {
+        impl ::clack_extensions::state::PluginStateImpl for $ty {
+            fn save(
+                &mut self,
+                output: &mut ::clack_common::stream::OutputStream,
+            ) -> Result<(), ::clack_plugin::prelude::PluginError> {
+                $crate::clap_helpers::save_simple_state(
+                    &self.shared.params,
+                    self.shared.bypass.load(::std::sync::atomic::Ordering::Relaxed),
+                    output,
+                )
+            }
+            fn load(
+                &mut self,
+                input: &mut ::clack_common::stream::InputStream,
+            ) -> Result<(), ::clack_plugin::prelude::PluginError> {
+                let bypass =
+                    $crate::clap_helpers::load_simple_state(&self.shared.params, input)?;
+                self.shared
+                    .bypass
+                    .store(bypass, ::std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    };
+}
 
 // ============================================================================
 // ABI types for daemon ↔ dylib metadata exchange

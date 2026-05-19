@@ -165,6 +165,12 @@ pub struct SharedParamsInner {
     /// Per-voice "currently firing" flag for the GUI pad-light strip.
     /// Atomically pulsed on trigger and decayed by the GUI.
     pub voice_pulse: [AtomicF32; 6],
+    /// GUI → audio thread trigger bridge. The pads in the GUI set a
+    /// non-zero velocity here (8-bit, fits in an AtomicF32) and the
+    /// audio thread reads + zeros it at the top of every process()
+    /// block, firing the corresponding voice. Atomic instead of a
+    /// channel so we don't allocate or block on the audio thread.
+    pub voice_trigger_request: [AtomicF32; 6],
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -181,6 +187,7 @@ impl PluginShared {
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 voice_pulse: std::array::from_fn(|_| AtomicF32::new(0.0)),
+                voice_trigger_request: std::array::from_fn(|_| AtomicF32::new(0.0)),
             }),
         }
     }
@@ -253,6 +260,25 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
         let note_passthrough = self.shared.params[P_NOTE_OUT].load(Ordering::Relaxed) >= 0.5;
+
+        // Drain GUI-triggered hits — the pads in the GUI write a
+        // non-zero velocity here when clicked. We zero each slot
+        // after firing so the next click re-arms it.
+        for (idx, slot) in self.shared.voice_trigger_request.iter().enumerate() {
+            let vel = slot.swap(0.0, Ordering::AcqRel);
+            if vel > 0.0 {
+                let voice = match idx {
+                    0 => VoiceKind::Kick,
+                    1 => VoiceKind::Snare,
+                    2 => VoiceKind::HatClosed,
+                    3 => VoiceKind::HatOpen,
+                    4 => VoiceKind::Clap,
+                    5 => VoiceKind::Cowbell,
+                    _ => continue,
+                };
+                self.trigger(voice, vel.clamp(0.0, 1.0));
+            }
+        }
 
         // Walk the event stream — drum-map keys trigger voices, anything
         // else passes through to the note output (when enabled). We

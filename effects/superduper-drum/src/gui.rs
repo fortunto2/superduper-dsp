@@ -126,13 +126,19 @@ fn draw_pad_strip(ui: &mut egui::Ui, state: &mut GuiState) {
             let new_pulse = (pulse - decay_step * 5.0).max(0.0);
             state.shared.voice_pulse[v].store(new_pulse, Ordering::Relaxed);
 
-            let (rect, _resp) = ui.allocate_exact_size(
-                egui::vec2(pad_w, h), egui::Sense::hover(),
+            let (rect, resp) = ui.allocate_exact_size(
+                egui::vec2(pad_w, h), egui::Sense::click(),
             );
+            // Trigger on click — write velocity into the bridge
+            // atomic; audio thread consumes at the top of next block.
+            if resp.clicked() {
+                state.shared.voice_trigger_request[v].store(0.9, Ordering::Release);
+            }
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 4.0, core_gui::PANEL_BG);
-            // Pulse colour: bright when fresh, faint when idle.
-            let bright = pulse.clamp(0.0, 1.0);
+            // Pulse + hover combined for richer feedback.
+            let hover_boost = if resp.hovered() { 0.25 } else { 0.0 };
+            let bright = (pulse + hover_boost).clamp(0.0, 1.0);
             let r = (60.0 + bright * 150.0) as u8;
             let g = (90.0 + bright * 140.0) as u8;
             let b = (60.0 + bright * 30.0) as u8;

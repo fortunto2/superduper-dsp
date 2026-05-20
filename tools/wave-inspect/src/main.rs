@@ -23,6 +23,13 @@ const PREVIEW_HZ: f32 = 440.0; // A4
 const PREVIEW_SR: u32 = 44100;
 const PEAK_TARGET: f32 = 0.95;
 
+/// Spectrum-diff thresholds used to label transforms in the report.
+/// Below `PHASE_ONLY` the transform changed nothing audible on steady
+/// tones (mirror, invert — phase-only); below `SUBTLE` it's a small
+/// shift; above is clearly audible.
+const AUDIBILITY_PHASE_ONLY_DB: f32 = 5.0;
+const AUDIBILITY_SUBTLE_DB: f32 = 30.0;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let inputs: Vec<PathBuf> = if args.is_empty() {
@@ -281,11 +288,6 @@ fn process_one(input: &std::path::Path) {
         let tx_path = out_dir.join(format!("{basename}__tx_{name}.wav"));
         superduper_synth_core::wav::write_mono_f32_wav(&tx_path, &tx_preview, PREVIEW_SR).unwrap();
         let tx_rms = (tx_preview.iter().map(|s| s * s).sum::<f32>() / n_samples as f32).sqrt();
-        // Spectrum diff vs source — total dB across first 100 bins.
-        // < 5 dB: phase-only (mirror, invert) — audibly identical
-        //         on steady tones. CORRECT DSP, not a bug.
-        // 5..30 dB: subtle change (skew, fold)
-        // 30+ dB: clearly audible (octave shifts, bright, crush, S+H)
         let spec_tx = superduper_synth_core::analysis::magnitude_spectrum_db(&derived);
         let spectrum_diff_db: f32 = spec_src
             .iter()
@@ -294,8 +296,8 @@ fn process_one(input: &std::path::Path) {
             .map(|(a, b)| (a - b).abs())
             .sum();
         let audibility = match spectrum_diff_db {
-            d if d < 5.0 => "phase-only (steady tones sound identical)",
-            d if d < 30.0 => "subtle",
+            d if d < AUDIBILITY_PHASE_ONLY_DB => "phase-only (steady tones sound identical)",
+            d if d < AUDIBILITY_SUBTLE_DB => "subtle",
             _ => "clearly audible",
         };
         println!(

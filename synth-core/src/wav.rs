@@ -241,7 +241,19 @@ pub fn read_stitched_wavetable(
     if n == 0 || n > max_frames {
         return Ok(None);
     }
-    // Mono-fold while splitting into per-frame chunks.
+    // Mono fast-path — Serum-format wavetables are mono, so we can
+    // memcpy chunks directly instead of routing every sample through
+    // `read_mono_at` (which re-derefs + divides per call).
+    if wav.channels <= 1 {
+        return Ok(Some(
+            wav.samples
+                .chunks_exact(frame_len)
+                .take(n)
+                .map(|c| c.to_vec())
+                .collect(),
+        ));
+    }
+    // Stereo fallback — fold L+R per sample.
     let mut out = Vec::with_capacity(n);
     for k in 0..n {
         let mut chunk = Vec::with_capacity(frame_len);

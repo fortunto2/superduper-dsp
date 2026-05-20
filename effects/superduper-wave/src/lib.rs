@@ -1111,20 +1111,18 @@ impl PluginStateImpl for PluginMainThread<'_> {
         }
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
         // Prefer the full `frames` array; fall back to v1's single
-        // `frame_a` if absent. Either way every entry must be exactly
-        // WT_SIZE — drop anything else as corrupt.
-        let raw_frames: Vec<&Vec<f32>> = if !state.frames.is_empty() {
-            state.frames.iter().collect()
+        // `frame_a` if absent. Every entry must be exactly WT_SIZE.
+        let mips: Vec<MipWavetable> = if !state.frames.is_empty() {
+            state.frames
+                .iter()
+                .filter(|f| f.len() == osc::WT_SIZE)
+                .map(|f| osc::mip_from_table(f))
+                .collect()
         } else if state.frame_a.len() == osc::WT_SIZE {
-            vec![&state.frame_a]
+            vec![osc::mip_from_table(&state.frame_a)]
         } else {
-            vec![]
+            Vec::new()
         };
-        let mips: Vec<MipWavetable> = raw_frames
-            .iter()
-            .filter(|f| f.len() == osc::WT_SIZE)
-            .map(|f| osc::mip_from_table(f))
-            .collect();
         if !mips.is_empty() {
             push_custom_frames(&self.shared, mips);
         }

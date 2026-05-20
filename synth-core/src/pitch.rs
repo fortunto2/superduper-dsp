@@ -378,39 +378,40 @@ pub fn transform_octave_down(frame: &[f32]) -> Vec<f32> {
     out
 }
 
-/// Low-pass via moving-average smoothing — kills high harmonics,
-/// produces a darker / softer wavetable. `kernel` controls width
-/// (3 = mild, 11 = aggressive, 31 = almost-sine).
+/// Low-pass via moving-average smoothing (wraparound) — kills high
+/// harmonics, produces a darker / softer wavetable. `kernel` controls
+/// width (3 = mild, 11 = aggressive, 31 = almost-sine).
+///
+/// O(N) via sliding-window sum — drop one trailing sample, add one
+/// leading sample per output. Beats the naive O(N·K) loop ~5× at K=11.
 pub fn transform_smooth(frame: &[f32], kernel: usize) -> Vec<f32> {
     let n = frame.len();
-    let k = kernel.max(1) | 1; // force odd so we have a centre
+    let k = kernel.max(1) | 1;
     let half = k / 2;
+    let inv_k = 1.0 / k as f32;
     let mut out = vec![0.0f32; n];
-    for i in 0..n {
-        let mut sum = 0.0f32;
-        for j in 0..k {
-            let idx = (i + n - half + j) % n;
-            sum += frame[idx];
-        }
-        out[i] = sum / k as f32;
+    // Seed the window with the first K samples centred on i = 0.
+    let mut sum: f32 = (0..k).map(|j| frame[(n - half + j) % n]).sum();
+    out[0] = sum * inv_k;
+    for i in 1..n {
+        let leaving = frame[(i + n - half - 1) % n];
+        let entering = frame[(i + half) % n];
+        sum += entering - leaving;
+        out[i] = sum * inv_k;
     }
     out
 }
 
-/// Brighten — high-pass emphasis via derivative (high-shelf-ish).
-/// `amount` 0..1 controls how much extra high-frequency content to
-/// mix in. Re-normalised so peak amplitude doesn't run away.
-///
-/// Implemented as `out[i] = (1 - amount) * frame[i] + amount * (frame[next] - frame[prev]) * n/4`
-/// — the centred derivative gives strong harmonic emphasis without
-/// the phase shift of a one-sided difference.
+/// Brighten — high-pass emphasis via centred derivative (no phase
+/// shift, unlike a one-sided diff). `amount` 0..1; re-normalised to
+/// source peak so cranking it doesn't blow up.
 pub fn transform_bright(frame: &[f32], amount: f32) -> Vec<f32> {
     let n = frame.len();
     let amount = amount.clamp(0.0, 1.0);
     if amount < 1e-6 {
         return frame.to_vec();
     }
-    let scale = (n as f32) / 16.0; // enough to dominate the spectrum
+    let scale = (n as f32) / 16.0;
     let mut out = vec![0.0f32; n];
     for i in 0..n {
         let next = (i + 1) % n;
@@ -418,15 +419,8 @@ pub fn transform_bright(frame: &[f32], amount: f32) -> Vec<f32> {
         let deriv = (frame[next] - frame[prev]) * 0.5;
         out[i] = (1.0 - amount) * frame[i] + amount * deriv * scale;
     }
-    // Re-normalise to source peak so the slider doesn't blow up.
     let peak_in = frame.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    let peak_out = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    if peak_out > 1e-6 && peak_in > 1e-6 {
-        let g = peak_in / peak_out;
-        for s in out.iter_mut() {
-            *s *= g;
-        }
-    }
+    normalise_peak(&mut out, peak_in);
     out
 }
 
@@ -462,23 +456,14 @@ pub fn transform_bitcrush(frame: &[f32], bits: u32) -> Vec<f32> {
         .collect()
 }
 
-/// Skew the cycle horizontally — compress one half and stretch the
-/// other. `amount` in [-1, +1] (0 = no change, +1 = max-right skew,
-/// -1 = max-left). Changes the pulse width / duty cycle character,
-/// most audible on saws and pulses where it shifts the harmonic
-/// balance between odd and even.
+/// Skew the cycle horizontally — re-map x → x^k. `amount` in
+/// [-1, +1]: -1 → k=0.25 (stretch left), 0 → k=1 (no-op), +1 → k=4
+/// (compress left). Changes the pulse-width / duty-cycle character;
+/// audible on saws and pulses where it tilts the odd/even harmonic
+/// balance.
 pub fn transform_skew(frame: &[f32], amount: f32) -> Vec<f32> {
     let n = frame.len();
-    // Skew via re-mapping x → x^k where k > 1 compresses early
-    // samples (left-skew), k < 1 stretches.
-    let k = if amount.abs() < 1e-6 {
-        1.0
-    } else {
-        // Map amount to a power that's well-behaved on [-1, +1].
-        // amount = +1 → k = 4, amount = -1 → k = 0.25.
-        (amount * 0.69314).exp() * if amount.is_sign_positive() { 1.0 } else { 1.0 }
-    };
-    let k = 2f32.powf(amount.clamp(-1.0, 1.0) * 2.0); // -1 → 0.25, 0 → 1, +1 → 4
+    let k = 2f32.powf(amount.clamp(-1.0, 1.0) * 2.0);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let t = i as f32 / (n - 1) as f32;

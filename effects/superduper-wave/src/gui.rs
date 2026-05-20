@@ -1207,7 +1207,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                                 // / Audacity / any wavetable tool can read
                                 // the curve. Failure here is non-fatal —
                                 // JSON is the canonical source.
-                                let wav_msg = match write_sibling_wav(&name, &preset.extra.effective_frames()) {
+                                // `snapshot_preset` always populates `frames`,
+                                // so pass it directly without an extra clone.
+                                let wav_msg = match write_sibling_wav(&name, &preset.extra.frames) {
                                     Ok(_) => format!("Saved '{name}' (+wav)"),
                                     Err(e) => format!("Saved '{name}', wav failed: {e}"),
                                 };
@@ -1336,44 +1338,31 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         });
 
         // Wavetable transforms — apply destructively to frame_a so
-        // user can stack effects. Each button derives a new timbre
-        // from the current cycle: "из звука в звук".
+        // user can stack effects ("из звука в звук").
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Transform:").color(core_gui::GREEN_DIM).monospace().small());
             use superduper_synth_core::pitch as wtx;
-            let mut transform: Option<Box<dyn Fn(&[f32]) -> Vec<f32>>> = None;
-            if ui.button("Mirror").on_hover_text("Reverse the cycle in time").clicked() {
-                transform = Some(Box::new(wtx::transform_mirror));
-            }
-            if ui.button("Invert").on_hover_text("Flip polarity").clicked() {
-                transform = Some(Box::new(wtx::transform_invert));
-            }
-            if ui.button("Oct+").on_hover_text("Pitch up one octave (period doubling)").clicked() {
-                transform = Some(Box::new(wtx::transform_octave_up));
-            }
-            if ui.button("Oct−").on_hover_text("Pitch down one octave (period halving)").clicked() {
-                transform = Some(Box::new(wtx::transform_octave_down));
-            }
-            if ui.button("Smooth").on_hover_text("Low-pass — softer, darker timbre").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_smooth(f, 11)));
-            }
-            if ui.button("Bright").on_hover_text("Emphasise transitions — sharper").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_bright(f, 0.4)));
-            }
-            if ui.button("Phaser").on_hover_text("Add quarter-phase copy — phaser notch").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_phase_add(f, 0.25)));
-            }
-            if ui.button("Fold").on_hover_text("Wave-fold distortion at 0.7").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_foldback(f, 0.7)));
-            }
-            if ui.button("Crush").on_hover_text("Bit-crush to 4 bits — lo-fi stairstep").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_bitcrush(f, 4)));
-            }
-            if ui.button("Skew").on_hover_text("Pulse-width skew — duty cycle shift").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_skew(f, 0.6)));
-            }
-            if ui.button("S+H").on_hover_text("Sample-and-hold every 8 samples — metallic").clicked() {
-                transform = Some(Box::new(|f| wtx::transform_sample_hold(f, 8)));
+            type Tx = fn(&[f32]) -> Vec<f32>;
+            // Table of (label, tooltip, transform). Adding a new
+            // transform = add one row.
+            let buttons: &[(&str, &str, Tx)] = &[
+                ("Mirror",  "Reverse the cycle in time",                 wtx::transform_mirror),
+                ("Invert",  "Flip polarity",                              wtx::transform_invert),
+                ("Oct+",    "Pitch up one octave (period doubling)",      wtx::transform_octave_up),
+                ("Oct−",    "Pitch down one octave (period halving)",     wtx::transform_octave_down),
+                ("Smooth",  "Low-pass — softer, darker timbre",           |f| wtx::transform_smooth(f, 11)),
+                ("Bright",  "Emphasise transitions — sharper",            |f| wtx::transform_bright(f, 0.4)),
+                ("Phaser",  "Add quarter-phase copy — phaser notch",      |f| wtx::transform_phase_add(f, 0.25)),
+                ("Fold",    "Wave-fold distortion at 0.7",                |f| wtx::transform_foldback(f, 0.7)),
+                ("Crush",   "Bit-crush to 4 bits — lo-fi stairstep",      |f| wtx::transform_bitcrush(f, 4)),
+                ("Skew",    "Pulse-width skew — duty cycle shift",        |f| wtx::transform_skew(f, 0.6)),
+                ("S+H",     "Sample-and-hold every 8 samples — metallic", |f| wtx::transform_sample_hold(f, 8)),
+            ];
+            let mut transform: Option<Tx> = None;
+            for (label, hover, tx) in buttons {
+                if ui.button(*label).on_hover_text(*hover).clicked() {
+                    transform = Some(*tx);
+                }
             }
             if let Some(tx) = transform {
                 let new_curve = tx(&state.preview_a);

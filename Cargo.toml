@@ -27,6 +27,7 @@ members = [
     "effects/superduper-sampler",
     "effects/superduper-looper",
     "effects/superduper-filter",
+    "effects/superduper-midside",
     "tools/sdsp-runner",
     "tools/wave-inspect",
 ]

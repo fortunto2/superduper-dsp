@@ -222,7 +222,58 @@ fn main() {
         preview_peak > 0.1 && preview_peak < 1.0,
         "preview peak {preview_peak} should be loud but un-clipped"
     );
-    println!("✓ all invariants OK");
+
+    // Stage 7 — apply every transform to frame_a and render a preview
+    // WAV per transform. Eight derived timbres from one source —
+    // the "из звука в звук" demo.
+    println!();
+    println!("=== Wavetable transforms (each → separate preview wav) ===");
+    use superduper_synth_core::pitch as wtx;
+    let transforms: Vec<(&str, Box<dyn Fn(&[f32]) -> Vec<f32>>)> = vec![
+        ("mirror", Box::new(wtx::transform_mirror)),
+        ("invert", Box::new(wtx::transform_invert)),
+        ("octave_up", Box::new(wtx::transform_octave_up)),
+        ("octave_down", Box::new(wtx::transform_octave_down)),
+        ("smooth", Box::new(|f| wtx::transform_smooth(f, 11))),
+        ("bright", Box::new(|f| wtx::transform_bright(f, 0.4))),
+        ("phaser", Box::new(|f| wtx::transform_phase_add(f, 0.25))),
+        ("foldback", Box::new(|f| wtx::transform_foldback(f, 0.7))),
+    ];
+    for (name, tx) in &transforms {
+        let derived = tx(&frame_a);
+        assert_eq!(derived.len(), WT_SIZE);
+        let dpeak = derived.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // Render a quick A4 preview of the transformed cycle.
+        let mut tx_preview = Vec::with_capacity(n_samples);
+        let mut tx_phase = 0.0f32;
+        for _ in 0..n_samples {
+            let pos = tx_phase * WT_SIZE as f32;
+            let i0 = pos.floor() as usize % WT_SIZE;
+            let i1 = (i0 + 1) % WT_SIZE;
+            let frac = pos - pos.floor();
+            tx_preview
+                .push((derived[i0] + (derived[i1] - derived[i0]) * frac) * 0.6);
+            tx_phase += phase_inc;
+            if tx_phase >= 1.0 {
+                tx_phase -= 1.0;
+            }
+        }
+        let tx_path = out_dir.join(format!("{basename}__tx_{name}.wav"));
+        superduper_synth_core::wav::write_mono_f32_wav(&tx_path, &tx_preview, PREVIEW_SR).unwrap();
+        let tx_rms = (tx_preview.iter().map(|s| s * s).sum::<f32>() / n_samples as f32).sqrt();
+        println!(
+            "  {:<12}  peak={:.3}  rms={:.3}  {}",
+            name,
+            dpeak,
+            tx_rms,
+            tx_path.display()
+        );
+        assert!(dpeak <= 1.0 + 1e-3, "transform {name} clipped: peak {dpeak}");
+        assert!(tx_rms > 0.01, "transform {name} too quiet: rms {tx_rms}");
+    }
+
+    println!();
+    println!("✓ all invariants OK ({} transforms tested)", transforms.len());
 }
 
 fn _unused(_: &Path) {} // shut up unused-import lints during refactors

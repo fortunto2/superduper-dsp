@@ -1263,6 +1263,52 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             }
         });
 
+        // Wavetable transforms — apply destructively to frame_a so
+        // user can stack effects. Each button derives a new timbre
+        // from the current cycle: "из звука в звук".
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Transform:").color(core_gui::GREEN_DIM).monospace().small());
+            use superduper_synth_core::pitch as wtx;
+            let mut transform: Option<Box<dyn Fn(&[f32]) -> Vec<f32>>> = None;
+            if ui.button("Mirror").on_hover_text("Reverse the cycle in time").clicked() {
+                transform = Some(Box::new(wtx::transform_mirror));
+            }
+            if ui.button("Invert").on_hover_text("Flip polarity").clicked() {
+                transform = Some(Box::new(wtx::transform_invert));
+            }
+            if ui.button("Oct+").on_hover_text("Pitch up one octave (period doubling)").clicked() {
+                transform = Some(Box::new(wtx::transform_octave_up));
+            }
+            if ui.button("Oct−").on_hover_text("Pitch down one octave (period halving)").clicked() {
+                transform = Some(Box::new(wtx::transform_octave_down));
+            }
+            if ui.button("Smooth").on_hover_text("Low-pass — softer, darker timbre").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_smooth(f, 11)));
+            }
+            if ui.button("Bright").on_hover_text("Emphasise transitions — sharper").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_bright(f, 0.4)));
+            }
+            if ui.button("Phaser").on_hover_text("Add quarter-phase copy — phaser notch").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_phase_add(f, 0.25)));
+            }
+            if ui.button("Fold").on_hover_text("Wave-fold distortion at 0.7").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_foldback(f, 0.7)));
+            }
+            if let Some(tx) = transform {
+                let new_curve = tx(&state.preview_a);
+                let mip = mip_from_table(&new_curve);
+                push_custom_frame_a(&state.shared, mip);
+                state.preview_a.copy_from_slice(&new_curve);
+                state.nodes = CurveNodes::from_table(&new_curve, 24);
+                state.user_edited = true;
+                state.preview_for_preset = state.selected_preset;
+                state.selected_node = None;
+                auto_save_last(state);
+                state.last_io_msg =
+                    Some(("transform applied".to_string(), std::time::Instant::now()));
+            }
+        });
+
         let mut curve_changed = false;
         if state.edit_mode {
             ui.horizontal(|ui| {

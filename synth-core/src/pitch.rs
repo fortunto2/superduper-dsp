@@ -328,6 +328,134 @@ pub fn wav_to_single_cycle(
     }
 }
 
+// ===========================================================================
+// Wavetable processing transforms — apply to a single-cycle frame to
+// derive a new timbre. Each takes &[f32] and returns Vec<f32> of the
+// same length. All produce normalised output (peak ≤ 1.0) so chaining
+// doesn't blow up the synth.
+// ===========================================================================
+
+/// Reverse the waveform in time. For a single cycle this is identical
+/// to mirroring around the centre — the spectrum's magnitudes stay
+/// the same but phase relationships flip, which changes the
+/// percussive feel (attack-y vs body-heavy) without changing brightness.
+pub fn transform_mirror(frame: &[f32]) -> Vec<f32> {
+    frame.iter().rev().copied().collect()
+}
+
+/// Flip polarity. Spectrum is identical (any continuous wavetable
+/// inverted is its own mirror) but the DC offset and asymmetry flip —
+/// noticeable on plucks and saws, inaudible on perfectly-symmetric
+/// sines.
+pub fn transform_invert(frame: &[f32]) -> Vec<f32> {
+    frame.iter().map(|s| -s).collect()
+}
+
+/// Octave-up via period doubling: pack two copies of the input cycle
+/// into the same `WT_SIZE`. The pitched fundamental moves up an octave
+/// because we now have two periods per cycle.
+pub fn transform_octave_up(frame: &[f32]) -> Vec<f32> {
+    let n = frame.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let src = (i * 2) % n;
+        out.push(frame[src]);
+    }
+    out
+}
+
+/// Octave-down via period halving: stretch the first half of the
+/// input across the full `WT_SIZE` (skip the second half — for a
+/// single cycle the second half is redundant, but for richer
+/// content this drops the upper harmonics).
+pub fn transform_octave_down(frame: &[f32]) -> Vec<f32> {
+    let n = frame.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let src = i / 2;
+        out.push(frame[src]);
+    }
+    out
+}
+
+/// Low-pass via moving-average smoothing — kills high harmonics,
+/// produces a darker / softer wavetable. `kernel` controls width
+/// (3 = mild, 11 = aggressive, 31 = almost-sine).
+pub fn transform_smooth(frame: &[f32], kernel: usize) -> Vec<f32> {
+    let n = frame.len();
+    let k = kernel.max(1) | 1; // force odd so we have a centre
+    let half = k / 2;
+    let mut out = vec![0.0f32; n];
+    for i in 0..n {
+        let mut sum = 0.0f32;
+        for j in 0..k {
+            let idx = (i + n - half + j) % n;
+            sum += frame[idx];
+        }
+        out[i] = sum / k as f32;
+    }
+    out
+}
+
+/// Brighten by adding a high-frequency derivative on top — sharpens
+/// transitions, accents higher harmonics. `amount` 0..1 (0 = no
+/// change, 1 = full derivative).
+pub fn transform_bright(frame: &[f32], amount: f32) -> Vec<f32> {
+    let n = frame.len();
+    let amount = amount.clamp(0.0, 1.0);
+    let mut out = vec![0.0f32; n];
+    for i in 0..n {
+        let next = (i + 1) % n;
+        let deriv = frame[next] - frame[i];
+        out[i] = frame[i] + amount * deriv * (n as f32) * 0.01;
+    }
+    // Re-normalise so brightness doesn't run away.
+    let peak = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    if peak > 1e-6 {
+        let g = (frame.iter().map(|s| s.abs()).fold(0.0f32, f32::max) / peak).max(0.1);
+        for s in out.iter_mut() {
+            *s *= g;
+        }
+    }
+    out
+}
+
+/// Add a phase-shifted copy of the cycle to itself — emphasises
+/// certain harmonics and cancels others depending on the shift.
+/// `phase_offset` is a fraction of `WT_SIZE` (0.5 = half cycle —
+/// kills all odd harmonics; 0.25 = quarter — phaser-like notch).
+pub fn transform_phase_add(frame: &[f32], phase_offset: f32) -> Vec<f32> {
+    let n = frame.len();
+    let offset = ((phase_offset.fract().abs() * n as f32) as usize) % n;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        out.push(0.5 * (frame[i] + frame[(i + offset) % n]));
+    }
+    out
+}
+
+/// Fold-back distortion at `threshold` — samples above the threshold
+/// wrap around into negative territory and back. Wave-shaper style,
+/// adds odd harmonics on a sine.
+pub fn transform_foldback(frame: &[f32], threshold: f32) -> Vec<f32> {
+    let t = threshold.clamp(0.05, 1.0);
+    frame
+        .iter()
+        .map(|&s| {
+            let mut x = s / t;
+            // Triangle-wave fold: oscillate inside [-1, 1].
+            while x > 1.0 || x < -1.0 {
+                if x > 1.0 {
+                    x = 2.0 - x;
+                } else {
+                    x = -2.0 - x;
+                }
+            }
+            x * t
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +567,89 @@ mod tests {
     fn multi_frame_returns_none_for_unpitched() {
         let s = vec![0.0; 4096];
         assert!(wav_to_multi_frame(&s, 44100, 8, 2048, 0.95).is_none());
+    }
+
+    // ----- Wavetable transforms -----
+
+    fn one_cycle_sine(len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| (i as f32 / len as f32 * std::f32::consts::TAU).sin())
+            .collect()
+    }
+
+    #[test]
+    fn mirror_reverses_in_time() {
+        let s = vec![1.0, 2.0, 3.0, 4.0];
+        let m = transform_mirror(&s);
+        assert_eq!(m, vec![4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn invert_flips_polarity() {
+        let s = vec![0.5, -0.3, 1.0];
+        let i = transform_invert(&s);
+        assert_eq!(i, vec![-0.5, 0.3, -1.0]);
+    }
+
+    #[test]
+    fn octave_up_doubles_period() {
+        // One cycle of sine → octave_up should contain 2 cycles
+        // (same sample count, twice the frequency content).
+        let s = one_cycle_sine(2048);
+        let up = transform_octave_up(&s);
+        assert_eq!(up.len(), 2048);
+        // First half of `up` should equal first half compressed —
+        // sample 0 = sine[0], sample 1024 = sine[0] again (period
+        // doubled means index wraps at midpoint).
+        assert!((up[0] - s[0]).abs() < 1e-6);
+        assert!((up[1024] - s[0]).abs() < 1e-6); // wrap
+        // Compute the actual cycle count: zero crossings should
+        // happen twice as often.
+        let cycles_orig = count_zero_crossings(&s);
+        let cycles_up = count_zero_crossings(&up);
+        assert!(cycles_up >= 2 * cycles_orig - 1);
+    }
+
+    #[test]
+    fn smooth_reduces_peak_high_freq() {
+        // Square wave → smoothing → should be less abrupt.
+        let mut sq = vec![0.0; 2048];
+        for (i, s) in sq.iter_mut().enumerate() {
+            *s = if i < 1024 { 1.0 } else { -1.0 };
+        }
+        let smoothed = transform_smooth(&sq, 11);
+        // Edges should be ramped, not vertical jumps.
+        let max_jump_orig: f32 = sq.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        let max_jump_smooth: f32 = smoothed
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            max_jump_smooth < max_jump_orig,
+            "smoothing should reduce abrupt jumps: orig={max_jump_orig}, smooth={max_jump_smooth}"
+        );
+    }
+
+    #[test]
+    fn phase_add_half_kills_odd_harmonics() {
+        // A sine wave + itself shifted by half a period = zero.
+        let s = one_cycle_sine(2048);
+        let cancelled = transform_phase_add(&s, 0.5);
+        let max: f32 = cancelled.iter().map(|x| x.abs()).fold(0.0, f32::max);
+        assert!(max < 0.01, "half-period add should cancel sine: max={max}");
+    }
+
+    #[test]
+    fn foldback_clamps_then_folds() {
+        let s = vec![0.0, 0.5, 1.5, 2.0, 1.5, 0.5];
+        let folded = transform_foldback(&s, 1.0);
+        // All output samples should be in [-1, 1].
+        for v in &folded {
+            assert!(v.abs() <= 1.0 + 1e-6, "foldback out of range: {v}");
+        }
+    }
+
+    fn count_zero_crossings(samples: &[f32]) -> usize {
+        samples.windows(2).filter(|w| w[0] * w[1] < 0.0).count()
     }
 }

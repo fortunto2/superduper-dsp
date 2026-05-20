@@ -143,24 +143,42 @@ fn rms_db(samples: &[f32], skip: usize) -> f32 {
 }
 
 #[test]
-fn vocal_passes_steady_sine_intact() {
-    // De-esser is transient-driven — on a sustained sine no detector
-    // fires, so the plugin should pass it through to within ~1 dB of
-    // the input. Tests both 1 kHz (body) and 6 kHz (sib band) to make
-    // sure neither filter rings or applies static gain.
-    let body = render_sine(1_000.0, -3.0, -36.0, 12.0);
-    let sib  = render_sine(6_000.0, -3.0, -36.0, 12.0);
+fn vocal_passes_below_threshold_sine_intact() {
+    // De-esser is amplitude-triggered — content below the threshold
+    // shouldn't be touched. With threshold at 0 dB and a -6 dB sine,
+    // both the body (1 kHz) AND the sib band (6 kHz) should pass
+    // through unchanged. This is the "no false positives" contract.
+    let body = render_sine(1_000.0, -3.0, 0.0, 12.0);
+    let sib  = render_sine(6_000.0, -3.0, 0.0, 12.0);
     let skip = (SR * 0.20) as usize;
     let body_db = rms_db(&body, skip);
     let sib_db = rms_db(&sib, skip);
-    eprintln!("Steady-state passthrough: 1k {body_db:.2} dB, 6k {sib_db:.2} dB (input -6 dB RMS)");
+    eprintln!("Below-threshold passthrough: 1k {body_db:.2} dB, 6k {sib_db:.2} dB (input -6 dB RMS)");
     assert!(
         (body_db - -6.0).abs() < 1.0,
         "1 kHz body shifted to {body_db:.2} dB (expected -6 ± 1)"
     );
     assert!(
-        (sib_db - -6.0).abs() < 2.0,
-        "6 kHz sib shifted to {sib_db:.2} dB (expected -6 ± 2 — band-split tolerates a bit of FIR ripple)"
+        (sib_db - -6.0).abs() < 1.0,
+        "6 kHz sib shifted to {sib_db:.2} dB (expected -6 ± 1)"
+    );
+}
+
+#[test]
+fn vocal_cuts_above_threshold_sustained_sib() {
+    // Counterpart: with threshold WAY below the input level, a
+    // sustained 6 kHz tone SHOULD get cut by the peaking-EQ notch.
+    // Verifies the new architecture (single-filter, phase-coherent)
+    // actually reduces sustained sibilance — the old band-split
+    // version only managed ~0.2 dB on this signal due to phase
+    // mismatch (see `tools/vocal-inspect` for the spectral proof).
+    let sib  = render_sine(6_000.0, -3.0, -36.0, 12.0);
+    let skip = (SR * 0.20) as usize;
+    let sib_db = rms_db(&sib, skip);
+    eprintln!("Above-threshold sustained 6k: {sib_db:.2} dB (input -6 dB RMS, expected ≤ -12)");
+    assert!(
+        sib_db < -10.0,
+        "6 kHz sustained tone with threshold -36 dB should be cut to ≤ -10 dB, got {sib_db:.2}"
     );
 }
 

@@ -294,6 +294,25 @@ pub struct PluginAudioProcessor<'a> {
     /// One-pole smoother on the tracked frequency so the HPF cutoff
     /// doesn't pitch-zipper as the energy ratio jitters per sample.
     track_freq_smoothed: f32,
+
+    /// Stage 2 — peaking-EQ cut biquads. The OLD architecture was
+    /// `body = dry - HPF(dry); output = body + sib·gain` which
+    /// suffered from phase mismatch at the crossover (body and the
+    /// gain-reduced sib interfere constructively in some bands,
+    /// partially undoing the cut — `vocal-inspect` measured only
+    /// 0.17 dB reduction where ~3 dB was expected on a sustained
+    /// 7.5 kHz sine). The NEW architecture replaces the band-split
+    /// with a peaking-EQ notch whose gain tracks the envelope —
+    /// single minimum-phase filter, no phase mismatch.
+    ess_cut_l: Biquad,
+    ess_cut_r: Biquad,
+    lo_cut_l: Biquad,
+    lo_cut_r: Biquad,
+    /// Cached peaking-EQ "current gain" so we only re-coefficient
+    /// the biquads when the gain reduction actually moves more than
+    /// a small threshold — saves ~10 trig calls per sample.
+    ess_cut_gain_db: f32,
+    lo_cut_gain_db: f32,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -396,6 +415,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             track_env_mid: EnvelopeDetector::default(),
             track_env_high: EnvelopeDetector::default(),
             track_freq_smoothed: 6000.0,
+
+            ess_cut_l: { let mut b = Biquad::default(); b.set_peaking(sr, load(P_ESS_FREQ), 2.5, 0.0); b },
+            ess_cut_r: { let mut b = Biquad::default(); b.set_peaking(sr, load(P_ESS_FREQ), 2.5, 0.0); b },
+            lo_cut_l: { let mut b = Biquad::default(); b.set_peaking(sr, load(P_LO_FREQ), 2.0, 0.0); b },
+            lo_cut_r: { let mut b = Biquad::default(); b.set_peaking(sr, load(P_LO_FREQ), 2.0, 0.0); b },
+            ess_cut_gain_db: 0.0,
+            lo_cut_gain_db: 0.0,
         })
     }
 
@@ -694,26 +720,15 @@ fn step_sample(
     let det_l = key_l.unwrap_or(dry_l);
     let det_r = key_r.unwrap_or(dry_r);
 
-    let sib_l = p.ess_hpf_l.process(dry_l);
-    let sib_r = p.ess_hpf_r.process(dry_r);
-    let body_l = dry_l - sib_l;
-    let body_r = dry_r - sib_r;
-
-    // Run the high-band detector on the chosen key signal.
-    let det_sib_l = if key_l.is_some() {
-        // We can't run the per-channel biquad twice on different inputs
-        // and keep it cheap — instead detector reads dry via a separate
-        // path using the same HPF. Cheap-and-honest approach: rerun
-        // through a one-shot biquad clone. Since the biquads are
-        // Direct-Form II Transposed, two parallel instances cost
-        // exactly as much as duplicating state. For now we just feed
-        // the key through the existing HPF — accepts a tiny coupling
-        // artefact on toggle-switch. Documented for future cleanup.
-        p.ess_hpf_l.process(det_l)
-    } else {
-        sib_l
-    };
-    let det_sib_r = if key_r.is_some() { p.ess_hpf_r.process(det_r) } else { sib_r };
+    // Detector path — HPFs ONLY isolate the sibilance/plosive bands
+    // for envelope estimation. They no longer feed the audio output
+    // (which used to do `body = dry - sib; out = body + sib·gain`
+    // and suffered from phase mismatch at the crossover, partially
+    // cancelling the cut). The detected sibilance now drives a
+    // peaking-EQ notch on the dry signal instead — single
+    // minimum-phase filter, no body/sib summation.
+    let det_sib_l = p.ess_hpf_l.process(det_l);
+    let det_sib_r = p.ess_hpf_r.process(det_r);
     let sc = det_sib_l.abs().max(det_sib_r.abs());
     let env = p.ess_env.process(sc, sr, 0.5, 20.0);
     let env_db = 20.0 * env.max(1e-9).log10();
@@ -723,15 +738,24 @@ fn step_sample(
     } else {
         0.0
     };
-    let ess_gain_lin = 10f32.powf(ess_gr_db * ess_range / 20.0);
-    // Mid-band split for the low-band de-esser. We process body_l/body_r
-    // (post-sib-attenuation signal) through the lo HPF to isolate the
-    // 0.5–3 kHz energy range; below that stays untouched.
-    let mid_l = p.lo_hpf_l.process(body_l);
-    let mid_r = p.lo_hpf_r.process(body_r);
-    let low_only_l = body_l - mid_l;
-    let low_only_r = body_r - mid_r;
-    let lo_sc = mid_l.abs().max(mid_r.abs());
+    // Apply: peaking-EQ notch at `effective_ess_freq` with gain
+    // `ess_gr_db × range`. Recompute coefficients when gain or freq
+    // moves enough (cheap — every few samples on transient).
+    let target_ess_cut = ess_gr_db * ess_range;
+    if (target_ess_cut - p.ess_cut_gain_db).abs() > 0.05
+        || (effective_ess_freq - p.ess_freq_state).abs() > 5.0
+    {
+        p.ess_cut_l.set_peaking(sr, effective_ess_freq, 2.5, target_ess_cut);
+        p.ess_cut_r.set_peaking(sr, effective_ess_freq, 2.5, target_ess_cut);
+        p.ess_cut_gain_db = target_ess_cut;
+    }
+    let after_ess_l = p.ess_cut_l.process(dry_l);
+    let after_ess_r = p.ess_cut_r.process(dry_r);
+
+    // Lo-band detector — same band-isolation HPF (detector only).
+    let det_lo_l = p.lo_hpf_l.process(det_l);
+    let det_lo_r = p.lo_hpf_r.process(det_r);
+    let lo_sc = det_lo_l.abs().max(det_lo_r.abs());
     let lo_env = p.lo_env.process(lo_sc, sr, 0.5, 30.0);
     let lo_env_db = 20.0 * lo_env.max(1e-9).log10();
     let lo_over = lo_env_db - lo_thr;
@@ -740,9 +764,20 @@ fn step_sample(
     } else {
         0.0
     };
-    let lo_gain_lin = 10f32.powf(lo_gr_db / 20.0);
-    let proc_l = low_only_l + mid_l * lo_gain_lin + sib_l * ess_gain_lin;
-    let proc_r = low_only_r + mid_r * lo_gain_lin + sib_r * ess_gain_lin;
+    if (lo_gr_db - p.lo_cut_gain_db).abs() > 0.05
+        || (lo_freq - p.lo_freq_state).abs() > 5.0
+    {
+        p.lo_cut_l.set_peaking(sr, lo_freq, 2.0, lo_gr_db);
+        p.lo_cut_r.set_peaking(sr, lo_freq, 2.0, lo_gr_db);
+        p.lo_cut_gain_db = lo_gr_db;
+    }
+    let proc_l = p.lo_cut_l.process(after_ess_l);
+    let proc_r = p.lo_cut_r.process(after_ess_r);
+    // Compute the "sib" used by Listen mode (dry minus processed —
+    // i.e. exactly what was cut).
+    let sib_l = dry_l - proc_l;
+    let sib_r = dry_r - proc_r;
+    let ess_gain_lin = 10f32.powf(ess_gr_db * ess_range / 20.0);
 
     let fast_l = p.click_fast_l.process(proc_l.abs(), sr, 0.1, 0.5);
     let fast_r = p.click_fast_r.process(proc_r.abs(), sr, 0.1, 0.5);
@@ -775,11 +810,15 @@ fn step_sample(
     // content × the gain reduction). Lets the user tune Ess Thr / Ess
     // Amt by ear instead of by guessing where the harshness sits.
     if ess_listen {
-        let gr_only = 1.0 - ess_gain_lin; // how much we cut
-        let listen_l = sib_l * gr_only * out_gain;
-        let listen_r = sib_r * gr_only * out_gain;
+        // What's actually being cut = dry - processed. This is the
+        // signal the peaking-EQ notch removed from the dry input.
+        let listen_l = sib_l * out_gain;
+        let listen_r = sib_r * out_gain;
         return (listen_l, listen_r, ess_gr_db.min(lo_gr_db), click_gain_db);
     }
+    // Suppress dead_code warning on the legacy ess_gain_lin (kept
+    // for backwards-compatible interpretation of A/B snapshots).
+    let _ = ess_gain_lin;
     let final_l = dry_l * (1.0 - mix) + wet_l * mix;
     let final_r = dry_r * (1.0 - mix) + wet_r * mix;
 

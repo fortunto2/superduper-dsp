@@ -231,11 +231,15 @@ struct DeEsserConfig {
     ess_amt_db: f32,
 }
 
-/// Reproduces the SuperDuper Vocal de-esser DSP path with the new
-/// Stage 2 tracker. Returns (output_signal, tracked_freq_per_sample).
+/// Reproduces the SuperDuper Vocal de-esser DSP path — Stage 2
+/// architecture: detector HPF + envelope drives a peaking-EQ notch
+/// at the tracked frequency. No body/sib summation (which had phase
+/// mismatch). Returns (output_signal, tracked_freq_per_sample).
 fn run_de_esser(input: &[f32], cfg: &DeEsserConfig) -> (Vec<f32>, Vec<f32>) {
     let mut ess_hpf = Biquad::default();
     ess_hpf.set_hpf(SR, cfg.ess_freq, 0.707);
+    let mut ess_cut = Biquad::default();
+    ess_cut.set_peaking(SR, cfg.ess_freq, 2.5, 0.0);
     let mut ess_env = EnvelopeDetector::default();
     let mut track_bp_mid = Biquad::default();
     track_bp_mid.set_bandpass(SR, 5250.0, 1.5);
@@ -245,13 +249,13 @@ fn run_de_esser(input: &[f32], cfg: &DeEsserConfig) -> (Vec<f32>, Vec<f32>) {
     let mut track_env_high = EnvelopeDetector::default();
     let mut tracked_freq = cfg.ess_freq;
     let mut ess_freq_state = cfg.ess_freq;
+    let mut cut_gain_state = 0.0f32;
     let smooth_coef = (-1.0 / (0.008 * SR)).exp();
 
     let mut out = Vec::with_capacity(input.len());
     let mut tracked = Vec::with_capacity(input.len());
 
     for &dry in input {
-        // Tracking: compute the desired cutoff each sample.
         let effective_freq = if cfg.track_on {
             let band_mid = track_bp_mid.process(dry);
             let band_high = track_bp_high.process(dry);
@@ -265,14 +269,13 @@ fn run_de_esser(input: &[f32], cfg: &DeEsserConfig) -> (Vec<f32>, Vec<f32>) {
             cfg.ess_freq
         };
         tracked.push(effective_freq);
-        // Re-coefficient the HPF when cutoff drifts.
         if (effective_freq - ess_freq_state).abs() > 5.0 {
             ess_hpf.set_hpf(SR, effective_freq, 0.707);
             ess_freq_state = effective_freq;
         }
-        let sib = ess_hpf.process(dry);
-        let body = dry - sib;
-        let env = ess_env.process(sib.abs(), SR, 0.5, 20.0);
+        // Detector — HPF + envelope, never reaches the output path.
+        let det = ess_hpf.process(dry);
+        let env = ess_env.process(det.abs(), SR, 0.5, 20.0);
         let env_db = 20.0 * env.max(1e-9).log10();
         let over = env_db - cfg.ess_thr_db;
         let gr_db = if over > 0.0 {
@@ -280,14 +283,22 @@ fn run_de_esser(input: &[f32], cfg: &DeEsserConfig) -> (Vec<f32>, Vec<f32>) {
         } else {
             0.0
         };
-        let gain = 10f32.powf(gr_db / 20.0);
-        let processed = if cfg.listen_on {
-            // Listen mode — solo the cut portion.
-            sib * (1.0 - gain)
+        // Peaking-EQ cut at tracked freq with gain = gr_db. Recompute
+        // when either gain or freq drifts enough.
+        if (gr_db - cut_gain_state).abs() > 0.05
+            || (effective_freq - ess_freq_state).abs() > 5.0
+        {
+            ess_cut.set_peaking(SR, effective_freq, 2.5, gr_db);
+            cut_gain_state = gr_db;
+        }
+        let processed = ess_cut.process(dry);
+        let final_sample = if cfg.listen_on {
+            // What was cut = dry - processed.
+            dry - processed
         } else {
-            body + sib * gain
+            processed
         };
-        out.push(processed);
+        out.push(final_sample);
     }
     (out, tracked)
 }

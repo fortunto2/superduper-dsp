@@ -52,9 +52,7 @@ fn preset_json_round_trip() {
     let preset: WavePreset = UserPreset::new(
         name.clone(),
         params.clone(),
-        WaveExtra {
-            frame_a: frame_a.clone(),
-        },
+        WaveExtra::from_frames(vec![frame_a.clone()]),
     )
     .unwrap();
     repo.save(&preset, params.len()).unwrap();
@@ -143,7 +141,7 @@ fn drag_drop_resamples_arbitrary_wav_to_wt_size() {
 
 #[test]
 fn extra_validation_rejects_wrong_length() {
-    let bad = WaveExtra { frame_a: vec![0.0; 1024] }; // not WT_SIZE
+    let bad = WaveExtra { frame_a: vec![0.0; 1024], frames: Vec::new() }; // not WT_SIZE
     let err = bad.validate().unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("frame_a length"), "got: {msg}");
@@ -153,7 +151,7 @@ fn extra_validation_rejects_wrong_length() {
 fn extra_validation_rejects_nan() {
     let mut samples = fixture_curve();
     samples[123] = f32::NAN;
-    let bad = WaveExtra { frame_a: samples };
+    let bad = WaveExtra { frame_a: samples, frames: Vec::new() };
     let err = bad.validate().unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("non-finite"), "got: {msg}");
@@ -163,7 +161,7 @@ fn extra_validation_rejects_nan() {
 fn extra_validation_rejects_out_of_range() {
     let mut samples = fixture_curve();
     samples[42] = 9.99; // |sample| > 2.0
-    let bad = WaveExtra { frame_a: samples };
+    let bad = WaveExtra { frame_a: samples, frames: Vec::new() };
     let err = bad.validate().unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("magnitude"), "got: {msg}");
@@ -182,7 +180,7 @@ fn full_save_load_workflow_with_paired_wav() {
         version: superduper_synth_core::user_preset::PRESET_FORMAT_VERSION,
         name: name.clone(),
         params: params.clone(),
-        extra: WaveExtra { frame_a: frame_a.clone() },
+        extra: WaveExtra::from_frames(vec![frame_a.clone()]),
     };
 
     // 1. Save JSON via repo

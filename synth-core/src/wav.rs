@@ -216,6 +216,61 @@ pub fn write_mono_f32_wav(
     std::fs::write(path, out).map_err(WavError::Io)
 }
 
+/// Read `path` as a "Serum-style stitched" wavetable: if the file's
+/// mono-fold length is an exact multiple of `frame_len` AND the
+/// quotient is in [1, max_frames], split into that many cycles
+/// (each one `frame_len` samples, no resampling). Otherwise return
+/// `None` — caller should fall back to single-cycle extraction
+/// (pitch detect + period extract or full-file resample).
+///
+/// Stereo input averages L+R into mono before the length check.
+pub fn read_stitched_wavetable(
+    path: &std::path::Path,
+    frame_len: usize,
+    max_frames: usize,
+) -> Result<Option<Vec<Vec<f32>>>, WavError> {
+    let wav = parse_wav_file(path)?;
+    let frames = wav.frame_count();
+    if frames == 0 || frame_len == 0 {
+        return Ok(None);
+    }
+    if frames % frame_len != 0 {
+        return Ok(None);
+    }
+    let n = frames / frame_len;
+    if n == 0 || n > max_frames {
+        return Ok(None);
+    }
+    // Mono-fold while splitting into per-frame chunks.
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let mut chunk = Vec::with_capacity(frame_len);
+        for i in 0..frame_len {
+            chunk.push(wav.read_mono_at(k * frame_len + i));
+        }
+        out.push(chunk);
+    }
+    Ok(Some(out))
+}
+
+/// Write N single-cycle frames as one Serum-style stitched WAV —
+/// mono 32-bit float, samples are `frames[0]…frames[N-1]`
+/// concatenated end-to-end. Files written this way are accepted as
+/// wavetables by Serum / Vital / Phase Plant / Pigments / any synth
+/// that follows the convention.
+pub fn write_stitched_wavetable(
+    path: &std::path::Path,
+    frames: &[Vec<f32>],
+    sample_rate: u32,
+) -> Result<(), WavError> {
+    let total: usize = frames.iter().map(|f| f.len()).sum();
+    let mut flat = Vec::with_capacity(total);
+    for f in frames {
+        flat.extend_from_slice(f);
+    }
+    write_mono_f32_wav(path, &flat, sample_rate)
+}
+
 /// Read `path` as a single-cycle mono WAV and resample / truncate /
 /// pad to exactly `target_len` samples. Handles any sample-rate the
 /// file claims (we ignore it) and either stereo (averaged to mono)
@@ -321,6 +376,62 @@ mod tests {
         for (a, b) in input.iter().zip(out.iter()) {
             assert!((a - b).abs() < 1e-6, "delta {}", (a - b));
         }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn stitched_wavetable_round_trip() {
+        // 4 different frames, each 2048 samples, concatenated and
+        // written as one WAV. Reading back must reconstruct identical
+        // per-frame contents.
+        let frames: Vec<Vec<f32>> = (0..4)
+            .map(|k| {
+                (0..2048)
+                    .map(|i| {
+                        let phase = i as f32 / 2048.0 * std::f32::consts::TAU;
+                        (phase * (k as f32 + 1.0)).sin()
+                    })
+                    .collect()
+            })
+            .collect();
+        let tmp = std::env::temp_dir().join(format!(
+            "sdsp-stitched-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_stitched_wavetable(&tmp, &frames, SINGLE_CYCLE_SAMPLE_RATE).unwrap();
+        let parsed = read_stitched_wavetable(&tmp, 2048, 16)
+            .unwrap()
+            .expect("4 × 2048 should split");
+        assert_eq!(parsed.len(), 4);
+        for (orig, decoded) in frames.iter().zip(parsed.iter()) {
+            assert_eq!(orig.len(), decoded.len());
+            for (a, b) in orig.iter().zip(decoded.iter()) {
+                assert!((a - b).abs() < 1e-6, "stitched delta {}", (a - b).abs());
+            }
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn stitched_returns_none_for_non_multiple_length() {
+        // 1500-sample sine — not a multiple of 2048, so the splitter
+        // refuses (caller falls back to pitch-detect single-cycle).
+        let src: Vec<f32> = (0..1500)
+            .map(|i| (i as f32 / 1500.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let tmp = std::env::temp_dir().join(format!(
+            "sdsp-stitched-bad-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_mono_f32_wav(&tmp, &src, 44100).unwrap();
+        let parsed = read_stitched_wavetable(&tmp, 2048, 16).unwrap();
+        assert!(parsed.is_none());
         std::fs::remove_file(&tmp).ok();
     }
 

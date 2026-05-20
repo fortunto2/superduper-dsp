@@ -1060,10 +1060,12 @@ struct WaveState {
     version: u32,
     params: Vec<f32>,
     bypass: bool,
-    /// Currently-loaded frame_a samples (full bandwidth, level 0). On
-    /// reload we re-build the mip pyramid from this — no need to store
-    /// every mip level.
+    /// Legacy single-frame field — kept so v1 builds can still load
+    /// projects saved by newer builds. Always populated from frames[0].
     frame_a: Vec<f32>,
+    /// Full N-frame wavetable. Empty for v1-format saves.
+    #[serde(default)]
+    frames: Vec<Vec<f32>>,
     /// Active preset index — informational, helps the GUI restore the
     /// dropdown selection.
     active_preset: u32,
@@ -1073,14 +1075,23 @@ const WAVE_STATE_VERSION: u32 = 1;
 
 impl PluginStateImpl for PluginMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
-        let guard = self.shared.wavetable.lock();
-        let frame_a: Vec<f32> = guard[0].levels[0].iter().copied().collect();
-        drop(guard);
+        // Snapshot every active frame so the full N-frame wavetable
+        // round-trips through project save/load. frame_a stays as
+        // the canonical frames[0] for backward compat with v1 readers.
+        let frames: Vec<Vec<f32>> = {
+            let guard = self.shared.wavetable.lock();
+            guard
+                .iter()
+                .map(|mip| mip.levels[0].iter().copied().collect())
+                .collect()
+        };
+        let frame_a = frames.first().cloned().unwrap_or_default();
         let state = WaveState {
             version: WAVE_STATE_VERSION,
             params: self.shared.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             frame_a,
+            frames,
             active_preset: self.shared.active_preset.load(Ordering::Relaxed),
         };
         serde_json::to_writer(output, &state)
@@ -1099,10 +1110,23 @@ impl PluginStateImpl for PluginMainThread<'_> {
             }
         }
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
-        // Rebuild mip pyramid from the saved frame_a, then swap atomically.
-        if state.frame_a.len() == osc::WT_SIZE {
-            let new_a = osc::mip_from_table(&state.frame_a);
-            push_custom_frame_a(&self.shared, new_a);
+        // Prefer the full `frames` array; fall back to v1's single
+        // `frame_a` if absent. Either way every entry must be exactly
+        // WT_SIZE — drop anything else as corrupt.
+        let raw_frames: Vec<&Vec<f32>> = if !state.frames.is_empty() {
+            state.frames.iter().collect()
+        } else if state.frame_a.len() == osc::WT_SIZE {
+            vec![&state.frame_a]
+        } else {
+            vec![]
+        };
+        let mips: Vec<MipWavetable> = raw_frames
+            .iter()
+            .filter(|f| f.len() == osc::WT_SIZE)
+            .map(|f| osc::mip_from_table(f))
+            .collect();
+        if !mips.is_empty() {
+            push_custom_frames(&self.shared, mips);
         }
         self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
         Ok(())
@@ -1216,8 +1240,11 @@ impl DefaultPluginFactory for SuperDuperWave {
                     slot.store(*v, Ordering::Relaxed);
                 }
             }
-            let mip = osc::mip_from_table(&preset.extra.frame_a);
-            push_custom_frame_a(&shared, mip);
+            // Restore all N frames (auto-default carries the same
+            // count as when the user last saved — could be 1..=16).
+            let frames = preset.extra.effective_frames();
+            let mips: Vec<_> = frames.iter().map(|f| osc::mip_from_table(f)).collect();
+            push_custom_frames(&shared, mips);
         }
         Ok(shared)
     }

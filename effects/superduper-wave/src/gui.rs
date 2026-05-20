@@ -315,11 +315,17 @@ fn snapshot_preset(
     state: &GuiState,
     name: superduper_synth_core::user_preset::PresetName,
 ) -> crate::user_extra::WavePreset {
-    let frame_a: Vec<f32> = {
+    // Snapshot ALL active frames (1..=FRAMES_MAX). frames[0] also
+    // populates the legacy `frame_a` field so older builds (v1
+    // single-cycle only) can still load the patch.
+    let frames: Vec<Vec<f32>> = {
         let guard = state.shared.wavetable.lock();
-        guard[0].levels[0].iter().copied().collect()
+        guard
+            .iter()
+            .map(|mip| mip.levels[0].iter().copied().collect())
+            .collect()
     };
-    let extra = crate::user_extra::WaveExtra { frame_a };
+    let extra = crate::user_extra::WaveExtra::from_frames(frames);
     let params: Vec<f32> = state
         .shared
         .params
@@ -350,18 +356,35 @@ fn auto_save_last(state: &GuiState) {
 /// readable in Serum / Vital / any audio editor. Single-cycle mono
 /// 32-bit float at 88200 Hz (Serum's convention). I/O errors are
 /// stashed as a toast — the canonical curve still lives in the JSON.
-fn write_sibling_wav(name: &superduper_synth_core::user_preset::PresetName, frame_a: &[f32]) -> Result<std::path::PathBuf, String> {
+fn write_sibling_wav(
+    name: &superduper_synth_core::user_preset::PresetName,
+    frames: &[Vec<f32>],
+) -> Result<std::path::PathBuf, String> {
     let dir = crate::user_extra::repo()
         .base_dir()
         .join("presets");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.wav", name.as_str()));
-    superduper_synth_core::wav::write_mono_f32_wav(
-        &path,
-        frame_a,
-        superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
-    )
-    .map_err(|e| e.to_string())?;
+    if frames.len() <= 1 {
+        // Single cycle — plain mono float WAV (Serum's "wavetable
+        // frame" file convention).
+        let frame_a = frames.first().map(|v| v.as_slice()).unwrap_or(&[]);
+        superduper_synth_core::wav::write_mono_f32_wav(
+            &path,
+            frame_a,
+            superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        // Multi-frame — stitch N × WT_SIZE samples (Serum / Vital
+        // multi-frame wavetable format).
+        superduper_synth_core::wav::write_stitched_wavetable(
+            &path,
+            frames,
+            superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(path)
 }
 
@@ -421,6 +444,21 @@ fn apply_loaded_wav(state: &mut GuiState, loaded: &LoadedWav) {
 
 fn load_wav_as_frame_a(path: &std::path::Path, n_frames: usize) -> Result<LoadedWav, String> {
     let n_frames = n_frames.clamp(1, crate::FRAMES_MAX);
+    // Serum-style stitched WAV — if the file length is N × WT_SIZE
+    // we don't need to detect pitch: we already have N pre-baked
+    // single-cycle frames sitting in the file. Try this first.
+    if let Ok(Some(frames)) = superduper_synth_core::wav::read_stitched_wavetable(
+        path,
+        WT_SIZE,
+        crate::FRAMES_MAX,
+    ) {
+        let note = format!(
+            "Serum-style stitched WAV → {} frames detected from file length",
+            frames.len()
+        );
+        return Ok(LoadedWav { frames, note });
+    }
+
     let data = superduper_synth_core::wav::parse_wav_file(path).map_err(|e| e.to_string())?;
     let mono: Vec<f32> = if data.channels >= 2 {
         let frames = data.frame_count();
@@ -485,11 +523,20 @@ fn apply_user_preset(state: &mut GuiState, preset: &crate::user_extra::WavePrese
             d.store(true, Ordering::Relaxed);
         }
     }
-    let mip = crate::osc::mip_from_table(&preset.extra.frame_a);
-    push_custom_frame_a(&state.shared, mip);
-    // Sync the GUI canvas + node editor to the loaded curve.
-    state.preview_a.copy_from_slice(&preset.extra.frame_a);
-    state.nodes = CurveNodes::from_table(&preset.extra.frame_a, 24);
+    // Use the full N-frame array if the preset has one (new format),
+    // else fall back to the legacy single `frame_a` field (v1 saves).
+    let frames = preset.extra.effective_frames();
+    let mips: Vec<_> = frames
+        .iter()
+        .map(|f| crate::osc::mip_from_table(f))
+        .collect();
+    crate::push_custom_frames(&state.shared, mips);
+    // Sync the GUI canvas + node editor to frames[0].
+    state.preview_a.copy_from_slice(&frames[0]);
+    if let Some(last) = frames.last() {
+        state.preview_b.copy_from_slice(last);
+    }
+    state.nodes = CurveNodes::from_table(&frames[0], 24);
     state.user_edited = true;
     state.preview_for_preset = state.selected_preset;
     state.selected_node = None;
@@ -1160,7 +1207,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                                 // / Audacity / any wavetable tool can read
                                 // the curve. Failure here is non-fatal —
                                 // JSON is the canonical source.
-                                let wav_msg = match write_sibling_wav(&name, &preset.extra.frame_a) {
+                                let wav_msg = match write_sibling_wav(&name, &preset.extra.effective_frames()) {
                                     Ok(_) => format!("Saved '{name}' (+wav)"),
                                     Err(e) => format!("Saved '{name}', wav failed: {e}"),
                                 };
@@ -1318,6 +1365,15 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             }
             if ui.button("Fold").on_hover_text("Wave-fold distortion at 0.7").clicked() {
                 transform = Some(Box::new(|f| wtx::transform_foldback(f, 0.7)));
+            }
+            if ui.button("Crush").on_hover_text("Bit-crush to 4 bits — lo-fi stairstep").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_bitcrush(f, 4)));
+            }
+            if ui.button("Skew").on_hover_text("Pulse-width skew — duty cycle shift").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_skew(f, 0.6)));
+            }
+            if ui.button("S+H").on_hover_text("Sample-and-hold every 8 samples — metallic").clicked() {
+                transform = Some(Box::new(|f| wtx::transform_sample_hold(f, 8)));
             }
             if let Some(tx) = transform {
                 let new_curve = tx(&state.preview_a);

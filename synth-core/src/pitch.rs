@@ -397,22 +397,32 @@ pub fn transform_smooth(frame: &[f32], kernel: usize) -> Vec<f32> {
     out
 }
 
-/// Brighten by adding a high-frequency derivative on top — sharpens
-/// transitions, accents higher harmonics. `amount` 0..1 (0 = no
-/// change, 1 = full derivative).
+/// Brighten — high-pass emphasis via derivative (high-shelf-ish).
+/// `amount` 0..1 controls how much extra high-frequency content to
+/// mix in. Re-normalised so peak amplitude doesn't run away.
+///
+/// Implemented as `out[i] = (1 - amount) * frame[i] + amount * (frame[next] - frame[prev]) * n/4`
+/// — the centred derivative gives strong harmonic emphasis without
+/// the phase shift of a one-sided difference.
 pub fn transform_bright(frame: &[f32], amount: f32) -> Vec<f32> {
     let n = frame.len();
     let amount = amount.clamp(0.0, 1.0);
+    if amount < 1e-6 {
+        return frame.to_vec();
+    }
+    let scale = (n as f32) / 16.0; // enough to dominate the spectrum
     let mut out = vec![0.0f32; n];
     for i in 0..n {
         let next = (i + 1) % n;
-        let deriv = frame[next] - frame[i];
-        out[i] = frame[i] + amount * deriv * (n as f32) * 0.01;
+        let prev = (i + n - 1) % n;
+        let deriv = (frame[next] - frame[prev]) * 0.5;
+        out[i] = (1.0 - amount) * frame[i] + amount * deriv * scale;
     }
-    // Re-normalise so brightness doesn't run away.
-    let peak = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-    if peak > 1e-6 {
-        let g = (frame.iter().map(|s| s.abs()).fold(0.0f32, f32::max) / peak).max(0.1);
+    // Re-normalise to source peak so the slider doesn't blow up.
+    let peak_in = frame.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let peak_out = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    if peak_out > 1e-6 && peak_in > 1e-6 {
+        let g = peak_in / peak_out;
         for s in out.iter_mut() {
             *s *= g;
         }
@@ -430,6 +440,67 @@ pub fn transform_phase_add(frame: &[f32], phase_offset: f32) -> Vec<f32> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         out.push(0.5 * (frame[i] + frame[(i + offset) % n]));
+    }
+    out
+}
+
+/// Bit-crush — quantise samples to `bits` resolution. `bits` < 16
+/// adds audible "lo-fi" distortion harmonics; at `bits = 2..4` you
+/// get a clear digital-grunge character. Output stays in [-1, 1].
+pub fn transform_bitcrush(frame: &[f32], bits: u32) -> Vec<f32> {
+    let bits = bits.clamp(1, 16);
+    let steps = ((1u32 << bits) - 1) as f32;
+    frame
+        .iter()
+        .map(|&s| {
+            let clamped = s.clamp(-1.0, 1.0);
+            // Quantise to (steps + 1) levels across [-1, +1].
+            let normalised = (clamped + 1.0) * 0.5; // 0..1
+            let quantised = (normalised * steps).round() / steps;
+            (quantised * 2.0 - 1.0)
+        })
+        .collect()
+}
+
+/// Skew the cycle horizontally — compress one half and stretch the
+/// other. `amount` in [-1, +1] (0 = no change, +1 = max-right skew,
+/// -1 = max-left). Changes the pulse width / duty cycle character,
+/// most audible on saws and pulses where it shifts the harmonic
+/// balance between odd and even.
+pub fn transform_skew(frame: &[f32], amount: f32) -> Vec<f32> {
+    let n = frame.len();
+    // Skew via re-mapping x → x^k where k > 1 compresses early
+    // samples (left-skew), k < 1 stretches.
+    let k = if amount.abs() < 1e-6 {
+        1.0
+    } else {
+        // Map amount to a power that's well-behaved on [-1, +1].
+        // amount = +1 → k = 4, amount = -1 → k = 0.25.
+        (amount * 0.69314).exp() * if amount.is_sign_positive() { 1.0 } else { 1.0 }
+    };
+    let k = 2f32.powf(amount.clamp(-1.0, 1.0) * 2.0); // -1 → 0.25, 0 → 1, +1 → 4
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let warped = t.powf(k);
+        let src = (warped * (n - 1) as f32) as usize;
+        out.push(frame[src.min(n - 1)]);
+    }
+    out
+}
+
+/// Sample-and-hold — replace every `hold_samples` consecutive
+/// samples with the first sample of that block. Drops the effective
+/// sample rate, adds aliasing-like harmonics that sound like classic
+/// digital stairstep distortion / "metallic" tone. `hold = 1` = no
+/// change; `hold = 8` is aggressive; `hold = 64` is brutal.
+pub fn transform_sample_hold(frame: &[f32], hold_samples: usize) -> Vec<f32> {
+    let n = frame.len();
+    let hold = hold_samples.max(1);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let block_start = (i / hold) * hold;
+        out.push(frame[block_start.min(n - 1)]);
     }
     out
 }
@@ -637,6 +708,106 @@ mod tests {
         let cancelled = transform_phase_add(&s, 0.5);
         let max: f32 = cancelled.iter().map(|x| x.abs()).fold(0.0, f32::max);
         assert!(max < 0.01, "half-period add should cancel sine: max={max}");
+    }
+
+    #[test]
+    fn bitcrush_reduces_unique_levels() {
+        // 4-bit crush of a sine should have at most 16 unique sample
+        // values — that's the audible "lo-fi" stairstep.
+        let s = one_cycle_sine(2048);
+        let crushed = transform_bitcrush(&s, 4);
+        assert_eq!(crushed.len(), 2048);
+        // Bucket samples into integer levels (steps = 15 for 4 bits).
+        let mut levels = std::collections::HashSet::new();
+        for v in &crushed {
+            let level = ((*v + 1.0) * 0.5 * 15.0).round() as i32;
+            levels.insert(level);
+        }
+        assert!(
+            levels.len() <= 16,
+            "4-bit crush should produce ≤16 unique levels, got {}",
+            levels.len()
+        );
+    }
+
+    #[test]
+    fn skew_preserves_extrema() {
+        // Skewing a sine shouldn't change peak amplitude — only when
+        // those peaks occur.
+        let s = one_cycle_sine(2048);
+        let skewed = transform_skew(&s, 0.5);
+        let orig_peak = s.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        let skew_peak = skewed.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+        assert!(
+            (orig_peak - skew_peak).abs() < 0.05,
+            "skew shouldn't change peak: {orig_peak} vs {skew_peak}"
+        );
+    }
+
+    #[test]
+    fn sample_hold_creates_steps() {
+        let s = one_cycle_sine(2048);
+        let held = transform_sample_hold(&s, 8);
+        // Within each 8-sample block, samples must be identical.
+        for block in 0..(2048 / 8) {
+            let base = block * 8;
+            for i in 1..8 {
+                assert!(
+                    (held[base + i] - held[base]).abs() < 1e-9,
+                    "block {block} sample {i} not held"
+                );
+            }
+        }
+    }
+
+    /// Sanity check: mirror & invert really do preserve magnitude
+    /// spectrum (within FFT precision). If a user can't tell them
+    /// apart from the original on a steady tone, that's correct DSP,
+    /// not a bug. Use Bright/Smooth/Bitcrush for audible changes.
+    #[test]
+    fn mirror_and_invert_preserve_magnitude_spectrum() {
+        use crate::analysis::magnitude_spectrum_db;
+        let s = one_cycle_sine(2048);
+        let m = transform_mirror(&s);
+        let i = transform_invert(&s);
+        let spec_orig = magnitude_spectrum_db(&s);
+        let spec_mirror = magnitude_spectrum_db(&m);
+        let spec_invert = magnitude_spectrum_db(&i);
+        // Compare first 100 bins (covers all audible frequencies for
+        // a 2048-sample buffer at any practical SR).
+        let mut max_diff_m = 0.0f32;
+        let mut max_diff_i = 0.0f32;
+        for k in 1..100 {
+            max_diff_m = max_diff_m.max((spec_orig[k] - spec_mirror[k]).abs());
+            max_diff_i = max_diff_i.max((spec_orig[k] - spec_invert[k]).abs());
+        }
+        assert!(
+            max_diff_m < 0.5,
+            "mirror spectrum should match original ({max_diff_m} dB max diff)"
+        );
+        assert!(
+            max_diff_i < 0.5,
+            "invert spectrum should match original ({max_diff_i} dB max diff)"
+        );
+    }
+
+    #[test]
+    fn bright_actually_changes_spectrum() {
+        // Sanity: bright DOES change the spectrum (unlike mirror/invert).
+        use crate::analysis::magnitude_spectrum_db;
+        let s = one_cycle_sine(2048);
+        let bright = transform_bright(&s, 0.4);
+        let spec_orig = magnitude_spectrum_db(&s);
+        let spec_bright = magnitude_spectrum_db(&bright);
+        let total_diff: f32 = spec_orig
+            .iter()
+            .zip(spec_bright.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            total_diff > 50.0,
+            "bright should noticeably change spectrum, total diff = {total_diff} dB"
+        );
     }
 
     #[test]

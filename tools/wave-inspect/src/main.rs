@@ -25,17 +25,31 @@ const PEAK_TARGET: f32 = 0.95;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let input = match args.first() {
-        Some(p) => PathBuf::from(p),
-        None => {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
-            home.join("Music/kubiz1000.wav")
-        }
+    let inputs: Vec<PathBuf> = if args.is_empty() {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        vec![home.join("Music/kubiz1000.wav")]
+    } else {
+        args.iter().map(PathBuf::from).collect()
     };
-    if !input.exists() {
-        eprintln!("✗ file not found: {}", input.display());
-        std::process::exit(1);
+    for input in &inputs {
+        if !input.exists() {
+            eprintln!("✗ file not found: {}", input.display());
+            std::process::exit(1);
+        }
     }
+    let total = inputs.len();
+    for (idx, input) in inputs.iter().enumerate() {
+        if total > 1 {
+            println!();
+            println!("########################################################################");
+            println!("# [{}/{}] {}", idx + 1, total, input.display());
+            println!("########################################################################");
+        }
+        process_one(input);
+    }
+}
+
+fn process_one(input: &std::path::Path) {
 
     let out_dir = PathBuf::from("/tmp/wave-inspect");
     std::fs::create_dir_all(&out_dir).unwrap();
@@ -235,10 +249,16 @@ fn main() {
         ("octave_up", Box::new(wtx::transform_octave_up)),
         ("octave_down", Box::new(wtx::transform_octave_down)),
         ("smooth", Box::new(|f| wtx::transform_smooth(f, 11))),
-        ("bright", Box::new(|f| wtx::transform_bright(f, 0.4))),
+        ("bright", Box::new(|f| wtx::transform_bright(f, 0.6))),
         ("phaser", Box::new(|f| wtx::transform_phase_add(f, 0.25))),
         ("foldback", Box::new(|f| wtx::transform_foldback(f, 0.7))),
+        ("bitcrush_4b", Box::new(|f| wtx::transform_bitcrush(f, 4))),
+        ("skew", Box::new(|f| wtx::transform_skew(f, 0.6))),
+        ("sample_hold_8", Box::new(|f| wtx::transform_sample_hold(f, 8))),
     ];
+    // Spectrum of the SOURCE frame_a — used to estimate how
+    // audibly-distinct each transform is. Magnitude-only.
+    let spec_src = superduper_synth_core::analysis::magnitude_spectrum_db(&frame_a);
     for (name, tx) in &transforms {
         let derived = tx(&frame_a);
         assert_eq!(derived.len(), WT_SIZE);
@@ -261,12 +281,29 @@ fn main() {
         let tx_path = out_dir.join(format!("{basename}__tx_{name}.wav"));
         superduper_synth_core::wav::write_mono_f32_wav(&tx_path, &tx_preview, PREVIEW_SR).unwrap();
         let tx_rms = (tx_preview.iter().map(|s| s * s).sum::<f32>() / n_samples as f32).sqrt();
+        // Spectrum diff vs source — total dB across first 100 bins.
+        // < 5 dB: phase-only (mirror, invert) — audibly identical
+        //         on steady tones. CORRECT DSP, not a bug.
+        // 5..30 dB: subtle change (skew, fold)
+        // 30+ dB: clearly audible (octave shifts, bright, crush, S+H)
+        let spec_tx = superduper_synth_core::analysis::magnitude_spectrum_db(&derived);
+        let spectrum_diff_db: f32 = spec_src
+            .iter()
+            .zip(spec_tx.iter())
+            .take(100)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        let audibility = match spectrum_diff_db {
+            d if d < 5.0 => "phase-only (steady tones sound identical)",
+            d if d < 30.0 => "subtle",
+            _ => "clearly audible",
+        };
         println!(
-            "  {:<12}  peak={:.3}  rms={:.3}  {}",
+            "  {:<14}  peak={:.3}  rms={:.3}  Δspec={:>6.1} dB  ← {audibility}",
             name,
             dpeak,
             tx_rms,
-            tx_path.display()
+            spectrum_diff_db,
         );
         assert!(dpeak <= 1.0 + 1e-3, "transform {name} clipped: peak {dpeak}");
         assert!(tx_rms > 0.01, "transform {name} too quiet: rms {tx_rms}");

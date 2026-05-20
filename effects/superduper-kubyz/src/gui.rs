@@ -79,8 +79,12 @@ struct GuiState {
     selected_preset: Option<usize>,
     preset_names: Vec<&'static str>,
     user_preset_name: String,
-    user_presets: Vec<std::path::PathBuf>,
+    /// Domain-typed names from the typed PresetRepo. Replaces the old
+    /// raw `Vec<PathBuf>` so click handlers don't have to re-parse.
+    user_presets: Vec<superduper_synth_core::user_preset::PresetName>,
     selected_user_preset: Option<usize>,
+    /// Transient "Saved!" / "Load failed: …" toast under the toolbar.
+    last_io_msg: Option<(String, std::time::Instant)>,
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -96,7 +100,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         gl_config: Some(Default::default()),
     };
     let preset_names: Vec<&'static str> = presets().iter().map(|p| p.name).collect();
-    let user_presets = core_gui::list_user_presets("kubyz");
+    let user_presets = crate::user_extra::repo().list();
     let initial_preset_idx = (shared.active_preset.load(std::sync::atomic::Ordering::Relaxed)
         as usize)
         .min(preset_names.len().saturating_sub(1));
@@ -110,6 +114,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         user_preset_name: String::new(),
         user_presets,
         selected_user_preset: None,
+        last_io_msg: None,
     };
     EguiWindow::open_parented(
         parent,
@@ -346,6 +351,34 @@ fn shape_icon_button(ui: &mut egui::Ui, shape: MouthShape, selected: bool) -> bo
     response.clicked()
 }
 
+/// Snapshot the live shared state into a typed `KubyzUserPreset`.
+/// Used by Save / Save-last so both paths produce identical files.
+fn snapshot_kubyz_preset(
+    shared: &crate::SharedParamsInner,
+    name: superduper_synth_core::user_preset::PresetName,
+) -> crate::user_extra::KubyzUserPreset {
+    let params: Vec<f32> = shared
+        .params
+        .iter()
+        .map(|a| a.load(Ordering::Relaxed))
+        .collect();
+    let harmonics: Vec<f32> = shared
+        .harmonics
+        .iter()
+        .map(|a| a.load(Ordering::Relaxed))
+        .collect();
+    superduper_synth_core::user_preset::UserPreset {
+        version: superduper_synth_core::user_preset::PRESET_FORMAT_VERSION,
+        name,
+        params,
+        extra: crate::user_extra::KubyzExtra {
+            harmonics,
+            formant_bw: *shared.formant_bw.lock(),
+            formant_gain: *shared.formant_gain.lock(),
+        },
+    }
+}
+
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
         if let Some(i) = core_gui::top_bar(
@@ -362,6 +395,117 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             if let Some(preset) = p.get(i) {
                 apply_preset(&state.shared, preset);
                 state.shared.active_preset.store(i as u32, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        // User-preset toolbar (file-backed under
+        // ~/.superduper-dsp/kubyz/presets/).
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("User:").color(core_gui::GREEN_DIM).monospace().small());
+            let cur_label = state
+                .selected_user_preset
+                .and_then(|i| state.user_presets.get(i))
+                .map(|n| n.as_str())
+                .unwrap_or("—");
+            let mut click: Option<(usize, superduper_synth_core::user_preset::PresetName)> = None;
+            egui::ComboBox::from_id_salt("kubyz_user_preset_combo")
+                .selected_text(cur_label)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for (i, name) in state.user_presets.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                state.selected_user_preset == Some(i),
+                                name.as_str(),
+                            )
+                            .clicked()
+                        {
+                            click = Some((i, name.clone()));
+                        }
+                    }
+                });
+            if let Some((i, name)) = click {
+                match crate::user_extra::repo().load(&name, PARAMS.len()) {
+                    Ok(preset) => {
+                        for (j, v) in preset.params.iter().enumerate() {
+                            if let Some(slot) = state.shared.params.get(j) {
+                                slot.store(*v, Ordering::Relaxed);
+                            }
+                            if let Some(d) = state.shared.dirty_params.get(j) {
+                                d.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        for (j, h) in preset.extra.harmonics.iter().enumerate() {
+                            if let Some(slot) = state.shared.harmonics.get(j) {
+                                slot.store(*h, Ordering::Relaxed);
+                            }
+                        }
+                        *state.shared.formant_bw.lock() = preset.extra.formant_bw;
+                        *state.shared.formant_gain.lock() = preset.extra.formant_gain;
+                        state.selected_user_preset = Some(i);
+                        state.last_io_msg =
+                            Some((format!("Loaded '{name}'"), std::time::Instant::now()));
+                    }
+                    Err(e) => {
+                        state.last_io_msg =
+                            Some((format!("Load failed: {e}"), std::time::Instant::now()));
+                    }
+                }
+            }
+            if ui.small_button("↻").on_hover_text("rescan").clicked() {
+                state.user_presets = crate::user_extra::repo().list();
+            }
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Save as:").color(core_gui::GREEN_DIM).monospace().small());
+            ui.add(
+                egui::TextEdit::singleline(&mut state.user_preset_name)
+                    .desired_width(140.0)
+                    .hint_text("name"),
+            );
+            if ui.button("Save").clicked() {
+                match superduper_synth_core::user_preset::PresetName::new(&state.user_preset_name) {
+                    Ok(name) => {
+                        let preset = snapshot_kubyz_preset(&state.shared, name.clone());
+                        match crate::user_extra::repo().save(&preset, PARAMS.len()) {
+                            Ok(_) => {
+                                state.user_preset_name.clear();
+                                state.user_presets = crate::user_extra::repo().list();
+                                state.selected_user_preset =
+                                    state.user_presets.iter().position(|n| n == &name);
+                                // Mirror as last.json too so a fresh
+                                // instance picks up the same patch.
+                                let _ =
+                                    crate::user_extra::repo().save_last(&preset, PARAMS.len());
+                                state.last_io_msg = Some((
+                                    format!("Saved '{name}'"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            Err(e) => {
+                                state.last_io_msg = Some((
+                                    format!("Save failed: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        state.last_io_msg =
+                            Some((format!("Bad name: {e}"), std::time::Instant::now()));
+                    }
+                }
+            }
+        });
+        if let Some((msg, ts)) = state.last_io_msg.as_ref() {
+            if ts.elapsed().as_secs() < 3 {
+                ui.label(
+                    egui::RichText::new(msg)
+                        .color(core_gui::GREEN_BRIGHT)
+                        .monospace()
+                        .small(),
+                );
+            } else {
+                state.last_io_msg = None;
             }
         }
 

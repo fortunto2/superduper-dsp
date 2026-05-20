@@ -13,6 +13,7 @@
 pub mod gui;
 pub mod presets;
 pub mod trajectory;
+pub mod user_extra;
 pub mod voice;
 
 use atomic_float::AtomicF32;
@@ -971,7 +972,24 @@ impl DefaultPluginFactory for SuperDuperKubyz {
         .with_features([INSTRUMENT, STEREO, SYNTHESIZER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        // Try the auto-saved "last edited" snapshot — overridden by
+        // PluginStateImpl::load if the host provides project state.
+        if let Some(preset) = user_extra::repo().load_last(PARAMS.len()) {
+            for (i, v) in preset.params.iter().enumerate() {
+                if let Some(slot) = shared.params.get(i) {
+                    slot.store(*v, Ordering::Relaxed);
+                }
+            }
+            for (i, h) in preset.extra.harmonics.iter().enumerate() {
+                if let Some(slot) = shared.harmonics.get(i) {
+                    slot.store(*h, Ordering::Relaxed);
+                }
+            }
+            *shared.formant_bw.lock() = preset.extra.formant_bw;
+            *shared.formant_gain.lock() = preset.extra.formant_gain;
+        }
+        Ok(shared)
     }
     fn new_main_thread<'a>(
         _host: HostMainThreadHandle<'a>,

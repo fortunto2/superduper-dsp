@@ -3560,6 +3560,7 @@ dependencies = [
  "serde",
  "serde_json",
  "superduper-dsp-sdk",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

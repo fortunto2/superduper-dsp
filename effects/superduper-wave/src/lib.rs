@@ -16,6 +16,7 @@
 pub mod gui;
 pub mod osc;
 pub mod presets;
+pub mod user_extra;
 
 use atomic_float::AtomicF32;
 use clack_common::events::Match;
@@ -1149,7 +1150,21 @@ impl DefaultPluginFactory for SuperDuperWave {
         .with_features([INSTRUMENT, STEREO, SYNTHESIZER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        // Try the auto-saved "last edited" snapshot — becomes the default
+        // for a fresh plugin instance. PluginStateImpl::load runs AFTER
+        // new_shared so any project state will override these values.
+        if let Some(preset) = user_extra::repo().load_last(PARAMS.len()) {
+            use std::sync::atomic::Ordering;
+            for (i, v) in preset.params.iter().enumerate() {
+                if let Some(slot) = shared.params.get(i) {
+                    slot.store(*v, Ordering::Relaxed);
+                }
+            }
+            let mip = osc::mip_from_table(&preset.extra.frame_a);
+            push_custom_frame_a(&shared, mip);
+        }
+        Ok(shared)
     }
     fn new_main_thread<'a>(
         _host: HostMainThreadHandle<'a>,

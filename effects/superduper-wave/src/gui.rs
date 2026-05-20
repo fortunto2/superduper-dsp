@@ -274,6 +274,16 @@ struct GuiState {
     /// entries to keep memory bounded.
     history: Vec<CurveNodes>,
     redo: Vec<CurveNodes>,
+    /// User-preset filesystem state (named saves under
+    /// `~/.superduper-dsp/wave/presets/`).
+    user_presets: Vec<superduper_synth_core::user_preset::PresetName>,
+    selected_user_preset: Option<usize>,
+    /// Working "Save as…" name buffer for the toolbar text input.
+    save_name_buf: String,
+    /// Latest user-facing message from save/load (drawn under the
+    /// toolbar — error from a corrupt file, "Saved!" confirmation, …).
+    /// Cleared next paint after fading out.
+    last_io_msg: Option<(String, std::time::Instant)>,
 }
 
 const HISTORY_CAP: usize = 64;
@@ -284,6 +294,67 @@ fn push_history(state: &mut GuiState) {
         state.history.remove(0);
     }
     state.redo.clear();
+}
+
+/// Snapshot current shared state into a `WavePreset` of the given name.
+/// Reads params (atomics) + the live wavetable's `frame_a`. Used by
+/// `Save…` / auto-save-last and the `last.json` autoloader.
+fn snapshot_preset(
+    state: &GuiState,
+    name: superduper_synth_core::user_preset::PresetName,
+) -> crate::user_extra::WavePreset {
+    let frame_a: Vec<f32> = {
+        let guard = state.shared.wavetable.lock();
+        guard.0.levels[0].iter().copied().collect()
+    };
+    let extra = crate::user_extra::WaveExtra { frame_a };
+    let params: Vec<f32> = state
+        .shared
+        .params
+        .iter()
+        .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
+        .collect();
+    superduper_synth_core::user_preset::UserPreset {
+        version: superduper_synth_core::user_preset::PRESET_FORMAT_VERSION,
+        name,
+        params,
+        extra,
+    }
+}
+
+/// Write `~/.superduper-dsp/wave/last.json` so a fresh plugin instance
+/// inherits the user's most-recently-drawn curve. Called after every
+/// `push_custom_frame_a`. I/O errors are silenced — the file is a
+/// convenience, never a source of truth (project state is the SoT).
+fn auto_save_last(state: &GuiState) {
+    let Ok(name) = superduper_synth_core::user_preset::PresetName::new("last") else {
+        return;
+    };
+    let preset = snapshot_preset(state, name);
+    let _ = crate::user_extra::repo().save_last(&preset, PARAMS.len());
+}
+
+/// Apply a loaded `WavePreset` to the shared state — restore params
+/// + push the saved wavetable into the audio thread. Marks all params
+/// dirty so the host's automation lane captures the load.
+fn apply_user_preset(state: &mut GuiState, preset: &crate::user_extra::WavePreset) {
+    use std::sync::atomic::Ordering;
+    for (i, v) in preset.params.iter().enumerate() {
+        if let Some(slot) = state.shared.params.get(i) {
+            slot.store(*v, Ordering::Relaxed);
+        }
+        if let Some(d) = state.shared.dirty_params.get(i) {
+            d.store(true, Ordering::Relaxed);
+        }
+    }
+    let mip = crate::osc::mip_from_table(&preset.extra.frame_a);
+    push_custom_frame_a(&state.shared, mip);
+    // Sync the GUI canvas + node editor to the loaded curve.
+    state.preview_a.copy_from_slice(&preset.extra.frame_a);
+    state.nodes = CurveNodes::from_table(&preset.extra.frame_a, 24);
+    state.user_edited = true;
+    state.preview_for_preset = state.selected_preset;
+    state.selected_node = None;
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -360,6 +431,10 @@ pub fn open_window<P: HasRawWindowHandle>(
         dragging_node: None,
         selected_node: None,
         user_edited,
+        user_presets: crate::user_extra::repo().list(),
+        selected_user_preset: None,
+        save_name_buf: String::new(),
+        last_io_msg: None,
     };
     EguiWindow::open_parented(
         parent,
@@ -745,6 +820,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         let table = state.nodes.render();
         let mip = mip_from_table(table.as_ref());
         push_custom_frame_a(&state.shared, mip);
+        auto_save_last(state);
     }
 
     egui::CentralPanel::default().show(ctx, |ui| {
@@ -762,6 +838,107 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             state.preview_for_preset = None;
             state.user_edited = false;
             state.selected_node = None;
+            state.shared.active_preset.store(i as u32, Ordering::Relaxed);
+        }
+
+        // User-preset toolbar (named saves under ~/.superduper-dsp/wave/presets/).
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("User:").color(core_gui::GREEN_DIM).monospace().small());
+            // Dropdown of saved files.
+            let cur_label = state
+                .selected_user_preset
+                .and_then(|i| state.user_presets.get(i))
+                .map(|n| n.as_str())
+                .unwrap_or("—");
+            // Capture the click target as (idx, name) without holding a
+            // borrow on state.user_presets — we need &mut state inside
+            // the click handler.
+            let mut click: Option<(usize, superduper_synth_core::user_preset::PresetName)> = None;
+            egui::ComboBox::from_id_salt("wave_user_preset_combo")
+                .selected_text(cur_label)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for (i, name) in state.user_presets.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                state.selected_user_preset == Some(i),
+                                name.as_str(),
+                            )
+                            .clicked()
+                        {
+                            click = Some((i, name.clone()));
+                        }
+                    }
+                });
+            if let Some((i, name)) = click {
+                match crate::user_extra::repo().load(&name, PARAMS.len()) {
+                    Ok(preset) => {
+                        state.selected_user_preset = Some(i);
+                        apply_user_preset(state, &preset);
+                        state.last_io_msg =
+                            Some((format!("Loaded '{name}'"), std::time::Instant::now()));
+                    }
+                    Err(e) => {
+                        state.last_io_msg =
+                            Some((format!("Load failed: {e}"), std::time::Instant::now()));
+                    }
+                }
+            }
+            if ui.small_button("↻").on_hover_text("rescan user folder").clicked() {
+                state.user_presets = crate::user_extra::repo().list();
+            }
+            ui.add_space(12.0);
+            // Save-as field + button.
+            ui.label(egui::RichText::new("Save as:").color(core_gui::GREEN_DIM).monospace().small());
+            ui.add(
+                egui::TextEdit::singleline(&mut state.save_name_buf)
+                    .desired_width(140.0)
+                    .hint_text("name"),
+            );
+            if ui.button("Save").clicked() {
+                match superduper_synth_core::user_preset::PresetName::new(&state.save_name_buf) {
+                    Ok(name) => {
+                        let preset = snapshot_preset(state, name.clone());
+                        match crate::user_extra::repo().save(&preset, PARAMS.len()) {
+                            Ok(_path) => {
+                                state.save_name_buf.clear();
+                                state.user_presets = crate::user_extra::repo().list();
+                                state.selected_user_preset =
+                                    state.user_presets.iter().position(|n| n == &name);
+                                state.last_io_msg = Some((
+                                    format!("Saved '{name}'"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            Err(e) => {
+                                state.last_io_msg = Some((
+                                    format!("Save failed: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        state.last_io_msg = Some((
+                            format!("Bad name: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+            }
+        });
+        // I/O status message — auto-fades after ~3 seconds.
+        if let Some((msg, ts)) = state.last_io_msg.as_ref() {
+            if ts.elapsed().as_secs() < 3 {
+                ui.label(
+                    egui::RichText::new(msg)
+                        .color(core_gui::GREEN_BRIGHT)
+                        .monospace()
+                        .small(),
+                );
+            } else {
+                state.last_io_msg = None;
+            }
         }
 
         core_gui::ab_init_bar(

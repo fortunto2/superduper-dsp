@@ -115,6 +115,18 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 17, name: b"Hum On",   min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
     ParamDef { id: 18, name: b"Hum Freq", min: 50.0,   max: 60.0,    default: 50.0,  unit: "Hz" },
     ParamDef { id: 19, name: b"Hum Str",  min: 0.0,    max: 1.0,     default: 0.7,   unit: ""   },
+    // Stage 2 — frequency-tracking de-esser. When `Ess Track` is on,
+    // the de-esser's HPF cutoff is moved between 4.5 kHz ("s" body)
+    // and 9 kHz ("sh" high) every sample according to which sub-band
+    // has more sibilance energy. Different vocals' sibilants sit at
+    // different frequencies (4-9 kHz range); tracking puts the cut
+    // right where the actual hiss lives — Sibalance-style behaviour.
+    ParamDef { id: 20, name: b"Ess Track", min: 0.0,   max: 1.0,     default: 0.0,   unit: ""   },
+    // `Ess Listen` solos the reduced (sibilant-only) band — output
+    // contains ONLY what's being cut, so the user can dial threshold
+    // and amount precisely without guessing. Mastering workflow:
+    // turn on, find the harshest setting, turn off, leave threshold.
+    ParamDef { id: 21, name: b"Ess Listen", min: 0.0,  max: 1.0,     default: 0.0,   unit: ""   },
 ];
 
 pub const P_ESS_THR: usize = 0;
@@ -137,6 +149,8 @@ pub const P_PLOS_FREQ: usize = 16;
 pub const P_HUM_ON: usize = 17;
 pub const P_HUM_FREQ: usize = 18;
 pub const P_HUM_STR: usize = 19;
+pub const P_ESS_TRACK: usize = 20;
+pub const P_ESS_LISTEN: usize = 21;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -265,6 +279,21 @@ pub struct PluginAudioProcessor<'a> {
     smooth_plos_amt: SmoothedParam,
     smooth_plos_freq: SmoothedParam,
     smooth_hum_str: SmoothedParam,
+
+    /// Stage 2 — frequency-tracking sub-band envelope followers.
+    /// Two bandpass biquads + envelope detectors split the sibilance
+    /// region into "mid sib" (4.5-6 kHz, the body of "s") and "high
+    /// sib" (6-9 kHz, the harsh "sh"). Ratio of their energies steers
+    /// the de-esser's HPF cutoff between them.
+    track_bp_mid_l: Biquad,
+    track_bp_mid_r: Biquad,
+    track_bp_high_l: Biquad,
+    track_bp_high_r: Biquad,
+    track_env_mid: EnvelopeDetector,
+    track_env_high: EnvelopeDetector,
+    /// One-pole smoother on the tracked frequency so the HPF cutoff
+    /// doesn't pitch-zipper as the energy ratio jitters per sample.
+    track_freq_smoothed: f32,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -343,6 +372,30 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_plos_amt: SmoothedParam::new(load(P_PLOS_AMT)),
             smooth_plos_freq: SmoothedParam::new(load(P_PLOS_FREQ)),
             smooth_hum_str: SmoothedParam::new(load(P_HUM_STR)),
+
+            track_bp_mid_l: {
+                let mut b = Biquad::default();
+                b.set_bandpass(sr, 5250.0, 1.5);
+                b
+            },
+            track_bp_mid_r: {
+                let mut b = Biquad::default();
+                b.set_bandpass(sr, 5250.0, 1.5);
+                b
+            },
+            track_bp_high_l: {
+                let mut b = Biquad::default();
+                b.set_bandpass(sr, 7500.0, 1.5);
+                b
+            },
+            track_bp_high_r: {
+                let mut b = Biquad::default();
+                b.set_bandpass(sr, 7500.0, 1.5);
+                b
+            },
+            track_env_mid: EnvelopeDetector::default(),
+            track_env_high: EnvelopeDetector::default(),
+            track_freq_smoothed: 6000.0,
         })
     }
 
@@ -384,6 +437,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let hum_on = self.shared.params[P_HUM_ON].load(Ordering::Relaxed) >= 0.5;
         let hum_freq_t = self.shared.params[P_HUM_FREQ].load(Ordering::Relaxed);
         let hum_str_t = self.shared.params[P_HUM_STR].load(Ordering::Relaxed);
+        let ess_track = self.shared.params[P_ESS_TRACK].load(Ordering::Relaxed) >= 0.5;
+        let ess_listen = self.shared.params[P_ESS_LISTEN].load(Ordering::Relaxed) >= 0.5;
 
         // Snapshot the sidechain (port 1) into our scratch buffers if
         // the user wants external keying. If the SC port is unrouted
@@ -459,6 +514,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
                         plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
                         hum_on, hum_freq_t, hum_str_t,
+                        ess_track, ess_listen,
                         owned_sc,
                         &mut max_ess_gr_db, &mut max_click_gr_db,
                     );
@@ -475,6 +531,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
                         plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
                         hum_on, hum_freq_t, hum_str_t,
+                        ess_track, ess_listen,
                         owned_sc,
                         &mut max_ess_gr_db, &mut max_click_gr_db,
                     );
@@ -524,6 +581,7 @@ fn step_sample(
     output_t: f32, mix_t: f32,
     plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
     hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
+    ess_track: bool, ess_listen: bool,
 ) -> (f32, f32, f32, f32) {
     // ----- Stage 1: Hum Remover -----
     // Reset coefficients if Hum Freq or Strength moves enough. Coef
@@ -598,10 +656,33 @@ fn step_sample(
     let output_db = p.smooth_output.step(output_t, sr);
     let mix = p.smooth_mix.step(mix_t, sr);
 
-    if (ess_freq - p.ess_freq_state).abs() > 5.0 {
-        p.ess_hpf_l.set_hpf(sr, ess_freq, 0.707);
-        p.ess_hpf_r.set_hpf(sr, ess_freq, 0.707);
-        p.ess_freq_state = ess_freq;
+    // ---- Stage 2: frequency-tracking de-esser cutoff ------------------
+    // When tracking is on, sample the energy in two sibilance sub-bands
+    // (5.25 kHz "s" core + 7.5 kHz "sh" core) and steer the HPF cutoff
+    // between 4.5 kHz (mostly "s") and 9 kHz (mostly "sh") based on
+    // the energy ratio. Smoothed with a per-sample one-pole to avoid
+    // pitch-zipper artefacts when the ratio jitters.
+    let effective_ess_freq = if ess_track {
+        let band_mid =
+            (p.track_bp_mid_l.process(dry_l) + p.track_bp_mid_r.process(dry_r)) * 0.5;
+        let band_high =
+            (p.track_bp_high_l.process(dry_l) + p.track_bp_high_r.process(dry_r)) * 0.5;
+        let env_mid = p.track_env_mid.process(band_mid.abs(), sr, 1.0, 20.0);
+        let env_high = p.track_env_high.process(band_high.abs(), sr, 1.0, 20.0);
+        let ratio = env_high / (env_mid + env_high + 1e-9);
+        let target = 4500.0 + 4500.0 * ratio.clamp(0.0, 1.0);
+        // One-pole smoother ~ 8 ms — fast enough to lock onto a "s"
+        // attack, slow enough to not chirp.
+        let coef = (-1.0 / (0.008 * sr)).exp();
+        p.track_freq_smoothed = target + (p.track_freq_smoothed - target) * coef;
+        p.track_freq_smoothed
+    } else {
+        ess_freq
+    };
+    if (effective_ess_freq - p.ess_freq_state).abs() > 5.0 {
+        p.ess_hpf_l.set_hpf(sr, effective_ess_freq, 0.707);
+        p.ess_hpf_r.set_hpf(sr, effective_ess_freq, 0.707);
+        p.ess_freq_state = effective_ess_freq;
     }
     if (lo_freq - p.lo_freq_state).abs() > 5.0 {
         p.lo_hpf_l.set_hpf(sr, lo_freq, 0.707);
@@ -690,6 +771,15 @@ fn step_sample(
     let out_gain = 10f32.powf(output_db / 20.0);
     let wet_l = cleaned_l * out_gain;
     let wet_r = cleaned_r * out_gain;
+    // Listen mode — solo the band that's being reduced (sibilant
+    // content × the gain reduction). Lets the user tune Ess Thr / Ess
+    // Amt by ear instead of by guessing where the harshness sits.
+    if ess_listen {
+        let gr_only = 1.0 - ess_gain_lin; // how much we cut
+        let listen_l = sib_l * gr_only * out_gain;
+        let listen_r = sib_r * gr_only * out_gain;
+        return (listen_l, listen_r, ess_gr_db.min(lo_gr_db), click_gain_db);
+    }
     let final_l = dry_l * (1.0 - mix) + wet_l * mix;
     let final_r = dry_r * (1.0 - mix) + wet_r * mix;
 
@@ -711,6 +801,7 @@ fn process_stereo(
     output_t: f32, mix_t: f32,
     plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
     hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
+    ess_track: bool, ess_listen: bool,
     ext_key: Option<(&[f32], &[f32])>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
@@ -727,6 +818,7 @@ fn process_stereo(
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
             plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
             hum_on, hum_freq_t, hum_str_t,
+            ess_track, ess_listen,
         );
         l_write[i] = fl;
         r_write[i] = fr;
@@ -747,6 +839,7 @@ fn process_mono(
     output_t: f32, mix_t: f32,
     plos_on: bool, plos_thr_t: f32, plos_amt_t: f32, plos_freq_t: f32,
     hum_on: bool, hum_freq_t: f32, hum_str_t: f32,
+    ess_track: bool, ess_listen: bool,
     ext_key: Option<&[f32]>,
     max_ess_gr_db: &mut f32, max_click_gr_db: &mut f32,
 ) {
@@ -761,6 +854,7 @@ fn process_mono(
             clk_sens_t, clk_amt_t, clk_floor_t, output_t, mix_t,
             plos_on, plos_thr_t, plos_amt_t, plos_freq_t,
             hum_on, hum_freq_t, hum_str_t,
+            ess_track, ess_listen,
         );
         l_write[i] = fl;
         p.shared.scope.push(fl);

@@ -6,9 +6,9 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    PARAMS, P_CLK_AMT, P_CLK_FLOOR, P_CLK_SENS, P_ESS_AMT, P_ESS_FREQ, P_ESS_RANGE, P_ESS_THR,
-    P_EXT_KEY, P_HUM_FREQ, P_HUM_ON, P_HUM_STR, P_LO_AMT, P_LO_FREQ, P_LO_THR, P_MIX, P_OUTPUT,
-    P_PLOS_AMT, P_PLOS_FREQ, P_PLOS_ON, P_PLOS_THR, SharedParams,
+    PARAMS, P_CLK_AMT, P_CLK_FLOOR, P_CLK_SENS, P_ESS_AMT, P_ESS_FREQ, P_ESS_LISTEN, P_ESS_RANGE,
+    P_ESS_THR, P_ESS_TRACK, P_EXT_KEY, P_HUM_FREQ, P_HUM_ON, P_HUM_STR, P_LO_AMT, P_LO_FREQ,
+    P_LO_THR, P_MIX, P_OUTPUT, P_PLOS_AMT, P_PLOS_FREQ, P_PLOS_ON, P_PLOS_THR, SharedParams,
 };
 
 pub const DEFAULT_WIDTH: u32 = 560;
@@ -125,6 +125,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_FREQ], &PARAMS[P_ESS_FREQ], &state.shared.dirty_params[P_ESS_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_FREQ);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_AMT], &PARAMS[P_ESS_AMT], &state.shared.dirty_params[P_ESS_AMT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_AMT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_RANGE], &PARAMS[P_ESS_RANGE], &state.shared.dirty_params[P_ESS_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_RANGE);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_TRACK], &PARAMS[P_ESS_TRACK], &state.shared.dirty_params[P_ESS_TRACK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_TRACK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_ESS_LISTEN], &PARAMS[P_ESS_LISTEN], &state.shared.dirty_params[P_ESS_LISTEN], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ESS_LISTEN);
+                let track_on = state.shared.params[P_ESS_TRACK].load(std::sync::atomic::Ordering::Relaxed) >= 0.5;
+                let listen_on = state.shared.params[P_ESS_LISTEN].load(std::sync::atomic::Ordering::Relaxed) >= 0.5;
+                let hint = match (track_on, listen_on) {
+                    (true, true)   => "TRACK: cut follows the loudest sibilance band. LISTEN: monitoring removed signal.",
+                    (true, false)  => "TRACK: HPF cutoff steers between 4.5-9 kHz based on energy ratio.",
+                    (false, true)  => "LISTEN: output = sibilance × gain reduction only. Tune Thr & Amt by ear.",
+                    (false, false) => "",
+                };
+                if !hint.is_empty() {
+                    ui.label(egui::RichText::new(hint).color(core_gui::GREEN_DIM).monospace().small());
+                }
             });
             core_gui::section(ui, "Low Band (plosives)", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LO_THR], &PARAMS[P_LO_THR], &state.shared.dirty_params[P_LO_THR], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LO_THR);

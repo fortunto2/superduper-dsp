@@ -373,30 +373,52 @@ fn export_wav_to(path: &std::path::Path, frame_a: &[f32]) -> Result<(), String> 
     .map_err(|e| e.to_string())
 }
 
-/// Result of loading a WAV: the resampled WT_SIZE curve + a human-
-/// readable note about how the curve was extracted (detected pitch,
-/// or "loudest region" fallback for unpitched material).
+/// Result of loading a WAV: `frame_a` (early/attack cycle) +
+/// `frame_b` (late/release cycle) + a human-readable note.
+/// WT Pos 0→1 morphs from frame_a to frame_b.
 pub struct LoadedWav {
-    pub curve: Vec<f32>,
+    pub frame_a: Vec<f32>,
+    pub frame_b: Option<Vec<f32>>,
     pub note: String,
 }
 
 /// Read a WAV file (any sample rate, mono or stereo, any length) and
-/// produce a `WT_SIZE` wavetable frame, normalised to ~0.95 peak.
+/// produce up to two single-cycle `WT_SIZE` wavetable frames.
 ///
-/// If the recording has a detectable pitch (vocal note, kubyz drone,
-/// sustained synth note), we extract exactly ONE period from the
-/// loudest region at the detected frequency — this preserves the
-/// timbre because we're sampling one cycle of the actual waveform,
-/// not a linearly-resampled average of the whole file.
+/// If the recording is pitched AND long enough to contain at least
+/// two cycles, we extract TWO cycles from different time points —
+/// the first from the attack body, the last from the release tail.
+/// WT Pos then morphs through the timbre evolution.
 ///
-/// If pitch detection fails (drums, noise, atonal material), we fall
-/// back to "loudest WT_SIZE samples linearly resampled" so something
-/// still loads instead of nothing.
+/// Falls back gracefully:
+/// - Pitched but only ~1 cycle of audio → single-cycle extract for A,
+///   no frame_b (preset's frame_b stays).
+/// - Unpitched (drums, noise, silence) → loudest-region linear
+///   resample, peak-normalised. Single frame_a only.
+/// Push a `LoadedWav` into the synth — frame_a always, frame_b if
+/// the extractor produced one. Also syncs the GUI canvas + node
+/// editor to frame_a and marks `user_edited` so `refresh_preview`
+/// won't overwrite the loaded curve when the user re-selects a preset.
+fn apply_loaded_wav(state: &mut GuiState, loaded: &LoadedWav) {
+    let mip_a = mip_from_table(&loaded.frame_a);
+    if let Some(ref b) = loaded.frame_b {
+        let mip_b = mip_from_table(b);
+        crate::push_custom_both_frames(&state.shared, mip_a, mip_b);
+    } else {
+        push_custom_frame_a(&state.shared, mip_a);
+    }
+    state.preview_a.copy_from_slice(&loaded.frame_a);
+    if let Some(ref b) = loaded.frame_b {
+        state.preview_b.copy_from_slice(b);
+    }
+    state.nodes = CurveNodes::from_table(&loaded.frame_a, 24);
+    state.user_edited = true;
+    state.preview_for_preset = state.selected_preset;
+    state.selected_node = None;
+}
+
 fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
     let data = superduper_synth_core::wav::parse_wav_file(path).map_err(|e| e.to_string())?;
-    // Average to mono — kubyz / vocal sources are usually mono anyway
-    // but be defensive against stereo files.
     let mono: Vec<f32> = if data.channels >= 2 {
         let frames = data.frame_count();
         (0..frames)
@@ -408,6 +430,23 @@ fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
     } else {
         data.samples.clone()
     };
+
+    // Try 2-frame extraction first — gives the "evolving timbre"
+    // experience via WT Pos morphing through the original recording.
+    if let Some(multi) =
+        superduper_synth_core::pitch::wav_to_multi_frame(&mono, data.sample_rate, 2, WT_SIZE, 0.95)
+    {
+        let midi = 69.0 + 12.0 * (multi.detected_hz / 440.0).log2();
+        let note = format!(
+            "pitch {:.1} Hz (≈MIDI {:.1}), 2 frames — WT Pos morphs attack→release",
+            multi.detected_hz, midi
+        );
+        let mut frames = multi.frames.into_iter();
+        let frame_a = frames.next().unwrap();
+        let frame_b = frames.next();
+        return Ok(LoadedWav { frame_a, frame_b, note });
+    }
+    // Fall back to single-cycle (or loudest-region for unpitched).
     let ex = superduper_synth_core::pitch::wav_to_single_cycle(
         &mono,
         data.sample_rate,
@@ -424,7 +463,7 @@ fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
         }
         _ => "unpitched → loudest region, normalised".to_string(),
     };
-    Ok(LoadedWav { curve: ex.curve, note })
+    Ok(LoadedWav { frame_a: ex.curve, frame_b: None, note })
 }
 
 /// Apply a loaded `WavePreset` to the shared state — restore params
@@ -892,13 +931,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 if let Some(path) = picked {
                     match load_wav_as_frame_a(&path) {
                         Ok(loaded) => {
-                            let mip = mip_from_table(&loaded.curve);
-                            push_custom_frame_a(&state.shared, mip);
-                            state.preview_a.copy_from_slice(&loaded.curve);
-                            state.nodes = CurveNodes::from_table(&loaded.curve, 24);
-                            state.user_edited = true;
-                            state.preview_for_preset = state.selected_preset;
-                            state.selected_node = None;
+                            apply_loaded_wav(state, &loaded);
                             let fname = path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -978,13 +1011,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
     if let Some(path) = dropped.into_iter().next() {
         match load_wav_as_frame_a(&path) {
             Ok(loaded) => {
-                let mip = mip_from_table(&loaded.curve);
-                push_custom_frame_a(&state.shared, mip);
-                state.preview_a.copy_from_slice(&loaded.curve);
-                state.nodes = CurveNodes::from_table(&loaded.curve, 24);
-                state.user_edited = true;
-                state.preview_for_preset = state.selected_preset;
-                state.selected_node = None;
+                apply_loaded_wav(state, &loaded);
                 let fname = path
                     .file_name()
                     .and_then(|n| n.to_str())

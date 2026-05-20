@@ -28,6 +28,7 @@ members = [
     "effects/superduper-looper",
     "effects/superduper-filter",
     "tools/sdsp-runner",
+    "tools/wave-inspect",
 ]
 
 [workspace.package]

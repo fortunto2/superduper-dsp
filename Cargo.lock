@@ -4912,6 +4912,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wave-inspect"
+version = "0.1.0"
+dependencies = [
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

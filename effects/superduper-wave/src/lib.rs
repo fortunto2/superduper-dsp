@@ -282,6 +282,23 @@ pub fn push_custom_frame_a(shared: &SharedParamsInner, new_frame_a: MipWavetable
     shared.pending_swap.store(true, Ordering::Relaxed);
 }
 
+/// Replace BOTH frames of the active wavetable in a single lock —
+/// used by multi-frame WAV import where we want frame_a = first
+/// extracted cycle (attack body) and frame_b = last (release tail).
+/// WT Pos 0→1 then morphs through the recording's timbre evolution.
+pub fn push_custom_both_frames(
+    shared: &SharedParamsInner,
+    frame_a: MipWavetable,
+    frame_b: MipWavetable,
+) {
+    {
+        let mut guard = shared.wavetable.lock();
+        guard.0 = frame_a;
+        guard.1 = frame_b;
+    }
+    shared.pending_swap.store(true, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Main-thread state + audio processor.
 // ---------------------------------------------------------------------------

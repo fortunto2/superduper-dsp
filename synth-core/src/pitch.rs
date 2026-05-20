@@ -218,6 +218,70 @@ pub struct CycleExtract {
     pub pitched: bool,
 }
 
+/// Extract N evenly-spaced single-cycle frames from a pitched
+/// recording. Used to build multi-frame wavetables that morph
+/// through the recording's timbre evolution (attack body → sustain
+/// → release tail). Each frame is one period at the detected pitch
+/// taken from a different time anchor, peak-normalised, target_len
+/// samples.
+///
+/// Returns `Some(frames)` of length exactly `n_frames` on success,
+/// `None` if pitch detection failed or the recording is too short
+/// to fit `n_frames` cycles.
+pub struct MultiFrameExtract {
+    pub frames: Vec<Vec<f32>>,
+    pub detected_hz: f32,
+}
+
+pub fn wav_to_multi_frame(
+    mono: &[f32],
+    sample_rate: u32,
+    n_frames: usize,
+    target_len: usize,
+    peak_target: f32,
+) -> Option<MultiFrameExtract> {
+    if n_frames == 0 {
+        return None;
+    }
+    let hz = detect_pitch_hz(mono, sample_rate)?;
+    let period = (sample_rate as f32 / hz) as usize;
+    if period < 8 || mono.len() < period * n_frames {
+        return None;
+    }
+    // Anchor positions evenly spaced from "first loud sample" to
+    // "last sample minus one period".
+    let probe = (period * 4).min(2048);
+    let first_loud = loudest_region_start(mono, probe.min(mono.len()));
+    let last = mono.len().saturating_sub(period);
+    if last <= first_loud {
+        return None;
+    }
+    let mut frames: Vec<Vec<f32>> = Vec::with_capacity(n_frames);
+    for k in 0..n_frames {
+        let t = if n_frames > 1 {
+            k as f32 / (n_frames as f32 - 1.0)
+        } else {
+            0.0
+        };
+        let anchor = first_loud + ((last - first_loud) as f32 * t) as usize;
+        let aligned = snap_to_zero_crossing(mono, anchor, period.max(64));
+        let end = (aligned + period).min(mono.len());
+        if end <= aligned {
+            continue;
+        }
+        let mut frame = linear_resample(&mono[aligned..end], target_len);
+        normalise_peak(&mut frame, peak_target);
+        frames.push(frame);
+    }
+    if frames.len() < n_frames {
+        return None;
+    }
+    Some(MultiFrameExtract {
+        frames,
+        detected_hz: hz,
+    })
+}
+
 pub fn wav_to_single_cycle(
     mono: &[f32],
     sample_rate: u32,
@@ -352,5 +416,28 @@ mod tests {
         let s = synth_sine(440.0, 44100, 0.1);
         let ex = wav_to_single_cycle(&s, 44100, 2048, 0.95);
         assert_eq!(ex.curve.len(), 2048);
+    }
+
+    #[test]
+    fn multi_frame_extracts_n_frames_from_long_sine() {
+        let s = synth_sine(220.0, 44100, 0.5); // 110 cycles → enough for 16 frames
+        let ex = wav_to_multi_frame(&s, 44100, 16, 2048, 0.95)
+            .expect("220Hz sine should yield 16 frames");
+        assert_eq!(ex.frames.len(), 16);
+        assert!((ex.detected_hz - 220.0).abs() < 2.0);
+        for (i, f) in ex.frames.iter().enumerate() {
+            assert_eq!(f.len(), 2048);
+            let peak = f.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(
+                (peak - 0.95).abs() < 0.02,
+                "frame {i} peak {peak}, expected ~0.95"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_frame_returns_none_for_unpitched() {
+        let s = vec![0.0; 4096];
+        assert!(wav_to_multi_frame(&s, 44100, 8, 2048, 0.95).is_none());
     }
 }

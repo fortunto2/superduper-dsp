@@ -135,24 +135,40 @@ fn read_single(table: &[f32; WT_SIZE], phase: f32) -> f32 {
     table[i0] * (1.0 - frac) + table[i1] * frac
 }
 
-/// Read from `frame_a` with a smooth crossfade from the previous `frame_a`
-/// (for live wavetable edits — without this each mouse-move click-swaps the
-/// table and emits a tiny pop), then blend the result with `frame_b` by
-/// `wt_pos` for the wavetable morph.
+/// Sample N wavetable frames at `phase` and lerp between the
+/// integer-adjacent pair selected by `wt_pos × (N-1)`. The first
+/// frame (index 0) is read with a crossfade from `prev_a_table`
+/// so live edits don't click-swap. Other frames are read directly.
 #[inline]
-fn read_blend(
-    a_prev: &[f32; WT_SIZE],
-    a: &[f32; WT_SIZE],
-    b: &[f32; WT_SIZE],
+fn read_morph(
+    prev_a_table: &[f32; WT_SIZE],
+    tables: &[&[f32; WT_SIZE]],
     phase: f32,
     fade: f32,
     wt_pos: f32,
 ) -> f32 {
-    let a_prev_s = read_single(a_prev, phase);
-    let a_s = read_single(a, phase);
-    let a_final = a_prev_s * (1.0 - fade) + a_s * fade;
-    let b_s = read_single(b, phase);
-    a_final * (1.0 - wt_pos) + b_s * wt_pos
+    let n = tables.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        let prev_s = read_single(prev_a_table, phase);
+        let cur_s = read_single(tables[0], phase);
+        return prev_s * (1.0 - fade) + cur_s * fade;
+    }
+    let pos = wt_pos.clamp(0.0, 1.0) * (n as f32 - 1.0);
+    let i0 = (pos.floor() as usize).min(n - 1);
+    let i1 = (i0 + 1).min(n - 1);
+    let frac = pos - i0 as f32;
+    let s_i0 = if i0 == 0 {
+        let prev_s = read_single(prev_a_table, phase);
+        let cur_s = read_single(tables[0], phase);
+        prev_s * (1.0 - fade) + cur_s * fade
+    } else {
+        read_single(tables[i0], phase)
+    };
+    let s_i1 = read_single(tables[i1], phase);
+    s_i0 * (1.0 - frac) + s_i1 * frac
 }
 
 /// One unison oscillator instance — just a phase accumulator.
@@ -391,14 +407,15 @@ pub struct WaveParams<'a> {
     pub lfo_dest: LfoDest,
     pub lfo_rate_hz: f32,
     pub lfo_depth: f32,
-    /// The most recent `frame_a` mip pyramid (live edits replace this).
-    pub frame_a: &'a MipWavetable,
-    /// The previous `frame_a` — read in crossfade with `frame_a` for the
-    /// first ~12 ms after a curve push, killing zipper noise from rapid
-    /// mouse-drag wavetable edits.
+    /// All wavetable frames (1..=`FRAMES_MAX`). WT Pos × (N-1) picks
+    /// an integer pair to blend across — fractional part is the lerp.
+    /// First entry (frames[0]) is the live edit target.
+    pub frames: &'a [MipWavetable],
+    /// The previous frames[0] — read in crossfade with the live one
+    /// for the first ~12 ms after a curve push, killing zipper noise
+    /// from rapid mouse-drag wavetable edits.
     pub frame_a_prev: &'a MipWavetable,
     pub frame_a_fade: f32,
-    pub frame_b: &'a MipWavetable,
 
     // ---- Hard sync + cross-FM ----
     pub sync_on: bool,
@@ -656,13 +673,23 @@ impl WaveVoice {
                 o.phase -= 1.0;
             }
             // Phase-mod the wavetable read by the FM sample. Wraps
-            // through 1.0 by the additive modulo down in read_blend.
+            // through 1.0 by the additive modulo down in read_morph.
             let read_phase = (o.phase + fm_sample).rem_euclid(1.0);
-            let mip = p.frame_a.pick_level(voice_freq, p.sr, p.antialias);
+            // All frames share the same shape, so pick the mip level
+            // off frames[0] — pick_level is a function of frequency,
+            // not content.
+            let frames = p.frames;
+            let mip = frames[0].pick_level(voice_freq, p.sr, p.antialias);
             let table_a_prev = &p.frame_a_prev.levels[mip];
-            let table_a = &p.frame_a.levels[mip];
-            let table_b = &p.frame_b.levels[mip];
-            let s = read_blend(table_a_prev, table_a, table_b, read_phase, p.frame_a_fade, wt_pos);
+            // Build a stack-array of `&[f32; WT_SIZE]` refs for every
+            // active frame at the chosen mip level. FRAMES_MAX is a
+            // tight cap so this stays heap-free per sample.
+            let n_frames = frames.len().min(16);
+            let mut tables: [&[f32; WT_SIZE]; 16] = [&frames[0].levels[mip]; 16];
+            for i in 1..n_frames {
+                tables[i] = &frames[i].levels[mip];
+            }
+            let s = read_morph(table_a_prev, &tables[..n_frames], read_phase, p.frame_a_fade, wt_pos);
             mix_l += s * o.pan_l;
             mix_r += s * o.pan_r;
         }

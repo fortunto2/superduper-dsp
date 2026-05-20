@@ -21,6 +21,7 @@ fn run_voice(antialias: bool) -> f32 {
     // mip-mapping.
     let a = render_formula_mip(|p| 2.0 * p - 1.0);
     let b = a.clone();
+    let frames_arr = [a.clone(), b.clone()];
 
     let mut v = WaveVoice::default();
     let midi_note = 96.0_f32; // C7 — very high; loads of harmonics above Nyquist.
@@ -48,10 +49,9 @@ fn run_voice(antialias: bool) -> f32 {
         lfo_dest: LfoDest::Cutoff,
         lfo_rate_hz: 0.0,
         lfo_depth: 0.0,
-        frame_a: &a,
+        frames: &frames_arr,
         frame_a_prev: &a,
         frame_a_fade: 1.0,
-        frame_b: &b,
         sync_on: false,
         sync_ratio: 1.0,
         fm_ratio: 2.0,

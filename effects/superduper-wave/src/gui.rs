@@ -280,6 +280,10 @@ struct GuiState {
     selected_user_preset: Option<usize>,
     /// Working "Save as…" name buffer for the toolbar text input.
     save_name_buf: String,
+    /// User-selected frame count for the next WAV import. 1 means
+    /// single-cycle (no morph); 2 = attack/release pair; up to
+    /// `FRAMES_MAX` (16) for Serum-style timbre evolution.
+    import_n_frames: usize,
     /// Latest user-facing message from save/load (drawn under the
     /// toolbar — error from a corrupt file, "Saved!" confirmation, …).
     /// Cleared next paint after fading out.
@@ -313,7 +317,7 @@ fn snapshot_preset(
 ) -> crate::user_extra::WavePreset {
     let frame_a: Vec<f32> = {
         let guard = state.shared.wavetable.lock();
-        guard.0.levels[0].iter().copied().collect()
+        guard[0].levels[0].iter().copied().collect()
     };
     let extra = crate::user_extra::WaveExtra { frame_a };
     let params: Vec<f32> = state
@@ -373,12 +377,12 @@ fn export_wav_to(path: &std::path::Path, frame_a: &[f32]) -> Result<(), String> 
     .map_err(|e| e.to_string())
 }
 
-/// Result of loading a WAV: `frame_a` (early/attack cycle) +
-/// `frame_b` (late/release cycle) + a human-readable note.
-/// WT Pos 0→1 morphs from frame_a to frame_b.
+/// Result of loading a WAV: 1..=N frames extracted from the source +
+/// a human-readable note describing what was detected. WT Pos morphs
+/// through them — at N=2 it's an attack→release morph, at N=8+ you
+/// get fluid timbre evolution Serum-style.
 pub struct LoadedWav {
-    pub frame_a: Vec<f32>,
-    pub frame_b: Option<Vec<f32>>,
+    pub frames: Vec<Vec<f32>>,
     pub note: String,
 }
 
@@ -400,24 +404,23 @@ pub struct LoadedWav {
 /// editor to frame_a and marks `user_edited` so `refresh_preview`
 /// won't overwrite the loaded curve when the user re-selects a preset.
 fn apply_loaded_wav(state: &mut GuiState, loaded: &LoadedWav) {
-    let mip_a = mip_from_table(&loaded.frame_a);
-    if let Some(ref b) = loaded.frame_b {
-        let mip_b = mip_from_table(b);
-        crate::push_custom_both_frames(&state.shared, mip_a, mip_b);
-    } else {
-        push_custom_frame_a(&state.shared, mip_a);
+    if loaded.frames.is_empty() {
+        return;
     }
-    state.preview_a.copy_from_slice(&loaded.frame_a);
-    if let Some(ref b) = loaded.frame_b {
-        state.preview_b.copy_from_slice(b);
+    let mips: Vec<_> = loaded.frames.iter().map(|f| mip_from_table(f)).collect();
+    crate::push_custom_frames(&state.shared, mips);
+    state.preview_a.copy_from_slice(&loaded.frames[0]);
+    if let Some(last) = loaded.frames.last() {
+        state.preview_b.copy_from_slice(last);
     }
-    state.nodes = CurveNodes::from_table(&loaded.frame_a, 24);
+    state.nodes = CurveNodes::from_table(&loaded.frames[0], 24);
     state.user_edited = true;
     state.preview_for_preset = state.selected_preset;
     state.selected_node = None;
 }
 
-fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
+fn load_wav_as_frame_a(path: &std::path::Path, n_frames: usize) -> Result<LoadedWav, String> {
+    let n_frames = n_frames.clamp(1, crate::FRAMES_MAX);
     let data = superduper_synth_core::wav::parse_wav_file(path).map_err(|e| e.to_string())?;
     let mono: Vec<f32> = if data.channels >= 2 {
         let frames = data.frame_count();
@@ -431,20 +434,23 @@ fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
         data.samples.clone()
     };
 
-    // Try 2-frame extraction first — gives the "evolving timbre"
-    // experience via WT Pos morphing through the original recording.
-    if let Some(multi) =
-        superduper_synth_core::pitch::wav_to_multi_frame(&mono, data.sample_rate, 2, WT_SIZE, 0.95)
-    {
-        let midi = 69.0 + 12.0 * (multi.detected_hz / 440.0).log2();
-        let note = format!(
-            "pitch {:.1} Hz (≈MIDI {:.1}), 2 frames — WT Pos morphs attack→release",
-            multi.detected_hz, midi
-        );
-        let mut frames = multi.frames.into_iter();
-        let frame_a = frames.next().unwrap();
-        let frame_b = frames.next();
-        return Ok(LoadedWav { frame_a, frame_b, note });
+    // Try N-frame extraction first if user picked N >= 2 and recording
+    // is long enough — gives the "evolving timbre" experience.
+    if n_frames >= 2 {
+        if let Some(multi) = superduper_synth_core::pitch::wav_to_multi_frame(
+            &mono,
+            data.sample_rate,
+            n_frames,
+            WT_SIZE,
+            0.95,
+        ) {
+            let midi = 69.0 + 12.0 * (multi.detected_hz / 440.0).log2();
+            let note = format!(
+                "pitch {:.1} Hz (≈MIDI {:.1}), {} frames",
+                multi.detected_hz, midi, n_frames
+            );
+            return Ok(LoadedWav { frames: multi.frames, note });
+        }
     }
     // Fall back to single-cycle (or loudest-region for unpitched).
     let ex = superduper_synth_core::pitch::wav_to_single_cycle(
@@ -457,13 +463,13 @@ fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
         Some(hz) if ex.pitched => {
             let midi = 69.0 + 12.0 * (hz / 440.0).log2();
             format!(
-                "pitch {:.1} Hz (≈MIDI {:.1}), one cycle, normalised",
+                "pitch {:.1} Hz (≈MIDI {:.1}), 1 cycle, normalised",
                 hz, midi
             )
         }
         _ => "unpitched → loudest region, normalised".to_string(),
     };
-    Ok(LoadedWav { frame_a: ex.curve, frame_b: None, note })
+    Ok(LoadedWav { frames: vec![ex.curve], note })
 }
 
 /// Apply a loaded `WavePreset` to the shared state — restore params
@@ -518,7 +524,7 @@ pub fn open_window<P: HasRawWindowHandle>(
     let mut preview_a = vec![0.0f32; WT_SIZE];
     {
         let guard = shared.wavetable.lock();
-        for (dst, src) in preview_a.iter_mut().zip(guard.0.levels[0].iter()) {
+        for (dst, src) in preview_a.iter_mut().zip(guard[0].levels[0].iter()) {
             *dst = *src;
         }
     }
@@ -569,6 +575,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         last_io_msg: None,
         pending_open: None,
         pending_export: None,
+        import_n_frames: 4,
     };
     EguiWindow::open_parented(
         parent,
@@ -929,7 +936,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             Ok(picked) => {
                 state.pending_open = None;
                 if let Some(path) = picked {
-                    match load_wav_as_frame_a(&path) {
+                    match load_wav_as_frame_a(&path, state.import_n_frames) {
                         Ok(loaded) => {
                             apply_loaded_wav(state, &loaded);
                             let fname = path
@@ -965,7 +972,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 if let Some(path) = picked {
                     let frame_a: Vec<f32> = {
                         let guard = state.shared.wavetable.lock();
-                        guard.0.levels[0].iter().copied().collect()
+                        guard[0].levels[0].iter().copied().collect()
                     };
                     match export_wav_to(&path, &frame_a) {
                         Ok(_) => {
@@ -1009,7 +1016,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             .collect()
     });
     if let Some(path) = dropped.into_iter().next() {
-        match load_wav_as_frame_a(&path) {
+        match load_wav_as_frame_a(&path, state.import_n_frames) {
             Ok(loaded) => {
                 apply_loaded_wav(state, &loaded);
                 let fname = path
@@ -1180,6 +1187,24 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     }
                 }
             }
+            // N-frame picker — controls how many single-cycle frames
+            // get extracted from the next WAV import. 1 = single
+            // cycle (no morph). 2 = attack/release pair. Up to 16
+            // = full Serum-style timbre evolution along WT Pos.
+            ui.label(
+                egui::RichText::new("Frames:")
+                    .color(core_gui::GREEN_DIM)
+                    .monospace()
+                    .small(),
+            );
+            let mut n_frames_u32 = state.import_n_frames as u32;
+            ui.add(
+                egui::DragValue::new(&mut n_frames_u32)
+                    .speed(1)
+                    .range(1..=crate::FRAMES_MAX as u32),
+            );
+            state.import_n_frames = (n_frames_u32 as usize).clamp(1, crate::FRAMES_MAX);
+
             // Native "Open WAV…" file picker — primary path for loading
             // a wavetable from disk. Runs in a worker thread so the
             // modal NSOpenPanel doesn't deadlock REAPER's main loop

@@ -173,11 +173,12 @@ pub struct SharedParamsInner {
     /// edits) or any other out-of-band wavetable change. Audio thread
     /// re-clones from `wavetable` on the next process() block.
     pub pending_swap: AtomicBool,
-    /// Wavetable pair currently in use. Each entry is a mip pyramid —
-    /// audio thread picks the right band-limited level per voice. The
-    /// pyramid itself is rebuilt off the audio thread (preset apply or
-    /// curve edit) and pointer-swapped here.
-    pub wavetable: Mutex<(MipWavetable, MipWavetable)>,
+    /// Wavetable frames currently in use — 1..=`FRAMES_MAX` mip
+    /// pyramids. Audio thread picks the right band-limited level
+    /// per voice and lerps between adjacent frames via the WT Pos
+    /// param. The pyramids themselves are rebuilt off the audio
+    /// thread (preset apply or curve edit) and pointer-swapped here.
+    pub wavetable: Mutex<Vec<MipWavetable>>,
     /// Active wavetable preset id — used by the GUI editor to decide
     /// whether to seed its nodes from the preset formula or from
     /// existing custom data.
@@ -217,7 +218,7 @@ impl PluginShared {
                 active_voices: AtomicU32::new(0),
                 pending_preset: AtomicU32::new(u32::MAX),
                 pending_swap: AtomicBool::new(false),
-                wavetable: Mutex::new((frame_a, frame_b)),
+                wavetable: Mutex::new(vec![frame_a, frame_b]),
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
                 mod_wheel: AtomicF32::new(0.0),
@@ -263,40 +264,63 @@ pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
     let frame_b = osc::render_formula_mip(preset.frame_b);
     {
         let mut guard = shared.wavetable.lock();
-        *guard = (frame_a, frame_b);
+        *guard = vec![frame_a, frame_b];
     }
     shared.active_preset.store(preset_idx as u32, Ordering::Relaxed);
     shared.pending_preset.store(preset_idx as u32, Ordering::Relaxed);
     shared.pending_swap.store(true, Ordering::Relaxed);
 }
 
-/// Replace just `frame_a` of the active wavetable — used by the GUI's
-/// custom-curve editor (each mouse move re-bakes a fresh pyramid).
-/// `frame_b` stays at whatever the preset put there, so WT Pos morphs
-/// from the edited curve toward the preset's second frame.
+/// Cap on user-extractable frame count. Past 16, the perception
+/// gain is marginal and the mip-pyramid memory cost (10 levels ×
+/// 2 KB per frame × N) starts to bite.
+pub const FRAMES_MAX: usize = 16;
+
+/// Replace just frames[0] of the active wavetable — used by the
+/// GUI's custom-curve editor (each mouse move re-bakes a fresh
+/// pyramid). Other frames stay in place, so WT Pos still morphs
+/// from the edited curve through whatever else is loaded.
 pub fn push_custom_frame_a(shared: &SharedParamsInner, new_frame_a: MipWavetable) {
     {
         let mut guard = shared.wavetable.lock();
-        guard.0 = new_frame_a;
+        if guard.is_empty() {
+            guard.push(new_frame_a);
+        } else {
+            guard[0] = new_frame_a;
+        }
     }
     shared.pending_swap.store(true, Ordering::Relaxed);
 }
 
-/// Replace BOTH frames of the active wavetable in a single lock —
-/// used by multi-frame WAV import where we want frame_a = first
-/// extracted cycle (attack body) and frame_b = last (release tail).
-/// WT Pos 0→1 then morphs through the recording's timbre evolution.
+/// Replace ALL frames of the active wavetable in a single lock —
+/// used by multi-frame WAV import + multi-frame preset load. The
+/// Vec gets clamped to `FRAMES_MAX`; empty inputs are ignored.
+pub fn push_custom_frames(
+    shared: &SharedParamsInner,
+    mut frames: Vec<MipWavetable>,
+) {
+    if frames.is_empty() {
+        return;
+    }
+    if frames.len() > FRAMES_MAX {
+        frames.truncate(FRAMES_MAX);
+    }
+    {
+        let mut guard = shared.wavetable.lock();
+        *guard = frames;
+    }
+    shared.pending_swap.store(true, Ordering::Relaxed);
+}
+
+/// Deprecated 2-frame wrapper — kept for callers that still pass a
+/// pair explicitly. New code should build a `Vec<MipWavetable>` and
+/// use `push_custom_frames`.
 pub fn push_custom_both_frames(
     shared: &SharedParamsInner,
     frame_a: MipWavetable,
     frame_b: MipWavetable,
 ) {
-    {
-        let mut guard = shared.wavetable.lock();
-        guard.0 = frame_a;
-        guard.1 = frame_b;
-    }
-    shared.pending_swap.store(true, Ordering::Relaxed);
+    push_custom_frames(shared, vec![frame_a, frame_b]);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,15 +337,16 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
     voices: [WaveVoice; VOICE_COUNT],
-    /// Local wavetable handle — clone-on-swap from `shared.wavetable` so the
-    /// audio thread renders without taking the mutex on every sample.
-    frame_a: MipWavetable,
-    frame_b: MipWavetable,
-    /// Previous `frame_a` kept around for the crossfade — every wavetable
-    /// edit (mouse-drag in the curve editor) used to click-swap and pop;
-    /// with this we glide between the old and new tables over ~12 ms.
+    /// Local wavetable handle — clone-on-swap from `shared.wavetable`
+    /// so the audio thread renders without taking the mutex on every
+    /// sample. Length is 1..=`FRAMES_MAX`. WT Pos × (N-1) selects the
+    /// integer pair to blend across; fractional part is the lerp.
+    frames: Vec<MipWavetable>,
+    /// Previous frames[0] kept around for the curve-edit crossfade —
+    /// every mouse-drag re-bakes a new mip and used to click-swap
+    /// and pop; with this we glide between old and new over ~12 ms.
     frame_a_prev: MipWavetable,
-    /// 0..1, where 1 = fully on new `frame_a`, 0 = still on `frame_a_prev`.
+    /// 0..1, where 1 = fully on new frames[0], 0 = still on frame_a_prev.
     fade_pos: f32,
     fade_inc: f32,
     next_age: u64,
@@ -657,10 +682,9 @@ impl<'a> PluginAudioProcessor<'a> {
                     lfo_dest,
                     lfo_rate_hz,
                     lfo_depth,
-                    frame_a: &self.frame_a,
+                    frames: &self.frames,
                     frame_a_prev: &self.frame_a_prev,
                     frame_a_fade: fade_pos,
-                    frame_b: &self.frame_b,
                     sync_on: self.shared.params[P_SYNC].load(Ordering::Relaxed) >= 0.5,
                     sync_ratio: self.shared.params[P_SYNC_RATIO].load(Ordering::Relaxed),
                     fm_ratio: self.shared.params[P_FM_RATIO].load(Ordering::Relaxed),
@@ -719,18 +743,30 @@ impl<'a> PluginAudioProcessor<'a> {
     /// pointless fades when nothing actually moved.
     fn maybe_swap_wavetable(&mut self) {
         if self.shared.pending_swap.swap(false, Ordering::AcqRel) {
-            let guard = self.shared.wavetable.lock();
-            let new_a = guard.0.clone();
-            let new_b = guard.1.clone();
-            drop(guard);
-            // Cheap "did frame_a actually move" check via the level-0 Arc
-            // pointer — saves an unnecessary crossfade when only frame_b
-            // changed (preset swaps still cover both via pending_swap).
-            if !std::sync::Arc::ptr_eq(&new_a.levels[0], &self.frame_a.levels[0]) {
-                self.frame_a_prev = std::mem::replace(&mut self.frame_a, new_a);
+            let new_frames: Vec<MipWavetable> = {
+                let guard = self.shared.wavetable.lock();
+                guard.clone()
+            };
+            if new_frames.is_empty() {
+                return;
+            }
+            // Cheap "did frames[0] actually move" check via the
+            // level-0 Arc pointer — saves an unnecessary crossfade
+            // when later frames changed but the head didn't.
+            let head_moved = self
+                .frames
+                .first()
+                .map(|cur| !std::sync::Arc::ptr_eq(&new_frames[0].levels[0], &cur.levels[0]))
+                .unwrap_or(true);
+            if head_moved {
+                self.frame_a_prev = self
+                    .frames
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| new_frames[0].clone());
                 self.fade_pos = 0.0;
             }
-            self.frame_b = new_b;
+            self.frames = new_frames;
             self.shared.pending_preset.store(u32::MAX, Ordering::Relaxed);
         }
     }
@@ -747,20 +783,22 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
-        let (frame_a, frame_b) = {
+        let frames: Vec<MipWavetable> = {
             let guard = shared.wavetable.lock();
-            (guard.0.clone(), guard.1.clone())
+            guard.clone()
         };
-        // 12 ms crossfade between old/new frame_a — short enough to feel
-        // immediate, long enough to bury the curve-edit zipper noise.
+        // 12 ms crossfade between old/new frames[0] — short enough to
+        // feel immediate, long enough to bury the curve-edit zipper noise.
         let fade_samples = (sr * 0.012).max(1.0);
         let fade_inc = 1.0 / fade_samples;
-        let frame_a_prev = frame_a.clone();
+        let frame_a_prev = frames
+            .first()
+            .cloned()
+            .expect("wavetable must have at least one frame");
         Ok(Self {
             shared,
             voices: std::array::from_fn(|_| WaveVoice::default()),
-            frame_a,
-            frame_b,
+            frames,
             frame_a_prev,
             fade_pos: 1.0,
             fade_inc,
@@ -1036,7 +1074,7 @@ const WAVE_STATE_VERSION: u32 = 1;
 impl PluginStateImpl for PluginMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
         let guard = self.shared.wavetable.lock();
-        let frame_a: Vec<f32> = guard.0.levels[0].iter().copied().collect();
+        let frame_a: Vec<f32> = guard[0].levels[0].iter().copied().collect();
         drop(guard);
         let state = WaveState {
             version: WAVE_STATE_VERSION,

@@ -29,6 +29,7 @@ fn render_formula_normalises_above_unity() {
 fn voice_emits_audio_on_note() {
     let a = render_formula_mip(|p| 2.0 * p - 1.0);
     let b = render_formula_mip(|p| 2.0 * p - 1.0);
+    let frames_arr = [a.clone(), b.clone()];
     let mut v = WaveVoice::default();
     v.key = 60;
     v.velocity = 1.0;
@@ -54,10 +55,9 @@ fn voice_emits_audio_on_note() {
         lfo_dest: LfoDest::Cutoff,
         lfo_rate_hz: LFO_OFF_RATE,
         lfo_depth: LFO_OFF_DEPTH,
-        frame_a: &a,
+        frames: &frames_arr,
         frame_a_prev: &a,
         frame_a_fade: 1.0,
-        frame_b: &b,
         sync_on: false,
         sync_ratio: 1.0,
         fm_ratio: 2.0,
@@ -90,6 +90,7 @@ fn voice_emits_audio_on_note() {
 fn morph_blends_two_frames() {
     let a = render_formula_mip(|_| 1.0);
     let b = render_formula_mip(|_| -1.0);
+    let frames_arr = [a.clone(), b.clone()];
 
     let mut v = WaveVoice::default();
     v.key = 60;
@@ -116,10 +117,9 @@ fn morph_blends_two_frames() {
         lfo_dest: LfoDest::Cutoff,
         lfo_rate_hz: LFO_OFF_RATE,
         lfo_depth: LFO_OFF_DEPTH,
-        frame_a: &a,
+        frames: &frames_arr,
         frame_a_prev: &a,
         frame_a_fade: 1.0,
-        frame_b: &b,
         sync_on: false,
         sync_ratio: 1.0,
         fm_ratio: 2.0,
@@ -146,6 +146,7 @@ fn morph_blends_two_frames() {
 fn unison_decorrelates_l_r() {
     let a = render_formula_mip(|p| (p * core::f32::consts::TAU).sin());
     let b = a.clone();
+    let frames_arr = [a.clone(), b.clone()];
     let mut v = WaveVoice::default();
     v.key = 60;
     v.velocity = 1.0;
@@ -171,10 +172,9 @@ fn unison_decorrelates_l_r() {
         lfo_dest: LfoDest::Cutoff,
         lfo_rate_hz: LFO_OFF_RATE,
         lfo_depth: LFO_OFF_DEPTH,
-        frame_a: &a,
+        frames: &frames_arr,
         frame_a_prev: &a,
         frame_a_fade: 1.0,
-        frame_b: &b,
         sync_on: false,
         sync_ratio: 1.0,
         fm_ratio: 2.0,

@@ -1,0 +1,13 @@
+[package]
+name = "vocal-inspect"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless test harness for SuperDuper Vocal — synthesises voice-like test signals + measures de-esser / plosive / hum reduction."
+
+[[bin]]
+name = "vocal-inspect"
+path = "src/main.rs"
+
+[dependencies]
+superduper-synth-core = { path = "../../synth-core" }

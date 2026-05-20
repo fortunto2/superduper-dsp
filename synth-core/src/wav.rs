@@ -167,6 +167,94 @@ fn decode_samples(b: &[u8], fmt: u16, bps: u16) -> Result<Vec<f32>, WavError> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mono 32-bit float WAV writer.
+//
+// Used for wavetable export — Serum, Vital, Phase Plant and most other
+// wavetable synths read single-cycle waveforms from this exact format
+// (RIFF + fmt tag 3 + 32-bit float + mono). Sample rate is mostly a
+// label for single-cycle data; we use 88200 Hz to match Serum's
+// convention (any rate works, but 88200 makes a 2048-sample table
+// equivalent to ~43 Hz which is below the audible range and helps
+// pitch-shifting tools).
+// ---------------------------------------------------------------------------
+
+pub const SINGLE_CYCLE_SAMPLE_RATE: u32 = 88200;
+
+/// Write `samples` to `path` as a mono 32-bit float WAV. Sample rate
+/// embedded in the header is `sample_rate` (use 88200 for single-cycle
+/// wavetables to match Serum / Vital convention). Existing file is
+/// overwritten.
+pub fn write_mono_f32_wav(
+    path: &std::path::Path,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(), WavError> {
+    let mut out = Vec::with_capacity(44 + samples.len() * 4);
+    // RIFF chunk
+    out.extend_from_slice(b"RIFF");
+    let chunk_size = (36 + samples.len() * 4) as u32;
+    out.extend_from_slice(&chunk_size.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    // fmt sub-chunk — format tag 3 = IEEE float.
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());      // sub-chunk size
+    out.extend_from_slice(&3u16.to_le_bytes());       // format = float
+    out.extend_from_slice(&1u16.to_le_bytes());       // channels = 1
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    let byte_rate = sample_rate * 4;                  // mono float32 → 4 bytes/sample
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());       // block align
+    out.extend_from_slice(&32u16.to_le_bytes());      // bits per sample
+    // data sub-chunk
+    out.extend_from_slice(b"data");
+    let data_size = (samples.len() * 4) as u32;
+    out.extend_from_slice(&data_size.to_le_bytes());
+    for &s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, out).map_err(WavError::Io)
+}
+
+/// Read `path` as a single-cycle mono WAV and resample / truncate /
+/// pad to exactly `target_len` samples. Handles any sample-rate the
+/// file claims (we ignore it) and either stereo (averaged to mono)
+/// or mono input. Returns the resampled curve in `[-1, +1]` range.
+///
+/// Resampling is **linear interpolation** — for a single-cycle
+/// waveform that's already 2k+ samples this is inaudible; the proper
+/// bandlimit is handled later by the mip pyramid.
+pub fn read_single_cycle_wav(
+    path: &std::path::Path,
+    target_len: usize,
+) -> Result<Vec<f32>, WavError> {
+    let wav = parse_wav_file(path)?;
+    let frames = wav.frame_count();
+    if frames == 0 {
+        return Err(WavError::MissingData);
+    }
+    let mut out = Vec::with_capacity(target_len);
+    if frames == target_len {
+        for i in 0..target_len {
+            out.push(wav.read_mono_at(i));
+        }
+        return Ok(out);
+    }
+    // Resample: read at position t * (frames-1) / (target_len-1).
+    let denom = (target_len.max(2) - 1) as f32;
+    for i in 0..target_len {
+        let src = (i as f32) * (frames as f32) / denom;
+        let i0 = src.floor() as usize;
+        let frac = src - i0 as f32;
+        let i0 = i0.min(frames - 1);
+        let i1 = (i0 + 1).min(frames - 1);
+        let s0 = wav.read_mono_at(i0);
+        let s1 = wav.read_mono_at(i1);
+        out.push(s0 + (s1 - s0) * frac);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +301,57 @@ mod tests {
         for (a, b) in input.iter().zip(parsed.samples.iter()) {
             assert!((a - b).abs() < 1.0 / 16_000.0, "delta {}", a - b);
         }
+    }
+
+    #[test]
+    fn write_then_read_f32_mono() {
+        let input: Vec<f32> = (0..2048)
+            .map(|i| (i as f32 / 2048.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let tmp = std::env::temp_dir().join(format!(
+            "sdsp-wav-test-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_mono_f32_wav(&tmp, &input, SINGLE_CYCLE_SAMPLE_RATE).expect("write");
+        let out = read_single_cycle_wav(&tmp, 2048).expect("read");
+        assert_eq!(out.len(), 2048);
+        for (a, b) in input.iter().zip(out.iter()) {
+            assert!((a - b).abs() < 1e-6, "delta {}", (a - b));
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn read_single_cycle_resamples_to_target_len() {
+        // 512-sample input → 2048-sample output (4× upsample via linear interp).
+        let input: Vec<f32> = (0..512)
+            .map(|i| (i as f32 / 512.0 * std::f32::consts::TAU).sin())
+            .collect();
+        let tmp = std::env::temp_dir().join(format!(
+            "sdsp-wav-resample-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_mono_f32_wav(&tmp, &input, 44100).expect("write");
+        let out = read_single_cycle_wav(&tmp, 2048).expect("read");
+        assert_eq!(out.len(), 2048);
+        // Should still roughly be a sine wave — peak at ~quarter cycle.
+        let peak_idx = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert!(
+            (peak_idx as i32 - 2048 / 4).abs() < 8,
+            "peak at {peak_idx}, expected near {}",
+            2048 / 4
+        );
+        std::fs::remove_file(&tmp).ok();
     }
 }

@@ -334,6 +334,46 @@ fn auto_save_last(state: &GuiState) {
     let _ = crate::user_extra::repo().save_last(&preset, PARAMS.len());
 }
 
+/// Write a `<name>.wav` next to `<name>.json` so the wavetable is
+/// readable in Serum / Vital / any audio editor. Single-cycle mono
+/// 32-bit float at 88200 Hz (Serum's convention). I/O errors are
+/// stashed as a toast — the canonical curve still lives in the JSON.
+fn write_sibling_wav(name: &superduper_synth_core::user_preset::PresetName, frame_a: &[f32]) -> Result<std::path::PathBuf, String> {
+    let dir = crate::user_extra::repo()
+        .base_dir()
+        .join("presets");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.wav", name.as_str()));
+    superduper_synth_core::wav::write_mono_f32_wav(
+        &path,
+        frame_a,
+        superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Take the current wavetable's `frame_a` and write it as an arbitrary
+/// `.wav` path (used by the "Export WAV…" button — choose location).
+/// Same single-cycle convention as the sibling export.
+fn export_wav_to(path: &std::path::Path, frame_a: &[f32]) -> Result<(), String> {
+    superduper_synth_core::wav::write_mono_f32_wav(
+        path,
+        frame_a,
+        superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Read a WAV file (any sample rate, mono or stereo, any length) and
+/// resample to `WT_SIZE` for direct use as `frame_a`. Drag-n-drop
+/// from Finder uses this — drop a Serum wavetable file onto the
+/// canvas and it loads.
+fn load_wav_as_frame_a(path: &std::path::Path) -> Result<Vec<f32>, String> {
+    superduper_synth_core::wav::read_single_cycle_wav(path, WT_SIZE)
+        .map_err(|e| e.to_string())
+}
+
 /// Apply a loaded `WavePreset` to the shared state — restore params
 /// + push the saved wavetable into the audio thread. Marks all params
 /// dirty so the host's automation lane captures the load.
@@ -784,6 +824,54 @@ fn draw_wave_canvas(
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     refresh_preview(state);
 
+    // ----- File drag-n-drop --------------------------------------------------
+    // If the user dragged a .wav onto the plugin window, parse it as a
+    // single-cycle wavetable and replace `frame_a` with the resampled
+    // result. Source files can be any sample rate, mono or stereo; we
+    // resample to WT_SIZE.
+    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+        i.raw
+            .dropped_files
+            .iter()
+            .filter_map(|f| f.path.clone())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("wav"))
+                    .unwrap_or(false)
+            })
+            .collect()
+    });
+    if let Some(path) = dropped.into_iter().next() {
+        match load_wav_as_frame_a(&path) {
+            Ok(curve) => {
+                let mip = mip_from_table(&curve);
+                push_custom_frame_a(&state.shared, mip);
+                state.preview_a.copy_from_slice(&curve);
+                state.nodes = CurveNodes::from_table(&curve, 24);
+                state.user_edited = true;
+                state.preview_for_preset = state.selected_preset;
+                state.selected_node = None;
+                let fname = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("wav")
+                    .to_string();
+                state.last_io_msg = Some((
+                    format!("Loaded {fname}"),
+                    std::time::Instant::now(),
+                ));
+                auto_save_last(state);
+            }
+            Err(e) => {
+                state.last_io_msg = Some((
+                    format!("WAV load failed: {e}"),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
+    }
+
     // Undo / Redo — Ctrl/Cmd-Z / Ctrl-Shift-Z (or Ctrl-Y).
     let action = ctx.input(|i| {
         if i.modifiers.command && i.key_pressed(egui::Key::Z) {
@@ -901,14 +989,20 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         let preset = snapshot_preset(state, name.clone());
                         match crate::user_extra::repo().save(&preset, PARAMS.len()) {
                             Ok(_path) => {
+                                // Also write a sibling .wav so Serum / Vital
+                                // / Audacity / any wavetable tool can read
+                                // the curve. Failure here is non-fatal —
+                                // JSON is the canonical source.
+                                let wav_msg = match write_sibling_wav(&name, &preset.extra.frame_a) {
+                                    Ok(_) => format!("Saved '{name}' (+wav)"),
+                                    Err(e) => format!("Saved '{name}', wav failed: {e}"),
+                                };
                                 state.save_name_buf.clear();
                                 state.user_presets = crate::user_extra::repo().list();
                                 state.selected_user_preset =
                                     state.user_presets.iter().position(|n| n == &name);
-                                state.last_io_msg = Some((
-                                    format!("Saved '{name}'"),
-                                    std::time::Instant::now(),
-                                ));
+                                state.last_io_msg =
+                                    Some((wav_msg, std::time::Instant::now()));
                             }
                             Err(e) => {
                                 state.last_io_msg = Some((
@@ -926,6 +1020,55 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     }
                 }
             }
+            // Export current wavetable as a standalone WAV — interop with
+            // Serum / Vital / any wavetable editor. Goes to
+            // ~/.superduper-dsp/wave/exports/<name>.wav where <name> is
+            // either the save buffer or "untitled" if empty.
+            if ui.button("Export WAV").clicked() {
+                let raw = if state.save_name_buf.trim().is_empty() {
+                    "untitled".to_string()
+                } else {
+                    state.save_name_buf.clone()
+                };
+                match superduper_synth_core::user_preset::PresetName::new(&raw) {
+                    Ok(name) => {
+                        let dir = crate::user_extra::repo().base_dir().join("exports");
+                        let _ = std::fs::create_dir_all(&dir);
+                        let path = dir.join(format!("{}.wav", name.as_str()));
+                        let frame_a: Vec<f32> = {
+                            let guard = state.shared.wavetable.lock();
+                            guard.0.levels[0].iter().copied().collect()
+                        };
+                        match export_wav_to(&path, &frame_a) {
+                            Ok(_) => {
+                                state.last_io_msg = Some((
+                                    format!("Exported {}", path.display()),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            Err(e) => {
+                                state.last_io_msg = Some((
+                                    format!("Export failed: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        state.last_io_msg = Some((
+                            format!("Bad name: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+            }
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("(drop .wav onto window to load)")
+                    .color(core_gui::GREEN_DIM)
+                    .monospace()
+                    .small(),
+            );
         });
         // I/O status message — auto-fades after ~3 seconds.
         if let Some((msg, ts)) = state.last_io_msg.as_ref() {

@@ -284,6 +284,14 @@ struct GuiState {
     /// toolbar — error from a corrupt file, "Saved!" confirmation, …).
     /// Cleared next paint after fading out.
     last_io_msg: Option<(String, std::time::Instant)>,
+    /// Pending native-file-dialog result. Worker thread runs the
+    /// modal dialog so the GUI thread doesn't block the host's
+    /// event loop (modal blocking inside a plugin window causes
+    /// REAPER to deadlock / crash on macOS). GUI polls each frame
+    /// via `try_recv`. Default-suggested filename is captured at
+    /// click time and used to dispatch the result.
+    pending_open: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    pending_export: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
 }
 
 const HISTORY_CAP: usize = 64;
@@ -475,6 +483,8 @@ pub fn open_window<P: HasRawWindowHandle>(
         selected_user_preset: None,
         save_name_buf: String::new(),
         last_io_msg: None,
+        pending_open: None,
+        pending_export: None,
     };
     EguiWindow::open_parented(
         parent,
@@ -824,6 +834,82 @@ fn draw_wave_canvas(
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     refresh_preview(state);
 
+    // ----- Poll pending file-dialog results ----------------------------------
+    // The Open / Export buttons spawned a worker thread because the
+    // modal NSOpenPanel can't run on REAPER's GUI thread (it
+    // deadlocks the host event loop). Each frame we ask the receiver
+    // whether the dialog has returned; if so, apply the result and
+    // clear the receiver.
+    if let Some(rx) = &state.pending_open {
+        match rx.try_recv() {
+            Ok(picked) => {
+                state.pending_open = None;
+                if let Some(path) = picked {
+                    match load_wav_as_frame_a(&path) {
+                        Ok(curve) => {
+                            let mip = mip_from_table(&curve);
+                            push_custom_frame_a(&state.shared, mip);
+                            state.preview_a.copy_from_slice(&curve);
+                            state.nodes = CurveNodes::from_table(&curve, 24);
+                            state.user_edited = true;
+                            state.preview_for_preset = state.selected_preset;
+                            state.selected_node = None;
+                            let fname = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("wav")
+                                .to_string();
+                            state.last_io_msg =
+                                Some((format!("Loaded {fname}"), std::time::Instant::now()));
+                            auto_save_last(state);
+                        }
+                        Err(e) => {
+                            state.last_io_msg = Some((
+                                format!("Load failed: {e}"),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {} // still open
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                state.pending_open = None;
+            }
+        }
+    }
+    if let Some(rx) = &state.pending_export {
+        match rx.try_recv() {
+            Ok(picked) => {
+                state.pending_export = None;
+                if let Some(path) = picked {
+                    let frame_a: Vec<f32> = {
+                        let guard = state.shared.wavetable.lock();
+                        guard.0.levels[0].iter().copied().collect()
+                    };
+                    match export_wav_to(&path, &frame_a) {
+                        Ok(_) => {
+                            state.last_io_msg = Some((
+                                format!("Exported {}", path.display()),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                        Err(e) => {
+                            state.last_io_msg = Some((
+                                format!("Export failed: {e}"),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                state.pending_export = None;
+            }
+        }
+    }
+
     // ----- File drag-n-drop --------------------------------------------------
     // If the user dragged a .wav onto the plugin window, parse it as a
     // single-cycle wavetable and replace `frame_a` with the resampled
@@ -1020,79 +1106,47 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     }
                 }
             }
-            // Native "Open WAV…" file picker — primary path for loading a
-            // wavetable from disk. Drag-n-drop also works in some hosts,
-            // but baseview doesn't get drag events on macOS plugin
-            // windows (AppKit routes them to the DAW); the dialog
-            // bypasses that whole issue.
-            if ui.button("Open WAV…").clicked() {
-                if let Some(picked) = rfd::FileDialog::new()
-                    .add_filter("WAV", &["wav", "WAV"])
-                    .set_title("Open wavetable WAV")
-                    .pick_file()
-                {
-                    match load_wav_as_frame_a(&picked) {
-                        Ok(curve) => {
-                            let mip = mip_from_table(&curve);
-                            push_custom_frame_a(&state.shared, mip);
-                            state.preview_a.copy_from_slice(&curve);
-                            state.nodes = CurveNodes::from_table(&curve, 24);
-                            state.user_edited = true;
-                            state.preview_for_preset = state.selected_preset;
-                            state.selected_node = None;
-                            let fname = picked
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("wav")
-                                .to_string();
-                            state.last_io_msg =
-                                Some((format!("Loaded {fname}"), std::time::Instant::now()));
-                            auto_save_last(state);
-                        }
-                        Err(e) => {
-                            state.last_io_msg = Some((
-                                format!("Load failed: {e}"),
-                                std::time::Instant::now(),
-                            ));
-                        }
-                    }
-                }
+            // Native "Open WAV…" file picker — primary path for loading
+            // a wavetable from disk. Runs in a worker thread so the
+            // modal NSOpenPanel doesn't deadlock REAPER's main loop
+            // (host crashes on macOS when a plugin window blocks).
+            // GUI polls `pending_open` each frame.
+            let open_disabled = state.pending_open.is_some();
+            if ui.add_enabled(!open_disabled, egui::Button::new("Open WAV…")).clicked() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                state.pending_open = Some(rx);
+                std::thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("WAV", &["wav", "WAV"])
+                        .set_title("Open wavetable WAV")
+                        .pick_file();
+                    let _ = tx.send(picked);
+                });
             }
             // Export current wavetable as a standalone WAV — interop with
             // Serum / Vital / any wavetable editor. Native Save dialog
             // so the user can pick destination. Default name from the
             // Save-as buffer or "untitled".
-            if ui.button("Export WAV").clicked() {
+            let export_disabled = state.pending_export.is_some();
+            if ui
+                .add_enabled(!export_disabled, egui::Button::new("Export WAV"))
+                .clicked()
+            {
                 let default_name = if state.save_name_buf.trim().is_empty() {
                     "wavetable.wav".to_string()
                 } else {
                     format!("{}.wav", state.save_name_buf.trim())
                 };
-                if let Some(picked) = rfd::FileDialog::new()
-                    .add_filter("WAV", &["wav"])
-                    .set_title("Export wavetable as WAV")
-                    .set_file_name(&default_name)
-                    .save_file()
-                {
-                    let frame_a: Vec<f32> = {
-                        let guard = state.shared.wavetable.lock();
-                        guard.0.levels[0].iter().copied().collect()
-                    };
-                    match export_wav_to(&picked, &frame_a) {
-                        Ok(_) => {
-                            state.last_io_msg = Some((
-                                format!("Exported {}", picked.display()),
-                                std::time::Instant::now(),
-                            ));
-                        }
-                        Err(e) => {
-                            state.last_io_msg = Some((
-                                format!("Export failed: {e}"),
-                                std::time::Instant::now(),
-                            ));
-                        }
-                    }
-                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                state.pending_export = Some(rx);
+                std::thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("WAV", &["wav"])
+                        .set_title("Export wavetable as WAV")
+                        .set_file_name(&default_name)
+                        .save_file();
+                    let _ = tx.send(picked);
+                });
             }
         });
         // I/O status message — auto-fades after ~3 seconds.

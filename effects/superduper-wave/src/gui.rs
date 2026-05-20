@@ -373,13 +373,58 @@ fn export_wav_to(path: &std::path::Path, frame_a: &[f32]) -> Result<(), String> 
     .map_err(|e| e.to_string())
 }
 
+/// Result of loading a WAV: the resampled WT_SIZE curve + a human-
+/// readable note about how the curve was extracted (detected pitch,
+/// or "loudest region" fallback for unpitched material).
+pub struct LoadedWav {
+    pub curve: Vec<f32>,
+    pub note: String,
+}
+
 /// Read a WAV file (any sample rate, mono or stereo, any length) and
-/// resample to `WT_SIZE` for direct use as `frame_a`. Drag-n-drop
-/// from Finder uses this — drop a Serum wavetable file onto the
-/// canvas and it loads.
-fn load_wav_as_frame_a(path: &std::path::Path) -> Result<Vec<f32>, String> {
-    superduper_synth_core::wav::read_single_cycle_wav(path, WT_SIZE)
-        .map_err(|e| e.to_string())
+/// produce a `WT_SIZE` wavetable frame, normalised to ~0.95 peak.
+///
+/// If the recording has a detectable pitch (vocal note, kubyz drone,
+/// sustained synth note), we extract exactly ONE period from the
+/// loudest region at the detected frequency — this preserves the
+/// timbre because we're sampling one cycle of the actual waveform,
+/// not a linearly-resampled average of the whole file.
+///
+/// If pitch detection fails (drums, noise, atonal material), we fall
+/// back to "loudest WT_SIZE samples linearly resampled" so something
+/// still loads instead of nothing.
+fn load_wav_as_frame_a(path: &std::path::Path) -> Result<LoadedWav, String> {
+    let data = superduper_synth_core::wav::parse_wav_file(path).map_err(|e| e.to_string())?;
+    // Average to mono — kubyz / vocal sources are usually mono anyway
+    // but be defensive against stereo files.
+    let mono: Vec<f32> = if data.channels >= 2 {
+        let frames = data.frame_count();
+        (0..frames)
+            .map(|i| {
+                let (l, r) = data.read_stereo_at(i);
+                0.5 * (l + r)
+            })
+            .collect()
+    } else {
+        data.samples.clone()
+    };
+    let ex = superduper_synth_core::pitch::wav_to_single_cycle(
+        &mono,
+        data.sample_rate,
+        WT_SIZE,
+        0.95,
+    );
+    let note = match ex.detected_hz {
+        Some(hz) if ex.pitched => {
+            let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+            format!(
+                "pitch {:.1} Hz (≈MIDI {:.1}), one cycle, normalised",
+                hz, midi
+            )
+        }
+        _ => "unpitched → loudest region, normalised".to_string(),
+    };
+    Ok(LoadedWav { curve: ex.curve, note })
 }
 
 /// Apply a loaded `WavePreset` to the shared state — restore params
@@ -846,11 +891,11 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 state.pending_open = None;
                 if let Some(path) = picked {
                     match load_wav_as_frame_a(&path) {
-                        Ok(curve) => {
-                            let mip = mip_from_table(&curve);
+                        Ok(loaded) => {
+                            let mip = mip_from_table(&loaded.curve);
                             push_custom_frame_a(&state.shared, mip);
-                            state.preview_a.copy_from_slice(&curve);
-                            state.nodes = CurveNodes::from_table(&curve, 24);
+                            state.preview_a.copy_from_slice(&loaded.curve);
+                            state.nodes = CurveNodes::from_table(&loaded.curve, 24);
                             state.user_edited = true;
                             state.preview_for_preset = state.selected_preset;
                             state.selected_node = None;
@@ -859,8 +904,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("wav")
                                 .to_string();
-                            state.last_io_msg =
-                                Some((format!("Loaded {fname}"), std::time::Instant::now()));
+                            state.last_io_msg = Some((
+                                format!("{fname}: {}", loaded.note),
+                                std::time::Instant::now(),
+                            ));
                             auto_save_last(state);
                         }
                         Err(e) => {
@@ -930,11 +977,11 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
     });
     if let Some(path) = dropped.into_iter().next() {
         match load_wav_as_frame_a(&path) {
-            Ok(curve) => {
-                let mip = mip_from_table(&curve);
+            Ok(loaded) => {
+                let mip = mip_from_table(&loaded.curve);
                 push_custom_frame_a(&state.shared, mip);
-                state.preview_a.copy_from_slice(&curve);
-                state.nodes = CurveNodes::from_table(&curve, 24);
+                state.preview_a.copy_from_slice(&loaded.curve);
+                state.nodes = CurveNodes::from_table(&loaded.curve, 24);
                 state.user_edited = true;
                 state.preview_for_preset = state.selected_preset;
                 state.selected_node = None;
@@ -944,7 +991,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     .unwrap_or("wav")
                     .to_string();
                 state.last_io_msg = Some((
-                    format!("Loaded {fname}"),
+                    format!("{fname}: {}", loaded.note),
                     std::time::Instant::now(),
                 ));
                 auto_save_last(state);

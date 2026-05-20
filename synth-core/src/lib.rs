@@ -11,6 +11,7 @@
 pub mod analysis;
 pub mod dsp_blocks;
 pub mod formant;
+pub mod pitch;
 pub mod supermass;
 pub mod user_preset;
 pub mod wav;

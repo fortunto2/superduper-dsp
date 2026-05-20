@@ -11,6 +11,7 @@
 pub mod analysis;
 pub mod dsp_blocks;
 pub mod formant;
+pub mod linphase;
 pub mod loudness;
 pub mod pitch;
 pub mod supermass;

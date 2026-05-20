@@ -1020,55 +1020,80 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     }
                 }
             }
-            // Export current wavetable as a standalone WAV — interop with
-            // Serum / Vital / any wavetable editor. Goes to
-            // ~/.superduper-dsp/wave/exports/<name>.wav where <name> is
-            // either the save buffer or "untitled" if empty.
-            if ui.button("Export WAV").clicked() {
-                let raw = if state.save_name_buf.trim().is_empty() {
-                    "untitled".to_string()
-                } else {
-                    state.save_name_buf.clone()
-                };
-                match superduper_synth_core::user_preset::PresetName::new(&raw) {
-                    Ok(name) => {
-                        let dir = crate::user_extra::repo().base_dir().join("exports");
-                        let _ = std::fs::create_dir_all(&dir);
-                        let path = dir.join(format!("{}.wav", name.as_str()));
-                        let frame_a: Vec<f32> = {
-                            let guard = state.shared.wavetable.lock();
-                            guard.0.levels[0].iter().copied().collect()
-                        };
-                        match export_wav_to(&path, &frame_a) {
-                            Ok(_) => {
-                                state.last_io_msg = Some((
-                                    format!("Exported {}", path.display()),
-                                    std::time::Instant::now(),
-                                ));
-                            }
-                            Err(e) => {
-                                state.last_io_msg = Some((
-                                    format!("Export failed: {e}"),
-                                    std::time::Instant::now(),
-                                ));
-                            }
+            // Native "Open WAV…" file picker — primary path for loading a
+            // wavetable from disk. Drag-n-drop also works in some hosts,
+            // but baseview doesn't get drag events on macOS plugin
+            // windows (AppKit routes them to the DAW); the dialog
+            // bypasses that whole issue.
+            if ui.button("Open WAV…").clicked() {
+                if let Some(picked) = rfd::FileDialog::new()
+                    .add_filter("WAV", &["wav", "WAV"])
+                    .set_title("Open wavetable WAV")
+                    .pick_file()
+                {
+                    match load_wav_as_frame_a(&picked) {
+                        Ok(curve) => {
+                            let mip = mip_from_table(&curve);
+                            push_custom_frame_a(&state.shared, mip);
+                            state.preview_a.copy_from_slice(&curve);
+                            state.nodes = CurveNodes::from_table(&curve, 24);
+                            state.user_edited = true;
+                            state.preview_for_preset = state.selected_preset;
+                            state.selected_node = None;
+                            let fname = picked
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("wav")
+                                .to_string();
+                            state.last_io_msg =
+                                Some((format!("Loaded {fname}"), std::time::Instant::now()));
+                            auto_save_last(state);
                         }
-                    }
-                    Err(e) => {
-                        state.last_io_msg = Some((
-                            format!("Bad name: {e}"),
-                            std::time::Instant::now(),
-                        ));
+                        Err(e) => {
+                            state.last_io_msg = Some((
+                                format!("Load failed: {e}"),
+                                std::time::Instant::now(),
+                            ));
+                        }
                     }
                 }
             }
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("(drop .wav onto window to load)")
-                    .color(core_gui::GREEN_DIM)
-                    .monospace()
-                    .small(),
-            );
+            // Export current wavetable as a standalone WAV — interop with
+            // Serum / Vital / any wavetable editor. Native Save dialog
+            // so the user can pick destination. Default name from the
+            // Save-as buffer or "untitled".
+            if ui.button("Export WAV").clicked() {
+                let default_name = if state.save_name_buf.trim().is_empty() {
+                    "wavetable.wav".to_string()
+                } else {
+                    format!("{}.wav", state.save_name_buf.trim())
+                };
+                if let Some(picked) = rfd::FileDialog::new()
+                    .add_filter("WAV", &["wav"])
+                    .set_title("Export wavetable as WAV")
+                    .set_file_name(&default_name)
+                    .save_file()
+                {
+                    let frame_a: Vec<f32> = {
+                        let guard = state.shared.wavetable.lock();
+                        guard.0.levels[0].iter().copied().collect()
+                    };
+                    match export_wav_to(&picked, &frame_a) {
+                        Ok(_) => {
+                            state.last_io_msg = Some((
+                                format!("Exported {}", picked.display()),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                        Err(e) => {
+                            state.last_io_msg = Some((
+                                format!("Export failed: {e}"),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    }
+                }
+            }
         });
         // I/O status message — auto-fades after ~3 seconds.
         if let Some((msg, ts)) = state.last_io_msg.as_ref() {

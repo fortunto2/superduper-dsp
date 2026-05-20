@@ -24,6 +24,10 @@ egui = "0.33"
 egui-baseview = { git = "https://github.com/BillyDM/egui-baseview" }
 baseview = { git = "https://github.com/RustAudio/baseview.git", rev = "237d323c729f3aa99476ba3efa50129c5e86cad3" }
 raw-window-handle = "0.5"
+# Native file picker — Open / Save dialogs that play nicely with the
+# DAW's host window (egui_baseview's drag-n-drop doesn't reach the
+# plugin window on macOS because AppKit routes drops to the host).
+rfd = "0.15"
 
 [build-dependencies]
 superduper-dsp-sdk-build = { path = "../../sdk-build" }

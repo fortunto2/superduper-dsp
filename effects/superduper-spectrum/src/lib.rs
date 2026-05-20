@@ -80,6 +80,12 @@ pub struct SharedParamsInner {
     pub scope: superduper_synth_core::gui::LiveScope,
     /// Currently-selected preset index — persisted via simple_state.
     pub active_preset: std::sync::atomic::AtomicU32,
+    /// Latest LUFS / dBTP readings — audio thread updates whenever a
+    /// 100 ms block boundary rolls over; GUI samples at ~60 Hz.
+    pub lufs_momentary: AtomicF32,
+    pub lufs_short_term: AtomicF32,
+    pub lufs_integrated: AtomicF32,
+    pub true_peak_dbtp: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -95,6 +101,10 @@ impl PluginShared {
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
+                lufs_momentary: AtomicF32::new(-100.0),
+                lufs_short_term: AtomicF32::new(-100.0),
+                lufs_integrated: AtomicF32::new(-100.0),
+                true_peak_dbtp: AtomicF32::new(f32::NEG_INFINITY),
             }),
         }
     }
@@ -133,6 +143,11 @@ pub struct PluginAudioProcessor<'a> {
     /// Producer half of the ring buffer (audio side).
     producer: Option<rtrb::Producer<f32>>,
     sample_rate: f32,
+    /// BS.1770 K-weighted loudness meter — fed from the stereo input
+    /// per sample; readings published to shared atomics on every
+    /// 100 ms block boundary so the GUI can poll cheaply.
+    loudness: superduper_synth_core::loudness::LoudnessMeter,
+    true_peak: superduper_synth_core::loudness::TruePeakDetector,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -157,10 +172,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let cap = (audio_config.max_frames_count as usize * 4).max(8192);
         let (producer, consumer) = rtrb::RingBuffer::<f32>::new(cap);
         *main_thread.consumer.lock() = Some(consumer);
+        let sr = audio_config.sample_rate as f32;
         Ok(Self {
             shared,
             producer: Some(producer),
-            sample_rate: audio_config.sample_rate as f32,
+            sample_rate: sr,
+            loudness: superduper_synth_core::loudness::LoudnessMeter::new(sr),
+            true_peak: superduper_synth_core::loudness::TruePeakDetector::new(),
         })
     }
 
@@ -175,17 +193,51 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
+            // Collect L (and optional R) slices first so the loudness
+            // meter sees true stereo. The spectrum visualiser then
+            // pushes L into its own ring.
+            let mut slices: Vec<&[f32]> = Vec::with_capacity(2);
             for channel_pair in channel_pairs {
                 match channel_pair {
                     ChannelPair::InputOutput(input, output) => {
                         output.copy_from_slice(input);
-                        if !bypassed { Self::push_to_ring(&mut self.producer, input); }
+                        slices.push(input);
                     }
-                    ChannelPair::InPlace(buf) => {
-                        if !bypassed { Self::push_to_ring(&mut self.producer, buf); }
-                    }
+                    ChannelPair::InPlace(buf) => slices.push(buf),
                     ChannelPair::OutputOnly(buf) => buf.fill(0.0),
-                    ChannelPair::InputOnly(_) => {}
+                    ChannelPair::InputOnly(input) => slices.push(input),
+                }
+            }
+            if !bypassed {
+                if let Some(left) = slices.first().copied() {
+                    let right = slices.get(1).copied().unwrap_or(left);
+                    let mut block_rolled_over = false;
+                    let n = left.len().min(right.len());
+                    for i in 0..n {
+                        let l = left[i];
+                        let r = right[i];
+                        self.true_peak.process_stereo(l, r);
+                        if self.loudness.process_stereo(l, r) {
+                            block_rolled_over = true;
+                        }
+                    }
+                    // Publish on 100 ms boundary — GUI reads at 60 Hz
+                    // anyway, no need to hit the atomic every sample.
+                    if block_rolled_over {
+                        self.shared
+                            .lufs_momentary
+                            .store(self.loudness.momentary_lufs(), Ordering::Relaxed);
+                        self.shared
+                            .lufs_short_term
+                            .store(self.loudness.short_term_lufs(), Ordering::Relaxed);
+                        self.shared
+                            .lufs_integrated
+                            .store(self.loudness.integrated_lufs(), Ordering::Relaxed);
+                        self.shared
+                            .true_peak_dbtp
+                            .store(self.true_peak.dbtp(), Ordering::Relaxed);
+                    }
+                    Self::push_to_ring(&mut self.producer, left);
                 }
             }
         }

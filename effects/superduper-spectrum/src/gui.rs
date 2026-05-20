@@ -177,6 +177,32 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             );
         });
 
+        // ── BS.1770 loudness + true-peak readout ──
+        // Mastering-grade meter — Momentary (400 ms) / Short-term (3 s)
+        // / Integrated (full program, gated) all K-weighted, plus
+        // true-peak in dBTP (inter-sample-peak via 4× upsample).
+        let m = state.shared.lufs_momentary.load(Ordering::Relaxed);
+        let st = state.shared.lufs_short_term.load(Ordering::Relaxed);
+        let it = state.shared.lufs_integrated.load(Ordering::Relaxed);
+        let tp = state.shared.true_peak_dbtp.load(Ordering::Relaxed);
+        let fmt_lufs = |v: f32| if v <= -99.0 { "  −∞".to_string() } else { format!("{:>5.1}", v) };
+        let fmt_tp = |v: f32| if !v.is_finite() { "  −∞".to_string() } else { format!("{:>5.1}", v) };
+        // Colour true-peak red if > -1 dBTP (above safe ceiling).
+        let tp_colour = if tp.is_finite() && tp > -1.0 {
+            egui::Color32::from_rgb(255, 100, 100)
+        } else {
+            core_gui::GREEN_BRIGHT
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("M {} LUFS", fmt_lufs(m))).color(core_gui::GREEN).monospace());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("S {} LUFS", fmt_lufs(st))).color(core_gui::GREEN).monospace());
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("I {} LUFS", fmt_lufs(it))).color(core_gui::GREEN_BRIGHT).monospace());
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(format!("TP {} dBTP", fmt_tp(tp))).color(tp_colour).monospace());
+        });
+
         // ── Mode + Palette + Freeze + FFT/Smoothing/Tilt/Window ──
         ui.horizontal(|ui| {
             let raw_mode = state.shared.params[P_MODE].load(Ordering::Relaxed);

@@ -165,6 +165,8 @@ pub struct SharedParamsInner {
     pub dirty_params: [AtomicBool; PARAMS.len()],
     pub gesture_begin: [AtomicBool; PARAMS.len()],
     pub gesture_end: [AtomicBool; PARAMS.len()],
+    /// Currently-selected preset index — persisted via simple_state.
+    pub active_preset: std::sync::atomic::AtomicU32,
     /// Active sample currently loaded — atomically swapped by the
     /// GUI thread when the user picks a different file. Audio thread
     /// clones the Arc when triggering a new voice; existing voices
@@ -201,6 +203,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| AtomicBool::new(false)),
+                active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 active_sample: Mutex::new(empty_sample()),

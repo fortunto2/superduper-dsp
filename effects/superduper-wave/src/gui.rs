@@ -298,11 +298,16 @@ pub fn open_window<P: HasRawWindowHandle>(
         scale: WindowScalePolicy::SystemScaleFactor,
         gl_config: Some(Default::default()),
     };
+    // Read the saved active_preset index (set by apply_preset and persisted
+    // through PluginStateImpl) so reopening the project / FX chain
+    // restores the dropdown to whatever preset the user picked, not the
+    // hardcoded "Init". The default 0 covers a fresh instance.
+    let initial_preset_idx = shared.active_preset.load(std::sync::atomic::Ordering::Relaxed) as usize;
     let state = GuiState {
         shared,
         resize,
         applied_size: (initial_w, initial_h),
-        selected_preset: Some(0),
+        selected_preset: Some(initial_preset_idx.min(PRESETS.len().saturating_sub(1))),
         preset_names: PRESETS.iter().map(|p| p.name).collect(),
         preview_a: vec![0.0; WT_SIZE],
         preview_b: vec![0.0; WT_SIZE],

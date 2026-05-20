@@ -43,11 +43,13 @@ pub fn open_window<P: HasRawWindowHandle>(
         scale: WindowScalePolicy::SystemScaleFactor,
         gl_config: Some(Default::default()),
     };
+    let initial_preset_idx = (shared.active_preset.load(std::sync::atomic::Ordering::Relaxed) as usize)
+        .min(PRESETS.len().saturating_sub(1));
     let state = GuiState {
         shared,
         resize,
         applied_size: (initial_w, initial_h),
-        selected_preset: Some(0),
+        selected_preset: Some(initial_preset_idx),
         preset_names: PRESETS.iter().map(|p| p.name).collect(),
     };
 
@@ -120,5 +122,6 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 fn apply_preset(state: &mut GuiState, index: usize) {
     if let Some(preset) = PRESETS.get(index) {
         crate::presets::apply(&state.shared, preset);
+        state.shared.active_preset.store(index as u32, std::sync::atomic::Ordering::Relaxed);
     }
 }

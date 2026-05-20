@@ -131,6 +131,12 @@ pub struct SimpleState {
     pub version: u32,
     pub params: Vec<f32>,
     pub bypass: bool,
+    /// Currently-selected preset index from the factory list. Default 0
+    /// for projects saved before this field existed (serde default).
+    /// Lets the GUI restore the preset combobox to the right entry on
+    /// reopen instead of resetting to "Init".
+    #[serde(default)]
+    pub active_preset: u32,
 }
 
 pub const SIMPLE_STATE_VERSION: u32 = 1;
@@ -140,10 +146,23 @@ pub fn save_simple_state(
     bypass: bool,
     output: &mut clack_common::stream::OutputStream,
 ) -> Result<(), clack_plugin::plugin::PluginError> {
+    save_simple_state_with_preset(params, bypass, 0, output)
+}
+
+/// Like `save_simple_state` but also persists the currently-selected
+/// preset index. Use this from any plugin that exposes a preset combo
+/// so reopening a project doesn't reset the dropdown to "Init".
+pub fn save_simple_state_with_preset(
+    params: &[AtomicF32],
+    bypass: bool,
+    active_preset: u32,
+    output: &mut clack_common::stream::OutputStream,
+) -> Result<(), clack_plugin::plugin::PluginError> {
     let state = SimpleState {
         version: SIMPLE_STATE_VERSION,
         params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
         bypass,
+        active_preset,
     };
     serde_json::to_writer(output, &state)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON write error"))
@@ -153,6 +172,17 @@ pub fn load_simple_state(
     params: &[AtomicF32],
     input: &mut clack_common::stream::InputStream,
 ) -> Result<bool, clack_plugin::plugin::PluginError> {
+    let (bypass, _) = load_simple_state_with_preset(params, input)?;
+    Ok(bypass)
+}
+
+/// Like `load_simple_state` but also returns the restored
+/// `active_preset` index. Projects saved with the older state format
+/// (no preset field) return 0 here.
+pub fn load_simple_state_with_preset(
+    params: &[AtomicF32],
+    input: &mut clack_common::stream::InputStream,
+) -> Result<(bool, u32), clack_plugin::plugin::PluginError> {
     let state: SimpleState = serde_json::from_reader(input)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON read error"))?;
     if state.version != SIMPLE_STATE_VERSION {
@@ -165,7 +195,7 @@ pub fn load_simple_state(
             slot.store(*v, Ordering::Relaxed);
         }
     }
-    Ok(state.bypass)
+    Ok((state.bypass, state.active_preset))
 }
 
 /// Push a `ParamValueEvent` into the host's output queue for every dirty

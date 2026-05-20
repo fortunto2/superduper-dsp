@@ -78,6 +78,8 @@ pub struct SharedParamsInner {
     pub bypass: std::sync::atomic::AtomicBool,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
+    /// Currently-selected preset index — persisted via simple_state.
+    pub active_preset: std::sync::atomic::AtomicU32,
 }
 
 pub struct PluginShared {
@@ -92,6 +94,7 @@ impl PluginShared {
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
+                active_preset: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }

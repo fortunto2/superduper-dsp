@@ -118,6 +118,9 @@ pub struct SharedParamsInner {
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    /// Currently-selected preset index — persisted via simple_state
+    /// so the dropdown survives project reopens.
+    pub active_preset: std::sync::atomic::AtomicU32,
     /// Host BPM updated from Transport events, used by Sync mode.
     pub host_bpm: AtomicF32,
 }
@@ -133,6 +136,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 host_bpm: AtomicF32::new(120.0),

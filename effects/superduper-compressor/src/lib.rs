@@ -214,6 +214,9 @@ pub struct SharedParamsInner {
     pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    /// Currently-selected preset index — persisted via simple_state
+    /// so the dropdown survives project reopens.
+    pub active_preset: std::sync::atomic::AtomicU32,
     /// Current gain reduction in dB (always <= 0). Updated each block.
     pub gain_reduction_db: AtomicF32,
     /// Plugin latency in samples — written by `activate()` whenever the
@@ -237,6 +240,7 @@ impl PluginShared {
                 dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 gain_reduction_db: AtomicF32::new(0.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),

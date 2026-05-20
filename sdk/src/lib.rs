@@ -130,9 +130,14 @@ macro_rules! simple_state_impl {
                 &mut self,
                 output: &mut ::clack_common::stream::OutputStream,
             ) -> Result<(), ::clack_plugin::prelude::PluginError> {
-                $crate::clap_helpers::save_simple_state(
+                let preset = self
+                    .shared
+                    .active_preset
+                    .load(::std::sync::atomic::Ordering::Relaxed);
+                $crate::clap_helpers::save_simple_state_with_preset(
                     &self.shared.params,
                     self.shared.bypass.load(::std::sync::atomic::Ordering::Relaxed),
+                    preset,
                     output,
                 )
             }
@@ -140,11 +145,14 @@ macro_rules! simple_state_impl {
                 &mut self,
                 input: &mut ::clack_common::stream::InputStream,
             ) -> Result<(), ::clack_plugin::prelude::PluginError> {
-                let bypass =
-                    $crate::clap_helpers::load_simple_state(&self.shared.params, input)?;
+                let (bypass, preset) =
+                    $crate::clap_helpers::load_simple_state_with_preset(&self.shared.params, input)?;
                 self.shared
                     .bypass
                     .store(bypass, ::std::sync::atomic::Ordering::Relaxed);
+                self.shared
+                    .active_preset
+                    .store(preset, ::std::sync::atomic::Ordering::Relaxed);
                 Ok(())
             }
         }

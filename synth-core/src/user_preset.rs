@@ -212,8 +212,16 @@ impl<E: PresetExtra> PresetRepo<E> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
+        Self::with_base_dir(home.join(".superduper-dsp").join(slug))
+    }
+
+    /// Construct against an explicit directory — useful for tests so
+    /// each test gets a scratch path instead of fighting over the
+    /// global `HOME` env var (which `cargo test`'s default parallel
+    /// runner makes a race condition).
+    pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self {
-            base_dir: home.join(".superduper-dsp").join(slug),
+            base_dir,
             _phantom: std::marker::PhantomData,
         }
     }

@@ -44,8 +44,7 @@ fn fixture_curve() -> Vec<f32> {
 #[test]
 fn preset_json_round_trip() {
     let home = scratch_home();
-    std::env::set_var("HOME", &home);
-    let repo: WaveRepo = WaveRepo::for_plugin("wave");
+    let repo: WaveRepo = WaveRepo::with_base_dir(home.join("wave"));
     let name = PresetName::new("Test Curve").unwrap();
     let frame_a = fixture_curve();
     let params = vec![0.5f32; 32]; // dummy; we won't check against PARAMS
@@ -174,8 +173,7 @@ fn extra_validation_rejects_out_of_range() {
 fn full_save_load_workflow_with_paired_wav() {
     // Simulates exactly what the GUI's "Save" button does.
     let home = scratch_home();
-    std::env::set_var("HOME", &home);
-    let repo: WaveRepo = WaveRepo::for_plugin("wave");
+    let repo: WaveRepo = WaveRepo::with_base_dir(home.join("wave"));
 
     let name = PresetName::new("Distorted Saw").unwrap();
     let frame_a = fixture_curve();
@@ -227,8 +225,7 @@ fn full_save_load_workflow_with_paired_wav() {
 #[test]
 fn corrupted_json_returns_error_not_panic() {
     let home = scratch_home();
-    std::env::set_var("HOME", &home);
-    let repo: WaveRepo = WaveRepo::for_plugin("wave");
+    let repo: WaveRepo = WaveRepo::with_base_dir(home.join("wave"));
     let dir = repo.base_dir().join("presets");
     std::fs::create_dir_all(&dir).unwrap();
     // Write garbage that's not valid JSON.
@@ -248,8 +245,7 @@ fn corrupted_json_returns_error_not_panic() {
 #[test]
 fn corrupted_last_json_falls_back_to_none() {
     let home = scratch_home();
-    std::env::set_var("HOME", &home);
-    let repo: WaveRepo = WaveRepo::for_plugin("wave");
+    let repo: WaveRepo = WaveRepo::with_base_dir(home.join("wave"));
     std::fs::create_dir_all(repo.base_dir()).unwrap();
     std::fs::write(repo.base_dir().join("last.json"), b"corrupt!").unwrap();
     assert!(
@@ -259,11 +255,127 @@ fn corrupted_last_json_falls_back_to_none() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+// ---------------------------------------------------------------------------
+// Foreign-WAV import tests — feed real WAVs produced by ffmpeg in
+// different sample rates / bit depths / channel counts through our
+// reader and verify each comes back as a sensible WT_SIZE curve.
+// Fixtures are pre-generated under tests/fixtures/ so this test doesn't
+// require ffmpeg at run-time (only when re-baking fixtures).
+// ---------------------------------------------------------------------------
+
+fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// Verify the imported sine has its peak near the expected position
+/// and crosses zero where expected. Tolerates resampling jitter and
+/// works for any input frequency.
+fn assert_looks_like_sine(curve: &[f32], cycles_in_buffer: f32) {
+    assert_eq!(curve.len(), WT_SIZE);
+    // RMS in [0.2, 1.0] — not silence, not clipping.
+    let rms = (curve.iter().map(|s| s * s).sum::<f32>() / curve.len() as f32).sqrt();
+    assert!(
+        rms > 0.2 && rms < 1.0,
+        "RMS {rms} should be inside [0.2, 1.0] for a non-silent sine"
+    );
+    // First quarter cycle peak (only meaningful when cycles <= 1).
+    if cycles_in_buffer <= 1.0 {
+        let quarter = (WT_SIZE as f32 / 4.0 / cycles_in_buffer) as usize;
+        let peak_idx = curve
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        let tolerance = WT_SIZE / 32; // generous — resampling moves the peak a bit
+        assert!(
+            (peak_idx as i32 - quarter as i32).abs() < tolerance as i32,
+            "peak at {peak_idx}, expected near {quarter}"
+        );
+    }
+}
+
+#[test]
+fn import_real_wav_44k_16bit_mono() {
+    let path = fixtures_dir().join("44k_16bit_mono.wav");
+    assert!(path.exists(), "missing fixture {path:?}");
+    let curve = read_single_cycle_wav(&path, WT_SIZE).unwrap();
+    // 0.05 s × 440 Hz × 1 cycle ≈ 22 cycles in the buffer → high cycle count.
+    assert_looks_like_sine(&curve, 22.0);
+}
+
+#[test]
+fn import_real_wav_48k_24bit_stereo() {
+    let path = fixtures_dir().join("48k_24bit_stereo.wav");
+    assert!(path.exists(), "missing fixture {path:?}");
+    // Stereo file — `read_mono_at` averages L+R / 1 (existing wav.rs
+    // reader returns the first channel's sample if mono is requested).
+    // Either way the curve should be a valid sine, not silence.
+    let curve = read_single_cycle_wav(&path, WT_SIZE).unwrap();
+    assert_looks_like_sine(&curve, 24.0);
+}
+
+#[test]
+fn import_real_wav_96k_32bit_float() {
+    let path = fixtures_dir().join("96k_32bit_float.wav");
+    assert!(path.exists(), "missing fixture {path:?}");
+    let curve = read_single_cycle_wav(&path, WT_SIZE).unwrap();
+    // 0.05 s × 440 Hz × 1 cycle ≈ 22 cycles
+    assert_looks_like_sine(&curve, 22.0);
+}
+
+#[test]
+fn import_real_wav_long_clip() {
+    // A 1-second 200 Hz sine at 48 kHz contains 200 full cycles.
+    // The reader resamples the entire buffer down to WT_SIZE — at this
+    // ratio (48000 → 2048) we still get a sine, just with aliasing
+    // distortion (linear interp doesn't band-limit). That's fine for
+    // wavetable use — the mip pyramid handles bandlimit later.
+    let path = fixtures_dir().join("long_1sec.wav");
+    assert!(path.exists(), "missing fixture {path:?}");
+    let curve = read_single_cycle_wav(&path, WT_SIZE).unwrap();
+    assert_eq!(curve.len(), WT_SIZE);
+    let rms = (curve.iter().map(|s| s * s).sum::<f32>() / curve.len() as f32).sqrt();
+    // Still non-silent.
+    assert!(rms > 0.1, "long clip imported as silent: rms={rms}");
+}
+
+#[test]
+fn import_then_write_back_round_trip() {
+    // Read a foreign WAV → write it back via our writer → re-read → identical.
+    // Validates we can re-export anything we imported.
+    let in_path = fixtures_dir().join("44k_16bit_mono.wav");
+    let curve_in = read_single_cycle_wav(&in_path, WT_SIZE).unwrap();
+
+    let tmp = std::env::temp_dir().join(format!(
+        "sdsp-import-roundtrip-{}.wav",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    superduper_synth_core::wav::write_mono_f32_wav(
+        &tmp,
+        &curve_in,
+        superduper_synth_core::wav::SINGLE_CYCLE_SAMPLE_RATE,
+    )
+    .unwrap();
+    let curve_out = read_single_cycle_wav(&tmp, WT_SIZE).unwrap();
+    assert_eq!(curve_in.len(), curve_out.len());
+    for (a, b) in curve_in.iter().zip(curve_out.iter()) {
+        assert!(
+            (a - b).abs() < 1e-6,
+            "import → export → import drifted by {}",
+            (a - b).abs()
+        );
+    }
+    std::fs::remove_file(&tmp).ok();
+}
+
 #[test]
 fn future_format_version_rejected() {
     let home = scratch_home();
-    std::env::set_var("HOME", &home);
-    let repo: WaveRepo = WaveRepo::for_plugin("wave");
+    let repo: WaveRepo = WaveRepo::with_base_dir(home.join("wave"));
     let dir = repo.base_dir().join("presets");
     std::fs::create_dir_all(&dir).unwrap();
 

@@ -302,23 +302,64 @@ pub fn open_window<P: HasRawWindowHandle>(
     // through PluginStateImpl) so reopening the project / FX chain
     // restores the dropdown to whatever preset the user picked, not the
     // hardcoded "Init". The default 0 covers a fresh instance.
-    let initial_preset_idx = shared.active_preset.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    let initial_preset_idx = (shared.active_preset.load(std::sync::atomic::Ordering::Relaxed)
+        as usize)
+        .min(PRESETS.len().saturating_sub(1));
+
+    // Pull the current wavetable frame_a out of shared state. This is
+    // either (a) the saved drawn curve from a project reload, or (b)
+    // the preset's default — both cases are valid starting points for
+    // the GUI's preview/nodes. If it differs significantly from the
+    // preset baseline we mark `user_edited = true` so `refresh_preview`
+    // doesn't overwrite the user's drawing with the preset formula.
+    let mut preview_a = vec![0.0f32; WT_SIZE];
+    {
+        let guard = shared.wavetable.lock();
+        for (dst, src) in preview_a.iter_mut().zip(guard.0.levels[0].iter()) {
+            *dst = *src;
+        }
+    }
+    let baseline_a = if let Some(preset) = PRESETS.get(initial_preset_idx) {
+        Some(render_formula(preset.frame_a))
+    } else {
+        None
+    };
+    let user_edited = if let Some(b) = baseline_a.as_ref() {
+        // L1 norm — any meaningful drawn deviation goes well above 1.0.
+        let diff: f32 = preview_a
+            .iter()
+            .zip(b.as_ref().iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        diff > 1.0
+    } else {
+        false
+    };
+    let nodes = if user_edited {
+        CurveNodes::from_table(&preview_a, 24)
+    } else {
+        CurveNodes::default()
+    };
+
     let state = GuiState {
         shared,
         resize,
         applied_size: (initial_w, initial_h),
-        selected_preset: Some(initial_preset_idx.min(PRESETS.len().saturating_sub(1))),
+        selected_preset: Some(initial_preset_idx),
         preset_names: PRESETS.iter().map(|p| p.name).collect(),
-        preview_a: vec![0.0; WT_SIZE],
+        preview_a,
         preview_b: vec![0.0; WT_SIZE],
+        // Force refresh_preview to run once so preview_b gets populated
+        // from the current preset — preview_a is already set above and
+        // user_edited gates whether it gets overwritten.
         preview_for_preset: None,
         edit_mode: false,
         history: Vec::with_capacity(HISTORY_CAP),
         redo: Vec::new(),
-        nodes: CurveNodes::default(),
+        nodes,
         dragging_node: None,
         selected_node: None,
-        user_edited: false,
+        user_edited,
     };
     EguiWindow::open_parented(
         parent,
@@ -450,13 +491,18 @@ fn refresh_preview(state: &mut GuiState) {
     let Some(preset) = PRESETS.get(i) else { return };
     let a = render_formula(preset.frame_a);
     let b = render_formula(preset.frame_b);
-    state.preview_a.copy_from_slice(a.as_ref());
+    // Always pull a fresh preview_b from the preset's morph target.
     state.preview_b.copy_from_slice(b.as_ref());
-    state.preview_for_preset = Some(i);
+    // Only overwrite preview_a + nodes when the user has NOT drawn a
+    // custom curve — otherwise reopening the project (or running the
+    // first paint frame after the GUI opens) would clobber the saved
+    // drawing with the preset's base formula.
     if !state.user_edited {
+        state.preview_a.copy_from_slice(a.as_ref());
         state.nodes = CurveNodes::from_table(&state.preview_a, 24);
         state.selected_node = None;
     }
+    state.preview_for_preset = Some(i);
 }
 
 /// Draw the wave canvas inside `rect`. Returns true if the user changed the

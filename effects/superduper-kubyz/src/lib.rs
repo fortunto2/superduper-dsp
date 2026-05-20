@@ -157,6 +157,9 @@ pub struct SharedParamsInner {
     pub scope: superduper_synth_core::gui::LiveScope,
     /// Right-click → MIDI Learn map (CC → param idx).
     pub midi_learn: superduper_synth_core::gui::MidiLearnState,
+    /// Currently-selected preset index — persisted via KubyzState so the
+    /// dropdown survives project reopens.
+    pub active_preset: AtomicU32,
 }
 
 pub struct PluginShared {
@@ -198,6 +201,9 @@ impl PluginShared {
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
+                // Default to preset index 1 (Bashkir) — matches the harmonic /
+                // formant defaults loaded above.
+                active_preset: AtomicU32::new(1),
             }),
         }
     }
@@ -828,6 +834,10 @@ struct KubyzState {
     /// with v1 saves.
     #[serde(default)]
     midi_learn: Vec<(u8, usize)>,
+    /// Selected factory-preset index — restored to the dropdown on
+    /// project reopen. Optional in JSON for backward compat with v1/v2.
+    #[serde(default)]
+    active_preset: u32,
 }
 
 const STATE_VERSION: u32 = 2;
@@ -846,6 +856,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
             formant_gain: *self.shared.formant_gain.lock(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             midi_learn: self.shared.midi_learn.snapshot(),
+            active_preset: self.shared.active_preset.load(Ordering::Relaxed),
         };
         serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON error"))
     }
@@ -872,6 +883,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
         *self.shared.formant_gain.lock() = state.formant_gain;
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
         self.shared.midi_learn.replace(&state.midi_learn);
+        self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
         Ok(())
     }
 }

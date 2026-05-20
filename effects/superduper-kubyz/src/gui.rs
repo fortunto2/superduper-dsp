@@ -97,12 +97,15 @@ pub fn open_window<P: HasRawWindowHandle>(
     };
     let preset_names: Vec<&'static str> = presets().iter().map(|p| p.name).collect();
     let user_presets = core_gui::list_user_presets("kubyz");
+    let initial_preset_idx = (shared.active_preset.load(std::sync::atomic::Ordering::Relaxed)
+        as usize)
+        .min(preset_names.len().saturating_sub(1));
     let state = GuiState {
         shared,
         resize,
         applied_size: (initial_w, initial_h),
-        // Match the Shared default — Bashkir Kubyz.
-        selected_preset: Some(1),
+        // Restored from the persisted active_preset (defaults to 1 = Bashkir).
+        selected_preset: Some(initial_preset_idx),
         preset_names,
         user_preset_name: String::new(),
         user_presets,
@@ -358,6 +361,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             let p = presets();
             if let Some(preset) = p.get(i) {
                 apply_preset(&state.shared, preset);
+                state.shared.active_preset.store(i as u32, std::sync::atomic::Ordering::Relaxed);
             }
         }
 

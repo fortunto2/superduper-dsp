@@ -3437,6 +3437,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sdsp-chain"
+version = "0.1.0"
+dependencies = [
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "serde",
+ "superduper-chorus",
+ "superduper-compressor",
+ "superduper-delay",
+ "superduper-dsp-sdk",
+ "superduper-eq",
+ "superduper-filter",
+ "superduper-limiter",
+ "superduper-lineq",
+ "superduper-midside",
+ "superduper-reverb",
+ "superduper-saturator",
+ "superduper-supermass",
+ "superduper-synth-core",
+ "superduper-vocal",
+ "toml",
+]
+
+[[package]]
 name = "sdsp-runner"
 version = "0.1.0"
 dependencies = [

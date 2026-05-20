@@ -1,0 +1,36 @@
+[package]
+name = "sdsp-chain"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless multi-plugin chain runner — read input WAV, push through a chain of SuperDuper plugins, write output WAV + per-stage LUFS / dBTP analysis."
+
+[[bin]]
+name = "sdsp-chain"
+path = "src/main.rs"
+
+[dependencies]
+# Static-linked plugins. Each rlib is small in source but pulls in
+# its own DSP closure — total binary is hefty but the chain runs
+# in one process with zero dynamic loading risk.
+superduper-eq         = { path = "../../effects/superduper-eq" }
+superduper-compressor = { path = "../../effects/superduper-compressor" }
+superduper-saturator  = { path = "../../effects/superduper-saturator" }
+superduper-limiter    = { path = "../../effects/superduper-limiter" }
+superduper-midside    = { path = "../../effects/superduper-midside" }
+superduper-lineq      = { path = "../../effects/superduper-lineq" }
+superduper-filter     = { path = "../../effects/superduper-filter" }
+superduper-reverb     = { path = "../../effects/superduper-reverb" }
+superduper-supermass  = { path = "../../effects/superduper-supermass" }
+superduper-delay      = { path = "../../effects/superduper-delay" }
+superduper-vocal      = { path = "../../effects/superduper-vocal" }
+superduper-chorus     = { path = "../../effects/superduper-chorus" }
+
+superduper-synth-core = { path = "../../synth-core" }
+superduper-dsp-sdk    = { path = "../../sdk" }
+clack-host = { version = "0.1", features = ["clack-plugin"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "state", "clack-host"] }
+clack-plugin = "0.1"
+clack-common = "0.1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

@@ -1,0 +1,31 @@
+# Example mastering chain — drop in your own params and run:
+#   cargo run --release -p sdsp-chain -- tools/sdsp-chain/example.toml in.wav out.wav
+#
+# Param keys are CLAP param IDs (numeric, as strings). See each
+# plugin's PARAMS table in effects/*/src/lib.rs for the mapping.
+
+[[stage]]
+plugin = "eq"
+# 0=Low Freq, 1=Low Gain, 2=Mid Freq, 3=Mid Gain, 4=Mid Q,
+# 5=High Freq, 6=High Gain, 7=HP, 8=LP, 9=Output
+params = { "1" = 1.0, "3" = -0.5, "6" = 1.5, "7" = 30.0 }
+
+[[stage]]
+plugin = "compressor"
+# 0=Threshold dB, 1=Ratio, 2=Attack ms, 3=Release ms, 4=Range dB, …
+params = { "0" = -18.0, "1" = 2.0, "2" = 30.0, "3" = 200.0 }
+
+[[stage]]
+plugin = "saturator"
+# 0=Drive dB, 1=Type (0=Tape/1=Tube/2=Soft), 2=Tone, 3=Output, 4=Mix, 5=OS
+params = { "0" = 4.0, "1" = 0.0, "5" = 1.0 }
+
+[[stage]]
+plugin = "midside"
+# 0=Mode, 1=Width, 2=Mid Gain dB, 3=Side Gain dB, 4=Output dB
+params = { "1" = 1.15, "2" = 1.0 }
+
+[[stage]]
+plugin = "limiter"
+# Push into limiter for target LUFS; ceiling at -1 dBTP.
+params = { "0" = -8.0, "1" = -1.0 }

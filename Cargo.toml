@@ -32,6 +32,7 @@ members = [
     "tools/sdsp-runner",
     "tools/wave-inspect",
     "tools/vocal-inspect",
+    "tools/sdsp-chain",
 ]
 
 [workspace.package]

@@ -1,5 +1,7 @@
 # SuperDuper Kubyz
 
+![SuperDuper Kubyz UI](../../docs/screenshots/kubyz.png)
+
 Physical-model jaw harp / khomus. 16-harmonic additive engine shaped
 by a 3-band formant filter, driven by an interactive IPA vowel pad
 with animated mouth trajectory.

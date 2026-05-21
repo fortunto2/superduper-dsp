@@ -1,15 +1,24 @@
 # SuperDuper DSP
 
-Open-source CLAP plugin suite — 17 focused effects and synths written in
-Rust. Full vocal-chain, three original synths (wavetable bass, jaw-harp
-physical model, drum machine), a polyphonic WAV sampler with pitch
-tuner, a Mobius-style live looper, custom egui-based GUIs with a retro
-phosphor-green theme, factory presets, sidechain ducking, automation
-write, MIDI CC / pitch-bend, tempo sync, and CLAP state persistence
-across the family.
+Open-source CLAP plugin suite — 23 focused effects and synths written in
+Rust. Full vocal chain (de-esser + plosive + hum + de-click + Sub-Mode
+for 2-band setups), four original synths (wavetable bass, jaw-harp
+physical model, drum machine, polyphonic sampler), Mobius-style live
+looper, BS.1770 LUFS meter, linear-phase mastering EQ, dynamic
+resonance suppressor (Soothe-style), Neural Amp Modeler (loads
+community `.nam` files), custom egui GUIs with a retro phosphor-green
+theme, factory presets, sidechain ducking, automation write, MIDI CC
+/ pitch-bend, tempo sync, and CLAP state persistence across the family.
 
 [**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
+
+## Screenshots
+
+| Wave (wavetable synth) | Kubyz (jaw harp / khomus) |
+|---|---|
+| ![Wave](docs/screenshots/wave.png) | ![Kubyz](docs/screenshots/kubyz.png) |
+| Mouse-editable curve, multi-frame storage (4 frames shown), 11 transforms, smart WAV import, Serum-compatible export | 16-harmonic bar editor, IPA vowel pad with animated Figure-8 mouth trajectory, 3-band formant filter |
 
 ## The plugins
 

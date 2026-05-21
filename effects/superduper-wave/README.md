@@ -1,5 +1,7 @@
 # SuperDuper Wave
 
+![SuperDuper Wave UI](../../docs/screenshots/wave.png)
+
 Wavetable bass/lead synth with mouse-editable curve, multi-frame
 storage (1..16 frames), 11 wavetable transforms, smart WAV import,
 and Serum-compatible export.

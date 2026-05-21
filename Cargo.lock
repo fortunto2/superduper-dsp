@@ -5057,6 +5057,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wave-pitch-bench"
+version = "0.0.1"
+dependencies = [
+ "superduper-synth-core",
+ "superduper-wave",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

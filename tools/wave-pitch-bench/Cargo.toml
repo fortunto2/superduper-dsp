@@ -1,0 +1,14 @@
+[package]
+name = "wave-pitch-bench"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Compare wavetable spectra across pitches — see how the mip-pyramid + read interp affect harmonics. Shows whether subtle wavetable details survive at high notes."
+
+[[bin]]
+name = "wave-pitch-bench"
+path = "src/main.rs"
+
+[dependencies]
+superduper-wave = { path = "../../effects/superduper-wave" }
+superduper-synth-core = { path = "../../synth-core" }

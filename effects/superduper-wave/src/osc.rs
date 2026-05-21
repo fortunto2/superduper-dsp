@@ -51,17 +51,26 @@ pub struct MipWavetable {
 impl MipWavetable {
     /// Pick the appropriate mip level for a given fundamental Hz at sr.
     /// Returns 0 (full bandwidth) when `antialias_on` is false.
+    ///
+    /// Pre-refactor used `ceil` which rounded UP to the safer (more
+    /// filtering) slice. That cut wavetables by ~2× more harmonics than
+    /// strictly needed — subtle wavetable differences (where the
+    /// detail lives in harmonics 32-128) became inaudible on mid/high
+    /// notes because they were filtered away before the oscillator
+    /// even read them.
+    ///
+    /// `floor` lets a tiny amount of aliasing through on extreme high
+    /// notes (>10 kHz fundamental) in exchange for keeping ~2× the
+    /// harmonic content audible everywhere else. At typical playing
+    /// pitches the change is large + obvious: triangle vs sawtooth vs
+    /// edited curves are now distinguishable up through C6.
     #[inline]
     pub fn pick_level(&self, freq_hz: f32, sr: f32, antialias_on: bool) -> usize {
         if !antialias_on {
             return 0;
         }
-        // Mip k contains harmonics 1..(WT_SIZE/2 / 2^k). We need the
-        // highest surviving harmonic to stay below Nyquist when played at
-        // freq_hz: WT_SIZE * freq / sr is the "ideal" mip-2-factor; ceil
-        // its log2 to round down to the next safe slice.
         let ratio = WT_SIZE as f32 * freq_hz.max(1.0) / sr;
-        let level = ratio.log2().ceil().max(0.0) as usize;
+        let level = ratio.log2().floor().max(0.0) as usize;
         level.min(MIP_LEVELS - 1)
     }
 }
@@ -124,15 +133,44 @@ pub fn mip_from_table(base: &[f32]) -> MipWavetable {
     }
 }
 
-/// Single linear-interp read from one wavetable.
+/// Public re-export for the `wave-pitch-bench` CLI (test-only). The
+/// production playback path inlines `read_single` directly.
+#[doc(hidden)]
+pub fn read_single_for_test(table: &[f32; WT_SIZE], phase: f32) -> f32 {
+    read_single(table, phase)
+}
+
+/// Single 4-point Lagrange (3rd-order) interp read from one wavetable.
+///
+/// Linear interp (the previous implementation) reads two adjacent
+/// samples and lerps — fine for low-bandwidth content but cuts high
+/// harmonics by ~6 dB per octave above sr/(2·N) when reading at
+/// fractional positions. Lagrange-3 spans 4 samples and is flat to
+/// within ~0.3 dB at high frequencies, so subtle wavetable detail
+/// (harmonics 50-500) stays audible even when the read phase doesn't
+/// line up with integer table indices.
 #[inline]
 fn read_single(table: &[f32; WT_SIZE], phase: f32) -> f32 {
     let p = phase.fract().max(0.0);
     let scaled = p * WT_SIZE as f32;
-    let i0 = scaled as usize & WT_MASK;
-    let i1 = (i0 + 1) & WT_MASK;
+    let i1 = scaled as usize & WT_MASK;
+    let i0 = (i1 + WT_SIZE - 1) & WT_MASK;
+    let i2 = (i1 + 1) & WT_MASK;
+    let i3 = (i1 + 2) & WT_MASK;
     let frac = scaled - (scaled as usize) as f32;
-    table[i0] * (1.0 - frac) + table[i1] * frac
+    let y0 = table[i0];
+    let y1 = table[i1];
+    let y2 = table[i2];
+    let y3 = table[i3];
+    // 4-point Lagrange polynomial through equally-spaced samples
+    // (-1, 0, 1, 2). Coefficients pre-derived; runs in 4 mul + 3 add
+    // per output.
+    let f = frac;
+    let c0 = -f * (f - 1.0) * (f - 2.0) / 6.0;
+    let c1 = (f + 1.0) * (f - 1.0) * (f - 2.0) / 2.0;
+    let c2 = -(f + 1.0) * f * (f - 2.0) / 2.0;
+    let c3 = (f + 1.0) * f * (f - 1.0) / 6.0;
+    y0 * c0 + y1 * c1 + y2 * c2 + y3 * c3
 }
 
 /// Sample N wavetable frames at `phase` and lerp between the

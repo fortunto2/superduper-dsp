@@ -13,37 +13,41 @@ across the family.
 
 ## The plugins
 
+Each plugin has its own README with parameters, workflow, and tips —
+click the name to read.
+
 ### Effects
 
 | Plugin | Use | Highlights |
 |---|---|---|
-| **EQ** | tone shaping | 3-band parametric (low shelf + mid peak + high shelf) + HP/LP. RBJ biquad math. |
-| **Compressor** | dynamics | Soft-knee feed-forward, peak+LP detector, 2 ms lookahead, sidechain HPF, external sidechain port, Clean / Pump / Smooth curves, oversampled ceiling clipper, live GR meter + oscilloscope. |
-| **Saturator** | warmth | Tape / Tube / Soft-tanh with Tone tilt + 2×/4× polyphase oversampling. |
-| **Delay** | rhythm/space | 3rd-order Lagrange interpolation, tape-style feedback saturation, Stereo / Ping-Pong / Slap modes, sidechain ducking. |
-| **Reverb** | space | Dattorro figure-of-eight plate with modulated allpasses, Lagrange-3 fractional taps for click-free SIZE sweeps. Sidechain ducking. |
-| **Supermass** | wash | Valhalla-style cascade (reverb → stereo chorus → reverb, 28 s tail), sidechain ducking. |
-| **Limiter** | mastering | Lookahead brickwall with 4× true-peak detection on a sidechain upsampler, live GR meter. |
-| **Spectrum** | metering | Pass-through analyzer — Spectrum / Spectrogram / Split view, three colour palettes. |
-| **Vocal** | restoration | Split-band de-esser + ratio-detector de-clicker tuned for rap/spoken word. |
-| **Chorus** | modulation | Multi-tap modulated delay with band-named factory presets (Joy Division Atmosphere → Cocteau Twins shimmer → Vangelis Blade Runner CS-80 lushness). |
-| **Looper** | live performance | Mobius-style 4-track live looper, 60 s/track, host-BPM sync with bar-aligned quantize, per-track Feedback for tape-style overdub decay, MIDI CC control for hands-free hardware triggering. |
-| **Filter** | sweep / motion | Multi-mode resonant (LP/HP/BP/Notch) + Drive (Tanh/Tape/Tube) + LFO (free + tempo sync) + Env Follow. Designed for Daft-Punk style filter sweeps on the master bus. |
-| **MidSide** | stereo width | L/R ↔ M/S encode/decode + per-channel Mid/Side gain + Width. Three modes: in-place Width, Encode →, ← Decode for inserting M/S processors. |
-| **LinEq** | mastering EQ | Linear-phase 3-band FIR (~21 ms latency reported to host PDC). Same RBJ biquad target curve, then iFFT-designed symmetric 2048-tap kernel + circular-history convolution. |
-| **Soothe** | resonance suppressor | 24-band log-spaced filter bank measures per-band envelopes; baseline = mean of 4 neighbours; bands above baseline + Sensitivity get a dynamic peaking-EQ cut. Tames rolled-r resonances, harsh `s`/`sh`, mud peaks. Soft/Sharp/Hard modes. |
-| **NAM** | neural amp modeler | Pure-Rust port of Steven Atkinson's [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) inference. Loads community `.nam` files (WaveNet / LSTM / Linear). In-plugin library browser: drag-and-drop import, URL download, prev/next arrows, filter, delete, in-app links to ToneHunt / Tone3000 / NAM Hub. |
+| [**EQ**](effects/superduper-eq/README.md) | tone shaping | 3-band parametric (low shelf + mid peak + high shelf) + HP/LP. RBJ biquad math. |
+| [**LinEq**](effects/superduper-lineq/README.md) | mastering EQ | Linear-phase 3-band FIR (~21 ms latency reported to host PDC). Same RBJ biquad target curve, then iFFT-designed symmetric 2048-tap kernel + circular-history convolution. |
+| [**Compressor**](effects/superduper-compressor/README.md) | dynamics | Soft-knee feed-forward, 2 ms lookahead, sidechain HPF, external sidechain port, Clean / Pump / Smooth curves, oversampled ceiling clipper, live GR meter + oscilloscope. |
+| [**Saturator**](effects/superduper-saturator/README.md) | warmth | Tape / Tube / Soft-tanh with Tone tilt + 2×/4× polyphase oversampling. |
+| [**Delay**](effects/superduper-delay/README.md) | rhythm/space | 3rd-order Lagrange interpolation, tape-style feedback saturation, Stereo / Ping-Pong / Slap modes, sidechain ducking. |
+| [**Reverb**](effects/superduper-reverb/README.md) | space | Dattorro figure-of-eight plate with modulated allpasses, Lagrange-3 fractional taps for click-free SIZE sweeps. Sidechain ducking. |
+| [**Supermass**](effects/superduper-supermass/README.md) | wash | Valhalla-style cascade (reverb → stereo chorus → reverb, 28 s tail), sidechain ducking. |
+| [**Limiter**](effects/superduper-limiter/README.md) | mastering | Lookahead brickwall with 4× true-peak detection, TPDF dither, live GR meter. |
+| [**Spectrum**](effects/superduper-spectrum/README.md) | metering | Pass-through analyzer + BS.1770 LUFS-M/S/I + dBTP true-peak. Spectrum / Spectrogram / Split view, three colour palettes. |
+| [**Vocal**](effects/superduper-vocal/README.md) | restoration | Peaking-EQ de-esser (phase-coherent) with frequency tracker + Plosive Killer + Hum Remover + De-Clicker + Sub Mode for 2-band chains. |
+| [**Chorus**](effects/superduper-chorus/README.md) | modulation | Multi-tap modulated delay with band-named factory presets (Joy Division Atmosphere → Cocteau Twins shimmer → Vangelis Blade Runner CS-80 lushness). |
+| [**Looper**](effects/superduper-looper/README.md) | live performance | Mobius-style 4-track live looper, 60 s/track, host-BPM sync with bar-aligned quantize, per-track Feedback for tape-style overdub decay, MIDI CC control. |
+| [**Filter**](effects/superduper-filter/README.md) | sweep / motion | Multi-mode resonant (LP/HP/BP/Notch) + Drive (Tanh/Tape/Tube) + LFO (free + tempo sync) + Env Follow. Daft-Punk style filter sweeps on the master bus. |
+| [**MidSide**](effects/superduper-midside/README.md) | stereo width | L/R ↔ M/S encode/decode + per-channel Mid/Side gain + Width. Three modes: in-place Width, Encode →, ← Decode for inserting M/S processors. |
+| [**Soothe**](effects/superduper-soothe/README.md) | resonance suppressor | 24-band dynamic resonance suppressor. Tames rolled-r, harsh `s`/`sh`, mud peaks via baseline-relative peaking-EQ cuts. Soft/Sharp/Hard modes. |
+| [**NAM**](effects/superduper-nam/README.md) | neural amp modeler | Pure-Rust port of Steven Atkinson's [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) inference. Loads community `.nam` files (WaveNet / LSTM / Linear) with in-plugin library browser: drag-and-drop, URL download, filter, delete, in-app links to [ToneHunt](https://tonehunt.org) / [Tone3000](https://tone3000.com) / [NAM Hub](https://nam.parametric.audio). |
+| [**Denoise**](effects/superduper-denoise/README.md) *(planned)* | noise / breath suppression | Stub for RNNoise / nnnoiseless port — coming in a future release. |
 
 ### Instruments
 
 | Plugin | Use | Highlights |
 |---|---|---|
-| **Pad** | polyphonic pad | 8-voice MIDI synth, TPT/ZDF SVF + tanh, click-free voice steal, soft-fade choke, MIDI CC + pitch-bend. |
-| **Ambient** | autonomous drone | No-input chord-drone generator. |
-| **Wave** | wavetable bass / lead | Mouse-editable curve (sharp / smooth nodes via Catmull-Rom, RDP simplify, Undo/Redo), mip-mapped anti-aliasing, unison + sub + noise + filter env + LFO with 3 destinations + tempo sync, MIDI CC + pitch-bend + aftertouch. |
-| **Kubyz** | jaw-harp / khomus | 16-harmonic additive + 3-band bandpass formant + interactive IPA vowel pad + animated mouth trajectory (Circle / Sine / Figure-8 / Triangle / Line) with stereo motion + tempo-sync Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets + tools/kubyz_analyser for fitting your own. |
-| **Drum** | drum machine | 6 analog-synthesis voices — Kick / Snare / HH closed / HH open / Clap / Cowbell on consecutive white keys C-D-E-F-G-A. On-screen mini-keyboard hint, mouse-click pads, MIDI passthrough so a single MIDI clip can drive both Drum and bass (Wave/Kubyz) layered. |
-| **Sampler** | polyphonic WAV player | Recursive `~/Music/SuperDuper Samples/` scan with subfolder pack picker, configurable root folders persisted to disk. Per-voice multi-mode TPT/ZDF SVF filter (LP/HP/BP/Notch) with `Env→Cutoff` modulation, Reverse playback (one-shot), Velocity→Amp/Cutoff, click-to-audition on the waveform. YIN-style pitch tuner shows the sample's native note + cents + the played note after Tune/Fine, with `→ Root` button to snap Root to the detected pitch. |
+| [**Pad**](effects/superduper-pad/README.md) | polyphonic pad | 8-voice MIDI synth, TPT/ZDF SVF + tanh, click-free voice steal, soft-fade choke, MIDI CC + pitch-bend. |
+| [**Ambient**](effects/superduper-ambient/README.md) | autonomous drone | No-input chord-drone generator that plays on its own. |
+| [**Wave**](effects/superduper-wave/README.md) | wavetable bass / lead | Mouse-editable curve, multi-frame storage (1..16), 11 wavetable transforms, smart WAV import, Serum-compatible export. |
+| [**Kubyz**](effects/superduper-kubyz/README.md) | jaw-harp / khomus | 16-harmonic additive + 3-band formant + IPA vowel pad + tempo-sync mouth trajectory + Bashkir / Khomus / Real-D2 presets. |
+| [**Drum**](effects/superduper-drum/README.md) | drum machine | 6 analog-synthesis voices on consecutive white keys C-A. MIDI passthrough so one clip can drive Drum + bass synth together. |
+| [**Sampler**](effects/superduper-sampler/README.md) | polyphonic WAV player | Recursive sample folder scan + Pack picker, per-voice SVF filter, Reverse, Velocity→Amp/Cutoff, YIN pitch detection. |
 
 All twenty-three share:
 

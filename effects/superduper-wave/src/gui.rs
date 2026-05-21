@@ -252,6 +252,20 @@ fn perpendicular_distance(p: CurveNode, a: CurveNode, b: CurveNode) -> f32 {
     num / denom
 }
 
+/// Persistent settings for the Neural Transform popup so the user
+/// doesn't re-dial drive + mix every time they pick a model.
+struct NeuralPopupState {
+    drive: f32,
+    mix: f32,
+}
+impl Default for NeuralPopupState {
+    fn default() -> Self {
+        // Drive 3× (~10 dB) is enough to wake up most amp models;
+        // mix 1.0 = full neural output by default.
+        Self { drive: 3.0, mix: 1.0 }
+    }
+}
+
 struct GuiState {
     shared: SharedParams,
     resize: ResizeBridge,
@@ -278,6 +292,8 @@ struct GuiState {
     /// `~/.superduper-dsp/wave/presets/`).
     user_presets: Vec<superduper_synth_core::user_preset::PresetName>,
     selected_user_preset: Option<usize>,
+    /// Sticky settings for the Neural Transform popup (drive + mix).
+    neural: NeuralPopupState,
     /// Working "Save as…" name buffer for the toolbar text input.
     save_name_buf: String,
     /// User-selected frame count for the next WAV import. 1 means
@@ -354,16 +370,23 @@ fn auto_save_last(state: &GuiState) {
 
 /// Apply a NAM model to a single-cycle wavetable frame.
 ///
-/// Loads the `.nam`, pre-warms the network on the input cycle (so its
-/// receptive field is filled with actual wavetable content, not
-/// silence), captures one steady-state cycle, and normalises peak to
-/// ±1 so the result slots back into the wavetable pipeline.
+/// Loads the `.nam`, drives the network into steady state on the input
+/// cycle, captures one cycle, and rescales so the result lands at the
+/// same RMS as the input (preserves the model's relative dynamics —
+/// peak-normalising would divide away most of the saturation
+/// character). DC offset is preserved because asymmetric saturation
+/// shifts the mean and that shift IS part of the timbre.
 ///
-/// Runs on the GUI thread — fast (one cycle = 256-2048 samples through
-/// a ≤14k-param network ≈ a few ms even on Standard NAM).
+/// `drive` is a pre-network gain multiplier — push it above 1 to hear
+/// the model's saturation kick in. `mix` (0..1) blends raw input back
+/// with the network output so the user can dial in subtle character.
+///
+/// Runs on the GUI thread (a few ms per cycle even on Standard NAM).
 fn apply_neural_transform(
     input: &[f32],
     path: &std::path::Path,
+    drive: f32,
+    mix: f32,
 ) -> Result<Vec<f32>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file = superduper_synth_core::nam::load_from_json(&text)
@@ -371,42 +394,58 @@ fn apply_neural_transform(
     let mut model = superduper_synth_core::nam::NamModel::from_nam_file(&file)
         .map_err(|e| e.to_string())?;
 
-    // Pre-warm: feed the cycle through the network a few times so any
-    // recurrent state / dilated-conv history is filled with the wavetable
-    // content rather than initial zeros. WaveNet receptive field reaches
-    // ~1023 samples on Standard, so 3 passes through a 256-2048 sample
-    // cycle is enough to settle.
     let n_input = input.len();
     if n_input == 0 {
         return Err("empty frame".into());
     }
-    for _pass in 0..3 {
+
+    // Pre-warm: feed the cycle through 4 times so dilated-conv history
+    // / LSTM hidden state are filled with actual wavetable content.
+    // Standard NAM receptive field reaches ~1023 samples; 4 × 2048 =
+    // 8192 covers it generously and lets recurrent state stabilise.
+    for _pass in 0..4 {
         for &x in input {
-            let _ = model.process(x);
+            let _ = model.process(x * drive);
         }
     }
 
     // Capture: one more pass — this is the steady-state output.
     let mut out: Vec<f32> = Vec::with_capacity(n_input);
     for &x in input {
-        out.push(model.process(x));
+        out.push(model.process(x * drive));
     }
 
-    // Normalise peak to ±1. If the model collapsed to ~0 (broken weights,
-    // wrong arch) — bail with a typed error rather than push silence.
-    let peak = out.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
-    if peak < 1e-6 {
+    // RMS-match: scale the network output so it has the same energy as
+    // the input. Preserves the saturation character (uneven harmonic
+    // emphasis stays intact) while keeping the wavetable in a sane
+    // gain range. Peak-normalising would divide away most of the drive.
+    let in_rms = (input.iter().map(|x| x * x).sum::<f32>() / n_input as f32).sqrt();
+    let out_rms = (out.iter().map(|x| x * x).sum::<f32>() / n_input as f32).sqrt();
+    if out_rms < 1e-6 {
         return Err("model output was silent".into());
     }
+    let scale = (in_rms / out_rms).max(1e-6);
     for v in out.iter_mut() {
-        *v /= peak;
+        *v *= scale;
     }
-    // Remove DC offset — single-cycle wavetable should have zero mean
-    // or it'll add a constant gain shift when read back at a given pitch.
-    let mean: f32 = out.iter().sum::<f32>() / out.len() as f32;
+
+    // Dry/wet blend with the original input so the user can dial in a
+    // subtle character without going all the way to the bare neural
+    // result. mix = 1 → pure neural, mix = 0 → pure input.
+    let mix = mix.clamp(0.0, 1.0);
+    if mix < 0.999 {
+        for (o, &i) in out.iter_mut().zip(input.iter()) {
+            *o = *o * mix + i * (1.0 - mix);
+        }
+    }
+
+    // Final safety clip: a runaway model could push past ±2; the
+    // wavetable read expects values in roughly ±1.5. Hard-cap so the
+    // mip pyramid build doesn't blow up.
     for v in out.iter_mut() {
-        *v -= mean;
+        *v = v.clamp(-2.0, 2.0);
     }
+
     Ok(out)
 }
 
@@ -676,6 +715,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         user_edited,
         user_presets: crate::user_extra::repo().list(),
         selected_user_preset: None,
+        neural: NeuralPopupState::default(),
         save_name_buf: String::new(),
         last_io_msg: None,
         pending_open: None,
@@ -1458,13 +1498,32 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 &neural_resp,
                 egui::PopupCloseBehavior::CloseOnClickOutside,
                 |ui| {
-                    ui.set_min_width(220.0);
+                    ui.set_min_width(260.0);
                     ui.label(
                         egui::RichText::new("Run frame through .nam")
                             .color(core_gui::GREEN_DIM)
                             .monospace()
                             .small(),
                     );
+                    // Drive — how hard we push the frame into the
+                    // model's non-linearity. Clean models need 5-10×;
+                    // a high-gain amp model already saturates at 1×.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("drive").color(core_gui::GREEN_DIM).monospace().small());
+                        ui.add(
+                            egui::Slider::new(&mut state.neural.drive, 0.5..=20.0)
+                                .logarithmic(true)
+                                .text("×"),
+                        );
+                    });
+                    // Mix — dry/wet blend with the original frame. 1.0 =
+                    // pure neural, 0.0 = original. Sometimes 0.3-0.5
+                    // sounds more musical than full neural.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("mix").color(core_gui::GREEN_DIM).monospace().small());
+                        ui.add(egui::Slider::new(&mut state.neural.mix, 0.0..=1.0).text("dry/wet"));
+                    });
+                    ui.separator();
                     let nam_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
                         .join(".superduper-dsp/nam");
                     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&nam_dir)
@@ -1507,7 +1566,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         }
                     }
                     if let Some(path) = picked {
-                        match apply_neural_transform(&state.preview_a, &path) {
+                        match apply_neural_transform(&state.preview_a, &path, state.neural.drive, state.neural.mix) {
                             Ok(new_curve) => {
                                 let mip = mip_from_table(&new_curve);
                                 push_custom_frame_a(&state.shared, mip);

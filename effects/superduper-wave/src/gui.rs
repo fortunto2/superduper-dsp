@@ -352,6 +352,64 @@ fn auto_save_last(state: &GuiState) {
     let _ = crate::user_extra::repo().save_last(&preset, PARAMS.len());
 }
 
+/// Apply a NAM model to a single-cycle wavetable frame.
+///
+/// Loads the `.nam`, pre-warms the network on the input cycle (so its
+/// receptive field is filled with actual wavetable content, not
+/// silence), captures one steady-state cycle, and normalises peak to
+/// ±1 so the result slots back into the wavetable pipeline.
+///
+/// Runs on the GUI thread — fast (one cycle = 256-2048 samples through
+/// a ≤14k-param network ≈ a few ms even on Standard NAM).
+fn apply_neural_transform(
+    input: &[f32],
+    path: &std::path::Path,
+) -> Result<Vec<f32>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let file = superduper_synth_core::nam::load_from_json(&text)
+        .map_err(|e| e.to_string())?;
+    let mut model = superduper_synth_core::nam::NamModel::from_nam_file(&file)
+        .map_err(|e| e.to_string())?;
+
+    // Pre-warm: feed the cycle through the network a few times so any
+    // recurrent state / dilated-conv history is filled with the wavetable
+    // content rather than initial zeros. WaveNet receptive field reaches
+    // ~1023 samples on Standard, so 3 passes through a 256-2048 sample
+    // cycle is enough to settle.
+    let n_input = input.len();
+    if n_input == 0 {
+        return Err("empty frame".into());
+    }
+    for _pass in 0..3 {
+        for &x in input {
+            let _ = model.process(x);
+        }
+    }
+
+    // Capture: one more pass — this is the steady-state output.
+    let mut out: Vec<f32> = Vec::with_capacity(n_input);
+    for &x in input {
+        out.push(model.process(x));
+    }
+
+    // Normalise peak to ±1. If the model collapsed to ~0 (broken weights,
+    // wrong arch) — bail with a typed error rather than push silence.
+    let peak = out.iter().fold(0.0_f32, |a, &b| a.max(b.abs()));
+    if peak < 1e-6 {
+        return Err("model output was silent".into());
+    }
+    for v in out.iter_mut() {
+        *v /= peak;
+    }
+    // Remove DC offset — single-cycle wavetable should have zero mean
+    // or it'll add a constant gain shift when read back at a given pitch.
+    let mean: f32 = out.iter().sum::<f32>() / out.len() as f32;
+    for v in out.iter_mut() {
+        *v -= mean;
+    }
+    Ok(out)
+}
+
 /// Write a `<name>.wav` next to `<name>.json` so the wavetable is
 /// readable in Serum / Vital / any audio editor. Single-cycle mono
 /// 32-bit float at 88200 Hz (Serum's convention). I/O errors are
@@ -1377,6 +1435,108 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 state.last_io_msg =
                     Some(("transform applied".to_string(), std::time::Instant::now()));
             }
+
+            // Neural transform — runs the current frame through a NAM
+            // model selected from the user's ~/.superduper-dsp/nam/
+            // library. Result is normalised back to ±1 and pushed as
+            // the new frame_a so it stacks with other transforms.
+            //
+            // Why bake a static wavetable instead of just chaining NAM
+            // after Wave: keeps polyphony intermodulation-free, makes
+            // the timbre pitch-invariant, lets the mip pyramid handle
+            // anti-aliasing, gives WT Pos morphing into the result,
+            // and produces an exportable .wav.
+            let neural_resp = ui.button("Neural ▾")
+                .on_hover_text("Bake the current frame through a NAM model — pick a `.nam` from your library");
+            let popup_id = ui.make_persistent_id("wave_neural_popup");
+            if neural_resp.clicked() {
+                ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+            }
+            egui::popup_below_widget(
+                ui,
+                popup_id,
+                &neural_resp,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(
+                        egui::RichText::new("Run frame through .nam")
+                            .color(core_gui::GREEN_DIM)
+                            .monospace()
+                            .small(),
+                    );
+                    let nam_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                        .join(".superduper-dsp/nam");
+                    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&nam_dir)
+                        .map(|rd| {
+                            rd.flatten()
+                                .map(|e| e.path())
+                                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("nam"))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    files.sort();
+                    if files.is_empty() {
+                        ui.label(
+                            egui::RichText::new("(no .nam files in ~/.superduper-dsp/nam/)")
+                                .color(core_gui::GREEN_DIM)
+                                .monospace()
+                                .small(),
+                        );
+                    }
+                    let mut picked: Option<std::path::PathBuf> = None;
+                    for path in &files {
+                        let name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        if ui
+                            .selectable_label(
+                                false,
+                                egui::RichText::new(&name)
+                                    .color(core_gui::GREEN)
+                                    .monospace(),
+                            )
+                            .clicked()
+                        {
+                            picked = Some(path.clone());
+                            // Popup closes on next frame via the
+                            // CloseOnClickOutside behavior — manual
+                            // close API removed in egui 0.33+.
+                        }
+                    }
+                    if let Some(path) = picked {
+                        match apply_neural_transform(&state.preview_a, &path) {
+                            Ok(new_curve) => {
+                                let mip = mip_from_table(&new_curve);
+                                push_custom_frame_a(&state.shared, mip);
+                                state.preview_a.copy_from_slice(&new_curve);
+                                state.nodes = CurveNodes::from_table(&new_curve, 24);
+                                state.user_edited = true;
+                                state.preview_for_preset = state.selected_preset;
+                                state.selected_node = None;
+                                auto_save_last(state);
+                                let name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("?")
+                                    .to_string();
+                                state.last_io_msg = Some((
+                                    format!("neural: {name}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            Err(e) => {
+                                state.last_io_msg = Some((
+                                    format!("neural failed: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                },
+            );
         });
 
         let mut curve_changed = false;

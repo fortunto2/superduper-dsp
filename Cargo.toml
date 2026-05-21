@@ -36,7 +36,7 @@ members = [
     "tools/wave-inspect",
     "tools/vocal-inspect",
     "tools/sdsp-chain",
-    "tools/nam-test",
+    "tools/nam-test","tools/nam-bench",
 ]
 exclude = [
     "tools/nam-reference",

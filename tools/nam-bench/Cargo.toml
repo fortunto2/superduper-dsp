@@ -1,0 +1,11 @@
+[package]
+name = "nam-bench"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "nam-bench"
+path = "src/main.rs"
+
+[dependencies]
+superduper-synth-core = { path = "../../synth-core" }

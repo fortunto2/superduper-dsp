@@ -310,52 +310,59 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
+        // Run the network ONCE per sample on a mono sum (L+R)/2 and
+        // copy the wet result back to both channels. NAM models are
+        // trained on mono guitar / vocal feeds — sdatkinson's own
+        // plugin does the same. Halves CPU (was 2× independent net
+        // instances per sample) and matches expected behaviour:
+        // dropping a stereo bus into a guitar amp doesn't give you a
+        // wider stereo amp, it gives you a mono amp on summed signal.
+        // Dry path stays stereo so Mix < 1 preserves the original
+        // image untouched.
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
                 continue;
             };
-            for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                let (net, dc, tilt) = if ch_idx == 0 {
-                    (&mut self.net_l, &mut self.dc_l, &mut self.tilt_l)
-                } else {
-                    (&mut self.net_r, &mut self.dc_r, &mut self.tilt_r)
-                };
-                process_channel(
-                    net,
-                    dc,
-                    tilt,
-                    &mut self.smooth_input,
-                    &mut self.smooth_drive,
-                    &mut self.smooth_output,
-                    &mut self.smooth_mix,
-                    &mut self.smooth_tone,
-                    channel_pair,
-                    sr,
-                    input_target,
-                    drive_target,
-                    output_target,
-                    mix_target,
-                    tone_target,
-                    bypassed,
-                    &self.shared.scope,
-                );
-            }
+            let chans: Vec<_> = channel_pairs.into_iter().collect();
+            process_stereo_mono_net(
+                &mut self.net_l, // net_r is kept in sync via swap; left is the active one
+                &mut self.dc_l,
+                &mut self.dc_r,
+                &mut self.tilt_l,
+                &mut self.tilt_r,
+                &mut self.smooth_input,
+                &mut self.smooth_drive,
+                &mut self.smooth_output,
+                &mut self.smooth_mix,
+                &mut self.smooth_tone,
+                chans,
+                sr,
+                input_target,
+                drive_target,
+                output_target,
+                mix_target,
+                tone_target,
+                bypassed,
+                &self.shared.scope,
+            );
         }
         Ok(ProcessStatus::Continue)
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_channel(
+fn process_stereo_mono_net(
     net: &mut NamModel,
-    dc: &mut DcBlocker,
-    tilt: &mut superduper_synth_core::dsp_blocks::Tilt,
+    dc_l: &mut DcBlocker,
+    dc_r: &mut DcBlocker,
+    tilt_l: &mut superduper_synth_core::dsp_blocks::Tilt,
+    tilt_r: &mut superduper_synth_core::dsp_blocks::Tilt,
     smooth_input: &mut SmoothedParam,
     smooth_drive: &mut SmoothedParam,
     smooth_output: &mut SmoothedParam,
     smooth_mix: &mut SmoothedParam,
     smooth_tone: &mut SmoothedParam,
-    channel: ChannelPair<'_, f32>,
+    chans: Vec<ChannelPair<'_, f32>>,
     sr: f32,
     input_target: f32,
     drive_target: f32,
@@ -366,16 +373,31 @@ fn process_channel(
     scope: &superduper_synth_core::gui::LiveScope,
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
-    let Some((read, write)) = split_io(channel) else {
-        return;
+    // Two channels expected (stereo plugin); split each.
+    let mut iter = chans.into_iter();
+    let Some(ch0) = iter.next() else { return };
+    let ch1 = iter.next();
+    let Some((read_l, write_l)) = split_io(ch0) else { return };
+    let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch1 {
+        Some(c) => match split_io(c) {
+            Some((r, w)) => (r, Some(w)),
+            None => return,
+        },
+        None => (read_l, None),
     };
     if bypassed {
-        write.copy_from_slice(read);
+        write_l.copy_from_slice(read_l);
+        if let Some(w) = write_r {
+            w.copy_from_slice(read_r);
+        }
         return;
     }
 
-    for (i, o) in read.iter().zip(write.iter_mut()) {
-        let dry = *i;
+    let n = read_l.len();
+    let mut maybe_write_r = write_r;
+    for i in 0..n {
+        let dry_l = read_l[i];
+        let dry_r = if read_r.len() == n { read_r[i] } else { dry_l };
 
         let in_db = smooth_input.step(input_target, sr);
         let drv_db = smooth_drive.step(drive_target, sr);
@@ -386,17 +408,27 @@ fn process_channel(
         let drv_lin = 10f32.powf(drv_db / 20.0);
         let out_lin = 10f32.powf(out_db / 20.0);
 
-        let cleaned = dc.process(dry);
-        // Drive multiplies into the network input so the same model
-        // covers a range of preamp gain without retraining.
+        // Mono inference path — sum L+R, DC-block, drive into network.
+        let dry_mid = (dry_l + dry_r) * 0.5;
+        let cleaned = dc_l.process(dry_mid);
+        let _ = dc_r.process(dry_mid); // keep state in sync (zero-input idle)
         let x_in = cleaned * in_lin * drv_lin;
         let y_net = net.process(x_in);
-        let toned = tilt.process(y_net, sr, tone);
-        let wet = toned * out_lin;
 
-        let mixed = dry * (1.0 - mix) + wet * mix;
-        *o = mixed;
-        scope.push(mixed);
+        // Tone tilt + output gain applied per channel so a future stereo
+        // tone control still works; today they're identical because both
+        // tilts see the same input.
+        let wet_l = tilt_l.process(y_net, sr, tone) * out_lin;
+        let wet_r = tilt_r.process(y_net, sr, tone) * out_lin;
+
+        let mixed_l = dry_l * (1.0 - mix) + wet_l * mix;
+        let mixed_r = dry_r * (1.0 - mix) + wet_r * mix;
+
+        write_l[i] = mixed_l;
+        if let Some(ref mut w) = maybe_write_r {
+            w[i] = mixed_r;
+        }
+        scope.push((mixed_l + mixed_r) * 0.5);
     }
 }
 

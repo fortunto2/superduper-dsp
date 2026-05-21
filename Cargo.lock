@@ -2256,6 +2256,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nam-bench"
+version = "0.0.1"
+dependencies = [
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "nam-test"
 version = "0.1.0"
 dependencies = [

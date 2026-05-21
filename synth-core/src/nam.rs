@@ -221,35 +221,104 @@ impl Conv1D {
 
     /// Push one input frame into the history and compute the dot product.
     /// Writes `out_ch` floats into `out`.
+    ///
+    /// Hot path — this runs `out_ch × kernel × in_ch` MACs per sample
+    /// per layer, so a Standard NAM does ~10 k MACs/sample. The
+    /// optimisations below cut a ~85% CPU cost per channel down to
+    /// something usable in REAPER:
+    ///
+    /// 1. **Frame offsets precomputed once per sample** (not per output
+    ///    channel) — was `out_ch × kernel` modulo ops, now `kernel`.
+    /// 2. **Outer loop over kernel taps, inner over (out_ch, in_ch)** —
+    ///    cache-friendly contiguous read of `weight[k][*][*]` and
+    ///    `hist[frame][*]`.
+    /// 3. **Unchecked indexing** in the inner accumulator via
+    ///    `slice::get_unchecked` — eliminates bounds checks the
+    ///    compiler can't prove away (Vec indexing always re-checks).
+    ///    SAFETY: every index below comes from a bounded loop counter
+    ///    inside the buffer dimensions allocated at `new`.
     pub fn process(&mut self, input: &[f32], out: &mut [f32]) {
         debug_assert_eq!(input.len(), self.in_ch);
         debug_assert_eq!(out.len(), self.out_ch);
-        // 1) Write input into hist[hist_pos]
-        let base = self.hist_pos * self.in_ch;
-        self.hist[base..base + self.in_ch].copy_from_slice(input);
-
-        // 2) Compute output per channel: dot product over kernel × in_ch.
+        let in_ch = self.in_ch;
+        let out_ch = self.out_ch;
+        let kernel = self.kernel;
+        let dilation = self.dilation;
         let hf = self.hist_frames;
-        for o in 0..self.out_ch {
-            let mut acc = if self.has_bias { self.bias[o] } else { 0.0 };
-            for k in 0..self.kernel {
-                // Causal tap: kernel position k uses the sample
-                // `(kernel - 1 - k) * dilation` frames BACK from current.
-                // hist_pos points at the freshly-written newest frame.
-                let back = (self.kernel - 1 - k) * self.dilation;
-                let frame = (self.hist_pos + hf - back) % hf;
-                let fbase = frame * self.in_ch;
-                let wbase = k * self.out_ch * self.in_ch + o * self.in_ch;
-                for i in 0..self.in_ch {
-                    acc += self.weight[wbase + i] * self.hist[fbase + i];
-                }
+        let has_bias = self.has_bias;
+
+        // 1) Write input into hist[hist_pos].
+        let base = self.hist_pos * in_ch;
+        self.hist[base..base + in_ch].copy_from_slice(input);
+
+        // 2) Precompute per-kernel frame base offsets — one branchless
+        //    wrap each instead of one modulo per (out_ch, kernel).
+        //    Stack-allocate up to 16 kernel taps (real NAM uses 3..4);
+        //    falls back to heap for the rare large-kernel models.
+        let mut frame_bases_stack = [0usize; 16];
+        let mut frame_bases_heap: Vec<usize>;
+        let frame_bases: &mut [usize] = if kernel <= 16 {
+            &mut frame_bases_stack[..kernel]
+        } else {
+            frame_bases_heap = vec![0; kernel];
+            &mut frame_bases_heap[..]
+        };
+        for k in 0..kernel {
+            let back = (kernel - 1 - k) * dilation;
+            // Branchless wrap into [0, hf). Equivalent to (hist_pos +
+            // hf - back) % hf when (back <= hist_pos + hf), which is
+            // always true by construction (back ≤ (kernel-1)*dilation
+            // ≤ hf - 1 ≤ hist_pos + hf).
+            let mut frame = self.hist_pos + hf - back;
+            while frame >= hf {
+                frame -= hf;
             }
-            out[o] = acc;
+            frame_bases[k] = frame * in_ch;
         }
 
-        // 3) Advance ring head AFTER computing so the just-written frame
+        // 3) Initialise output with bias (or zero).
+        if has_bias {
+            out.copy_from_slice(&self.bias);
+        } else {
+            for o in out.iter_mut() {
+                *o = 0.0;
+            }
+        }
+
+        // 4) Accumulate. Outer = kernel (small), inner = (out_ch, in_ch).
+        //    Weight layout: `w[k][o][i]` flattened. For each tap we read
+        //    a contiguous `out_ch * in_ch` block of weights and a
+        //    contiguous `in_ch` slice of history — both cache-friendly.
+        let weight = &self.weight[..];
+        let hist = &self.hist[..];
+        for k in 0..kernel {
+            let wbase_k = k * out_ch * in_ch;
+            let fbase = frame_bases[k];
+            // SAFETY: fbase + in_ch ≤ hist.len() because frame < hf and
+            // hist.len() == hf * in_ch. wbase_k + out_ch*in_ch ≤
+            // weight.len() == kernel*out_ch*in_ch.
+            unsafe {
+                let w_tap = weight.as_ptr().add(wbase_k);
+                let h_frame = hist.as_ptr().add(fbase);
+                for o in 0..out_ch {
+                    let mut acc = *out.get_unchecked(o);
+                    let w_o = w_tap.add(o * in_ch);
+                    // Inner dot product, in_ch ≤ 16 typical for NAM —
+                    // rustc auto-vectorises this with SSE/NEON.
+                    for i in 0..in_ch {
+                        acc += *w_o.add(i) * *h_frame.add(i);
+                    }
+                    *out.get_unchecked_mut(o) = acc;
+                }
+            }
+        }
+
+        // 5) Advance ring head AFTER computing so the just-written frame
         //    is the "current" sample (k = kernel-1, back = 0).
-        self.hist_pos = (self.hist_pos + 1) % hf;
+        self.hist_pos += 1;
+        if self.hist_pos >= hf {
+            self.hist_pos = 0;
+        }
     }
 
     pub fn reset(&mut self) {
@@ -300,13 +369,23 @@ impl Conv1x1 {
     pub fn process(&self, input: &[f32], out: &mut [f32]) {
         debug_assert_eq!(input.len(), self.in_ch);
         debug_assert_eq!(out.len(), self.out_ch);
-        for o in 0..self.out_ch {
-            let mut acc = if self.has_bias { self.bias[o] } else { 0.0 };
-            let wbase = o * self.in_ch;
-            for i in 0..self.in_ch {
-                acc += self.weight[wbase + i] * input[i];
+        let in_ch = self.in_ch;
+        let out_ch = self.out_ch;
+        // SAFETY: weight.len() == out_ch * in_ch, bias.len() == out_ch
+        // (or 0), input.len() and out.len() asserted above.
+        unsafe {
+            let w = self.weight.as_ptr();
+            let inp = input.as_ptr();
+            let out_p = out.as_mut_ptr();
+            let bias_p = if self.has_bias { self.bias.as_ptr() } else { std::ptr::null() };
+            for o in 0..out_ch {
+                let mut acc = if bias_p.is_null() { 0.0 } else { *bias_p.add(o) };
+                let w_o = w.add(o * in_ch);
+                for i in 0..in_ch {
+                    acc += *w_o.add(i) * *inp.add(i);
+                }
+                *out_p.add(o) = acc;
             }
-            out[o] = acc;
         }
     }
     pub fn param_count(&self) -> usize {

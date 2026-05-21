@@ -104,28 +104,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOKAHEAD);
             });
             core_gui::section(ui, "Detection", |ui| {
-                ui.horizontal(|ui| {
-                    let on = state.shared.params[P_TRUE_PEAK].load(Ordering::Relaxed) > 0.5;
-                    let label = if on { "[X] true-peak (4×)" } else { "[ ] true-peak (4×)" };
-                    if ui.selectable_label(on, egui::RichText::new(label)
-                        .color(core_gui::GREEN).monospace()).clicked() {
-                        state.shared.params[P_TRUE_PEAK]
-                            .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
-                        state.shared.dirty_params[P_TRUE_PEAK]
-                            .store(true, Ordering::Relaxed);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    let on = state.shared.params[P_DITHER].load(Ordering::Relaxed) >= 0.5;
-                    let label = if on { "[X] TPDF dither (±0.5 LSB @ 16b)" } else { "[ ] TPDF dither (±0.5 LSB @ 16b)" };
-                    if ui.selectable_label(on, egui::RichText::new(label)
-                        .color(core_gui::GREEN).monospace()).clicked() {
-                        state.shared.params[P_DITHER]
-                            .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
-                        state.shared.dirty_params[P_DITHER]
-                            .store(true, Ordering::Relaxed);
-                    }
-                });
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_TRUE_PEAK], &PARAMS[P_TRUE_PEAK], &state.shared.dirty_params[P_TRUE_PEAK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TRUE_PEAK);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_DITHER], &PARAMS[P_DITHER], &state.shared.dirty_params[P_DITHER], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DITHER);
             });
         });
     });

@@ -206,29 +206,15 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_THRESHOLD], &PARAMS[P_THRESHOLD], &state.shared.dirty_params[P_THRESHOLD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_THRESHOLD);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RATIO], &PARAMS[P_RATIO], &state.shared.dirty_params[P_RATIO], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RATIO);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_KNEE], &PARAMS[P_KNEE], &state.shared.dirty_params[P_KNEE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KNEE);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [90.0, 18.0],
-                        egui::Label::new(
-                            egui::RichText::new("Curve").color(core_gui::GREEN).monospace(),
-                        ),
-                    );
-                    let cur = state.shared.params[P_CURVE]
-                        .load(Ordering::Relaxed)
-                        .round() as usize;
-                    let cur = cur.min(CURVE_NAMES.len() - 1);
-                    egui::ComboBox::from_id_salt("comp_curve_combo")
-                        .selected_text(CURVE_NAMES[cur])
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in CURVE_NAMES.iter().enumerate() {
-                                if ui.selectable_label(cur == i, *name).clicked() {
-                                    state.shared.params[P_CURVE]
-                                        .store(i as f32, Ordering::Relaxed);
-                                }
-                            }
-                        });
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_CURVE],
+                    &PARAMS[P_CURVE],
+                    &CURVE_NAMES,
+                    &state.shared.dirty_params[P_CURVE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_CURVE,
+                );
             });
 
             core_gui::section(ui, "Envelope", |ui| {
@@ -236,20 +222,14 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_HOLD], &PARAMS[P_HOLD], &state.shared.dirty_params[P_HOLD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HOLD);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RELEASE);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RANGE], &PARAMS[P_RANGE], &state.shared.dirty_params[P_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RANGE);
-                ui.horizontal(|ui| {
-                    let on = state.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
-                    let label = if on { "[X] auto release" } else { "[ ] auto release" };
-                    if ui
-                        .selectable_label(
-                            on,
-                            egui::RichText::new(label).color(core_gui::GREEN).monospace(),
-                        )
-                        .clicked()
-                    {
-                        state.shared.params[P_AUTO_REL]
-                            .store(if on { 0.0 } else { 1.0 }, Ordering::Relaxed);
-                    }
-                });
+                core_gui::dirty_toggle_row_g(
+                    ui,
+                    &state.shared.params[P_AUTO_REL],
+                    &PARAMS[P_AUTO_REL],
+                    &state.shared.dirty_params[P_AUTO_REL],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_AUTO_REL,
+                );
             });
 
             core_gui::section(ui, "Detector", |ui| {
@@ -276,8 +256,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                             }
                         });
                 });
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LINK], &PARAMS[P_LINK], &state.shared.dirty_params[P_LINK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LINK);
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MS_MODE], &PARAMS[P_MS_MODE], &state.shared.dirty_params[P_MS_MODE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MS_MODE);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_LINK], &PARAMS[P_LINK], &state.shared.dirty_params[P_LINK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LINK);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_MS_MODE], &PARAMS[P_MS_MODE], &state.shared.dirty_params[P_MS_MODE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MS_MODE);
             });
 
             core_gui::section(ui, "Lookahead", |ui| {
@@ -288,30 +268,47 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MAKEUP], &PARAMS[P_MAKEUP], &state.shared.dirty_params[P_MAKEUP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MAKEUP);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_CEILING], &PARAMS[P_CEILING], &state.shared.dirty_params[P_CEILING], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CEILING);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [90.0, 18.0],
-                        egui::Label::new(
-                            egui::RichText::new("Oversamp").color(core_gui::GREEN).monospace(),
-                        ),
-                    );
-                    let cur = state.shared.params[P_OS]
-                        .load(Ordering::Relaxed)
-                        .round() as usize;
-                    let cur = cur.min(OS_NAMES.len() - 1);
-                    egui::ComboBox::from_id_salt("comp_os_combo")
-                        .selected_text(OS_NAMES[cur])
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in OS_NAMES.iter().enumerate() {
-                                if ui.selectable_label(cur == i, *name).clicked() {
-                                    state.shared.params[P_OS]
-                                        .store(i as f32, Ordering::Relaxed);
-                                }
-                            }
-                        });
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_OS],
+                    &PARAMS[P_OS],
+                    &OS_NAMES,
+                    &state.shared.dirty_params[P_OS],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_OS,
+                );
             });
+            core_gui::help_block(
+                ui,
+                "comp_help",
+                &[
+                    (
+                        "Curves",
+                        "Clean — Giannoulis-Massberg-Reiss soft-knee, transparent / SSL- \
+                         style. Pump — FET 1176 attack character, adds punch. Smooth — \
+                         optical LA-2A-style slow gentle compression for sustained \
+                         material (vocals, bass).",
+                    ),
+                    (
+                        "Lookahead",
+                        "Adds up to 2 ms pre-delay so the compressor can react before \
+                         the transient hits. CLAP `latency` extension reports it so \
+                         REAPER's PDC keeps parallel buses phase-aligned.",
+                    ),
+                    (
+                        "Sidechain HPF",
+                        "Detector-only HPF so kick / sub-bass doesn't pump the comp. \
+                         Off / 60 / 100 / 150 / 200 Hz. The audio path is untouched — \
+                         this only shapes what the envelope follower sees.",
+                    ),
+                    (
+                        "M/S mode",
+                        "When ON the comp operates in Mid/Side: detector hears the Mid \
+                         channel, GR applies to both M and S equally. Use to compress \
+                         the centre without squashing reverb tails in the sides.",
+                    ),
+                ],
+            );
         });
     });
 }

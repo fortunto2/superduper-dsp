@@ -29,10 +29,17 @@ members = [
     "effects/superduper-filter",
     "effects/superduper-midside",
     "effects/superduper-lineq",
+    "effects/superduper-soothe",
+    "effects/superduper-nam",
+    "effects/superduper-denoise",
     "tools/sdsp-runner",
     "tools/wave-inspect",
     "tools/vocal-inspect",
     "tools/sdsp-chain",
+    "tools/nam-test",
+]
+exclude = [
+    "tools/nam-reference",
 ]
 
 [workspace.package]

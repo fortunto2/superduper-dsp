@@ -36,4 +36,8 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-sampler|SuperDuperSampler|co.superduperai.sampler|co.superduperai.wrappers.sampler|aumu|sdSl"
     "superduper-looper|SuperDuperLooper|co.superduperai.looper|co.superduperai.wrappers.looper|aufx|sdLp"
     "superduper-filter|SuperDuperFilter|co.superduperai.filter|co.superduperai.wrappers.filter|aufx|sdFl"
+    "superduper-midside|SuperDuperMidSide|co.superduperai.midside|co.superduperai.wrappers.midside|aufx|sdMs"
+    "superduper-lineq|SuperDuperLineq|co.superduperai.lineq|co.superduperai.wrappers.lineq|aufx|sdLe"
+    "superduper-soothe|SuperDuperSoothe|co.superduperai.soothe|co.superduperai.wrappers.soothe|aufx|sdSo"
+    "superduper-nam|SuperDuperNam|co.superduperai.nam|co.superduperai.wrappers.nam|aufx|sdNm"
 )

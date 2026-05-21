@@ -18,3 +18,9 @@
 
 # clap-wrapper CMake build outputs
 build-wrappers/
+
+# Local NAM reference clone — used during dev to inspect C++ inference,
+# not bundled or distributed. Re-clone with:
+#   git clone --depth 1 https://github.com/sdatkinson/NeuralAmpModelerCore \
+#       tools/nam-reference/NeuralAmpModelerCore
+tools/nam-reference/

@@ -101,16 +101,16 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Mode", |ui| {
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_MODE],
+                    &PARAMS[P_MODE],
+                    &MODE_NAMES,
+                    &state.shared.dirty_params[P_MODE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_MODE,
+                );
                 let cur = state.shared.params[P_MODE].load(Ordering::Relaxed).round() as i32;
-                ui.horizontal(|ui| {
-                    for (i, name) in MODE_NAMES.iter().enumerate() {
-                        let selected = cur == i as i32;
-                        if ui.selectable_label(selected, *name).clicked() {
-                            state.shared.params[P_MODE].store(i as f32, Ordering::Relaxed);
-                            state.shared.dirty_params[P_MODE].store(true, Ordering::Relaxed);
-                        }
-                    }
-                });
                 ui.label(
                     egui::RichText::new(match cur {
                         1 => "L/R in → L=Mid, R=Side out (insert before mastering chain)",

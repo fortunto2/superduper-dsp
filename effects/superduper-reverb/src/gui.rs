@@ -112,10 +112,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DECAY], &PARAMS[P_DECAY], &state.shared.dirty_params[P_DECAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DECAY);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DAMP], &PARAMS[P_DAMP], &state.shared.dirty_params[P_DAMP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DAMP);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_PREDELAY], &PARAMS[P_PREDELAY], &state.shared.dirty_params[P_PREDELAY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PREDELAY);
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_PD_SYNC], &PARAMS[P_PD_SYNC], &state.shared.dirty_params[P_PD_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PD_SYNC);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_PD_SYNC], &PARAMS[P_PD_SYNC], &state.shared.dirty_params[P_PD_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PD_SYNC);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_PD_DIV], &PARAMS[P_PD_DIV], &state.shared.dirty_params[P_PD_DIV], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_PD_DIV);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MOD], &PARAMS[P_MOD], &state.shared.dirty_params[P_MOD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MOD);
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_FREEZE], &PARAMS[P_FREEZE], &state.shared.dirty_params[P_FREEZE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_FREEZE);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_FREEZE], &PARAMS[P_FREEZE], &state.shared.dirty_params[P_FREEZE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_FREEZE);
             });
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);

@@ -28,6 +28,11 @@ across the family.
 | **Vocal** | restoration | Split-band de-esser + ratio-detector de-clicker tuned for rap/spoken word. |
 | **Chorus** | modulation | Multi-tap modulated delay with band-named factory presets (Joy Division Atmosphere → Cocteau Twins shimmer → Vangelis Blade Runner CS-80 lushness). |
 | **Looper** | live performance | Mobius-style 4-track live looper, 60 s/track, host-BPM sync with bar-aligned quantize, per-track Feedback for tape-style overdub decay, MIDI CC control for hands-free hardware triggering. |
+| **Filter** | sweep / motion | Multi-mode resonant (LP/HP/BP/Notch) + Drive (Tanh/Tape/Tube) + LFO (free + tempo sync) + Env Follow. Designed for Daft-Punk style filter sweeps on the master bus. |
+| **MidSide** | stereo width | L/R ↔ M/S encode/decode + per-channel Mid/Side gain + Width. Three modes: in-place Width, Encode →, ← Decode for inserting M/S processors. |
+| **LinEq** | mastering EQ | Linear-phase 3-band FIR (~21 ms latency reported to host PDC). Same RBJ biquad target curve, then iFFT-designed symmetric 2048-tap kernel + circular-history convolution. |
+| **Soothe** | resonance suppressor | 24-band log-spaced filter bank measures per-band envelopes; baseline = mean of 4 neighbours; bands above baseline + Sensitivity get a dynamic peaking-EQ cut. Tames rolled-r resonances, harsh `s`/`sh`, mud peaks. Soft/Sharp/Hard modes. |
+| **NAM** | neural amp modeler | Pure-Rust port of Steven Atkinson's [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) inference. Loads community `.nam` files (WaveNet / LSTM / Linear). In-plugin library browser: drag-and-drop import, URL download, prev/next arrows, filter, delete, in-app links to ToneHunt / Tone3000 / NAM Hub. |
 
 ### Instruments
 
@@ -40,7 +45,7 @@ across the family.
 | **Drum** | drum machine | 6 analog-synthesis voices — Kick / Snare / HH closed / HH open / Clap / Cowbell on consecutive white keys C-D-E-F-G-A. On-screen mini-keyboard hint, mouse-click pads, MIDI passthrough so a single MIDI clip can drive both Drum and bass (Wave/Kubyz) layered. |
 | **Sampler** | polyphonic WAV player | Recursive `~/Music/SuperDuper Samples/` scan with subfolder pack picker, configurable root folders persisted to disk. Per-voice multi-mode TPT/ZDF SVF filter (LP/HP/BP/Notch) with `Env→Cutoff` modulation, Reverse playback (one-shot), Velocity→Amp/Cutoff, click-to-audition on the waveform. YIN-style pitch tuner shows the sample's native note + cents + the played note after Tune/Fine, with `→ Root` button to snap Root to the detected pitch. |
 
-All seventeen share:
+All twenty-three share:
 
 - **Sidechain ports** wherever it makes sense (Reverb, Supermass, Delay,
   Saturator, Compressor). Classic use case — route plugin on an aux/send,

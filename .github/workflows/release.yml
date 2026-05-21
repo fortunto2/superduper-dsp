@@ -66,7 +66,11 @@ jobs:
             -p superduper-drum \
             -p superduper-sampler \
             -p superduper-looper \
-            -p superduper-filter
+            -p superduper-filter \
+            -p superduper-midside \
+            -p superduper-lineq \
+            -p superduper-soothe \
+            -p superduper-nam
 
       - name: Run tests
         run: |
@@ -89,6 +93,10 @@ jobs:
             -p superduper-sampler \
             -p superduper-looper \
             -p superduper-filter \
+            -p superduper-midside \
+            -p superduper-lineq \
+            -p superduper-soothe \
+            -p superduper-nam \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -116,7 +124,11 @@ jobs:
               "superduper_drum|SuperDuperDrum|co.superduperai.drum" \
               "superduper_sampler|SuperDuperSampler|co.superduperai.sampler" \
               "superduper_looper|SuperDuperLooper|co.superduperai.looper" \
-              "superduper_filter|SuperDuperFilter|co.superduperai.filter"
+              "superduper_filter|SuperDuperFilter|co.superduperai.filter" \
+              "superduper_midside|SuperDuperMidSide|co.superduperai.midside" \
+              "superduper_lineq|SuperDuperLineq|co.superduperai.lineq" \
+              "superduper_soothe|SuperDuperSoothe|co.superduperai.soothe" \
+              "superduper_nam|SuperDuperNam|co.superduperai.nam"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -150,7 +162,9 @@ jobs:
               SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
               SuperDuperPad.clap SuperDuperVocal.clap SuperDuperWave.clap \
               SuperDuperKubyz.clap SuperDuperChorus.clap SuperDuperDrum.clap \
-              SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap)
+              SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap \
+              SuperDuperMidSide.clap SuperDuperLineq.clap SuperDuperSoothe.clap \
+              SuperDuperNam.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -250,7 +264,11 @@ jobs:
             -p superduper-drum `
             -p superduper-sampler `
             -p superduper-looper `
-            -p superduper-filter
+            -p superduper-filter `
+            -p superduper-midside `
+            -p superduper-lineq `
+            -p superduper-soothe `
+            -p superduper-nam
 
       - name: Run tests
         run: |
@@ -273,6 +291,10 @@ jobs:
             -p superduper-sampler `
             -p superduper-looper `
             -p superduper-filter `
+            -p superduper-midside `
+            -p superduper-lineq `
+            -p superduper-soothe `
+            -p superduper-nam `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -299,7 +321,11 @@ jobs:
             @{ dll = "superduper_drum.dll";       name = "SuperDuperDrum" },
             @{ dll = "superduper_sampler.dll";    name = "SuperDuperSampler" },
             @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" },
-            @{ dll = "superduper_filter.dll";     name = "SuperDuperFilter" }
+            @{ dll = "superduper_filter.dll";     name = "SuperDuperFilter" },
+            @{ dll = "superduper_midside.dll";    name = "SuperDuperMidSide" },
+            @{ dll = "superduper_lineq.dll";      name = "SuperDuperLineq" },
+            @{ dll = "superduper_soothe.dll";     name = "SuperDuperSoothe" },
+            @{ dll = "superduper_nam.dll";        name = "SuperDuperNam" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"

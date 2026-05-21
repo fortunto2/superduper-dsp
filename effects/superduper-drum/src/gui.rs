@@ -111,7 +111,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         core_gui::section(ui, "Master", |ui| {
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRIVE);
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_MASTER], &PARAMS[P_MASTER], &state.shared.dirty_params[P_MASTER], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MASTER);
-            core_gui::dirty_param_row_g(ui, &state.shared.params[P_NOTE_OUT], &PARAMS[P_NOTE_OUT], &state.shared.dirty_params[P_NOTE_OUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_NOTE_OUT);
+            core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_NOTE_OUT], &PARAMS[P_NOTE_OUT], &state.shared.dirty_params[P_NOTE_OUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_NOTE_OUT);
             ui.label(egui::RichText::new("Tip: send bass notes (outside C1-A1) to drive Wave/Kubyz on a chained synth track.")
                 .color(core_gui::GREEN_DIM).monospace().small());
         });

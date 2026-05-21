@@ -13,6 +13,7 @@ pub mod dsp_blocks;
 pub mod formant;
 pub mod linphase;
 pub mod loudness;
+pub mod nam;
 pub mod pitch;
 pub mod supermass;
 pub mod user_preset;

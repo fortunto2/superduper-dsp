@@ -716,6 +716,358 @@ pub fn dirty_param_row_g(
     });
 }
 
+/// Toggle row: LED-style on/off button instead of a slider, for params
+/// that are really booleans (Ess Listen, Plos On, Hum On, ...). Atomic
+/// holds 0.0 = off, 1.0 = on. `def.name` is used as the row label.
+///
+/// Variants:
+/// - `toggle_row` — paint only, no host plumbing
+/// - `dirty_toggle_row` — mark dirty on click so host automation records
+/// - `dirty_toggle_row_g` — also fires CLAP gesture Begin/End
+pub fn toggle_row(ui: &mut egui::Ui, atom: &AtomicF32, def: &ParamDef) -> egui::Response {
+    let name = std::str::from_utf8(def.name)
+        .unwrap_or("?")
+        .trim_end_matches('\0');
+    let mut on = atom.load(Ordering::Relaxed) >= 0.5;
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized(
+                [90.0, 18.0],
+                egui::Label::new(egui::RichText::new(name).color(GREEN).monospace()),
+            );
+            let label = if on { "[●] ON " } else { "[ ] OFF" };
+            ui.selectable_label(on, egui::RichText::new(label).color(GREEN).monospace())
+        })
+        .inner;
+    if resp.clicked() {
+        on = !on;
+        atom.store(if on { 1.0 } else { 0.0 }, Ordering::Relaxed);
+    }
+    resp
+}
+
+pub fn dirty_toggle_row(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+) {
+    let before = atom.load(Ordering::Relaxed);
+    toggle_row(ui, atom, def);
+    let after = atom.load(Ordering::Relaxed);
+    if (after - before).abs() > 1e-9 {
+        dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn dirty_toggle_row_g(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    dirty: &AtomicBool,
+    gesture: GestureBridge<'_>,
+    param_idx: usize,
+) {
+    let before = atom.load(Ordering::Relaxed);
+    let resp = toggle_row(ui, atom, def);
+    let after = atom.load(Ordering::Relaxed);
+    if (after - before).abs() > 1e-9 {
+        dirty.store(true, Ordering::Relaxed);
+        // Toggle is a discrete step — pulse begin+end on the same frame
+        // so touch-automation latches close instantly.
+        if let Some(b) = gesture.begin.get(param_idx) {
+            b.store(true, Ordering::Relaxed);
+        }
+        if let Some(e) = gesture.end.get(param_idx) {
+            e.store(true, Ordering::Relaxed);
+        }
+    }
+    let _ = resp;
+}
+
+/// Choice row: radio buttons in a horizontal strip, one per option.
+/// Atomic stores the option index as f32 (0.0, 1.0, 2.0, ...).
+/// `options` labels are displayed left-to-right; the index is clamped
+/// to `options.len() - 1`. Use for enum-style params (Type, Mode, Curve,
+/// OS, Wave) instead of an opaque numeric slider.
+pub fn choice_row(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    options: &[&str],
+) -> bool {
+    let name = std::str::from_utf8(def.name)
+        .unwrap_or("?")
+        .trim_end_matches('\0');
+    let current = atom.load(Ordering::Relaxed).round() as i32;
+    let mut clicked: Option<usize> = None;
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [90.0, 18.0],
+            egui::Label::new(egui::RichText::new(name).color(GREEN).monospace()),
+        );
+        for (i, label) in options.iter().enumerate() {
+            let is_selected = current == i as i32;
+            let text = if is_selected {
+                format!("●{}", label)
+            } else {
+                format!("○{}", label)
+            };
+            if ui
+                .selectable_label(is_selected, egui::RichText::new(text).color(GREEN).monospace())
+                .clicked()
+            {
+                clicked = Some(i);
+            }
+        }
+    });
+    if let Some(i) = clicked {
+        atom.store(i as f32, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn dirty_choice_row(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    options: &[&str],
+    dirty: &AtomicBool,
+) {
+    if choice_row(ui, atom, def, options) {
+        dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn dirty_choice_row_g(
+    ui: &mut egui::Ui,
+    atom: &AtomicF32,
+    def: &ParamDef,
+    options: &[&str],
+    dirty: &AtomicBool,
+    gesture: GestureBridge<'_>,
+    param_idx: usize,
+) {
+    if choice_row(ui, atom, def, options) {
+        dirty.store(true, Ordering::Relaxed);
+        if let Some(b) = gesture.begin.get(param_idx) {
+            b.store(true, Ordering::Relaxed);
+        }
+        if let Some(e) = gesture.end.get(param_idx) {
+            e.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Render a clickable text "link" that opens `url` in the OS default
+/// browser. Best-effort — failures are silent (the URL is shown in the
+/// label so the user can copy it manually).
+pub fn link_button(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Response {
+    let resp = ui.selectable_label(
+        false,
+        egui::RichText::new(label).color(GREEN_BRIGHT).monospace().underline(),
+    );
+    if resp.clicked() {
+        open_url(url);
+    }
+    resp.on_hover_text(url)
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+/// Render a collapsible Help block. Pass a list of `(heading, body)`
+/// sections — each renders as a sub-heading inside the collapsing area.
+/// Use this for in-plugin documentation so the user never has to leave
+/// the DAW to read a manual.
+///
+/// `id` must be unique across the plugin (it's the egui persistent ID
+/// salt for the open/closed state).
+pub fn help_block(ui: &mut egui::Ui, id: &str, sections: &[(&str, &str)]) {
+    egui::CollapsingHeader::new(
+        egui::RichText::new("? help").color(GREEN_BRIGHT).monospace(),
+    )
+    .id_salt(id)
+    .default_open(false)
+    .show(ui, |ui| {
+        for (heading, body) in sections {
+            if !heading.is_empty() {
+                ui.label(
+                    egui::RichText::new(*heading)
+                        .color(GREEN_BRIGHT)
+                        .monospace()
+                        .strong(),
+                );
+            }
+            ui.label(
+                egui::RichText::new(*body)
+                    .color(GREEN)
+                    .monospace()
+                    .small(),
+            );
+            ui.add_space(4.0);
+        }
+    });
+}
+
+/// Same as `help_block` but each section can also carry a list of
+/// `(label, url)` link buttons rendered under its body — useful for
+/// the NAM plugin where the help text points at community sites the
+/// user can click straight into.
+pub fn help_block_with_links(
+    ui: &mut egui::Ui,
+    id: &str,
+    sections: &[(&str, &str, &[(&str, &str)])],
+) {
+    egui::CollapsingHeader::new(
+        egui::RichText::new("? help").color(GREEN_BRIGHT).monospace(),
+    )
+    .id_salt(id)
+    .default_open(false)
+    .show(ui, |ui| {
+        for (heading, body, links) in sections {
+            if !heading.is_empty() {
+                ui.label(
+                    egui::RichText::new(*heading)
+                        .color(GREEN_BRIGHT)
+                        .monospace()
+                        .strong(),
+                );
+            }
+            if !body.is_empty() {
+                ui.label(
+                    egui::RichText::new(*body)
+                        .color(GREEN)
+                        .monospace()
+                        .small(),
+                );
+            }
+            if !links.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for (label, url) in *links {
+                        link_button(ui, label, url);
+                    }
+                });
+            }
+            ui.add_space(4.0);
+        }
+    });
+}
+
+/// Vertical pointer overlay for an existing spectrum strip. Draws a
+/// dashed vertical line at `freq_hz` (log-mapped to the strip's rect)
+/// with a caption above showing the frequency and a gain-reduction
+/// reading. Use after `draw_spectrum_strip` so it paints on top.
+///
+/// Frequency mapping mirrors `draw_spectrum_strip` (20 Hz .. 20 kHz log).
+pub fn draw_spectrum_marker(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    freq_hz: f32,
+    gr_db: f32,
+) {
+    draw_spectrum_marker_colored(ui, rect, label, freq_hz, gr_db, GREEN_BRIGHT, true);
+}
+
+fn freq_to_x(freq_hz: f32, rect: egui::Rect) -> f32 {
+    let f = freq_hz.clamp(20.0, 20_000.0);
+    let t = (f.log10() - 20f32.log10()) / (20_000f32.log10() - 20f32.log10());
+    rect.left() + t * rect.width()
+}
+
+/// Same as `draw_spectrum_marker` but with explicit colour + optional readout.
+/// Set `show_db = false` when the marker is just a position indicator
+/// (e.g. plosive HPF cutoff or hum harmonics) without a live GR value.
+pub fn draw_spectrum_marker_colored(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    freq_hz: f32,
+    gr_db: f32,
+    color: egui::Color32,
+    show_db: bool,
+) {
+    let x = freq_to_x(freq_hz, rect);
+    let painter = ui.painter_at(rect);
+    // Dashed line
+    let dash_h = 6.0;
+    let gap = 4.0;
+    let mut y = rect.top();
+    while y < rect.bottom() {
+        let y2 = (y + dash_h).min(rect.bottom());
+        painter.line_segment(
+            [egui::pos2(x, y), egui::pos2(x, y2)],
+            egui::Stroke::new(1.5, color),
+        );
+        y = y2 + gap;
+    }
+    // Caption above the line, anchored so it doesn't fall off the edge
+    let f_text = if show_db {
+        if freq_hz >= 1000.0 {
+            format!("{} {:.1}k · {:.1} dB", label, freq_hz / 1000.0, gr_db)
+        } else {
+            format!("{} {:.0} Hz · {:.1} dB", label, freq_hz, gr_db)
+        }
+    } else if freq_hz >= 1000.0 {
+        format!("{} {:.1}k", label, freq_hz / 1000.0)
+    } else {
+        format!("{} {:.0} Hz", label, freq_hz)
+    };
+    let anchor = if x > rect.right() - 80.0 {
+        egui::Align2::RIGHT_TOP
+    } else {
+        egui::Align2::LEFT_TOP
+    };
+    painter.text(
+        egui::pos2(x + 4.0, rect.top() + 2.0),
+        anchor,
+        f_text,
+        egui::FontId::monospace(11.0),
+        color,
+    );
+}
+
+/// Highlight a frequency band on a spectrum strip — translucent fill from
+/// `f_lo` to `f_hi`, useful for visualising EQ cut zones (Ess Range,
+/// Plos HPF, Lo body cut). Paint BEFORE `draw_spectrum_marker_colored`
+/// so the line + caption render on top.
+pub fn draw_spectrum_band_overlay(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    f_lo: f32,
+    f_hi: f32,
+    fill: egui::Color32,
+) {
+    let x_lo = freq_to_x(f_lo, rect);
+    let x_hi = freq_to_x(f_hi, rect);
+    if x_hi <= x_lo {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let band = egui::Rect::from_min_max(
+        egui::pos2(x_lo, rect.top()),
+        egui::pos2(x_hi, rect.bottom()),
+    );
+    painter.rect_filled(band, 0.0, fill);
+}
+
 // ---------------------------------------------------------------------------
 // Resize bridge — main thread (CLAP `set_size`) → GUI thread (queue.resize)
 // ---------------------------------------------------------------------------

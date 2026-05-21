@@ -127,6 +127,12 @@ pub const PARAMS: &[ParamDef] = &[
     // and amount precisely without guessing. Mastering workflow:
     // turn on, find the harshest setting, turn off, leave threshold.
     ParamDef { id: 21, name: b"Ess Listen", min: 0.0,  max: 1.0,     default: 0.0,   unit: ""   },
+    // Sub mode — when ON, only the de-esser core runs. Plosive Killer,
+    // Hum Remover, De-Clicker, and the Lo body cut are bypassed even if
+    // their toggles say otherwise. Use when chaining a second Vocal
+    // instance as a "Sib 2" band so it doesn't double-process the
+    // shared cleanup stages above it.
+    ParamDef { id: 22, name: b"Sub Mode", min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
 ];
 
 pub const P_ESS_THR: usize = 0;
@@ -151,6 +157,7 @@ pub const P_HUM_FREQ: usize = 18;
 pub const P_HUM_STR: usize = 19;
 pub const P_ESS_TRACK: usize = 20;
 pub const P_ESS_LISTEN: usize = 21;
+pub const P_SUB_MODE: usize = 22;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -173,6 +180,11 @@ pub struct SharedParamsInner {
     pub ess_gr_db: AtomicF32,
     /// Latest de-click GR in dB (negative or zero). Block-rate.
     pub click_gr_db: AtomicF32,
+    /// Frequency the de-esser is currently steering toward (Hz).
+    /// With Ess Track off this is the Ess Freq param; with Ess Track
+    /// on it follows the 5/7.5 kHz energy ratio. GUI reads this to
+    /// paint a vertical pointer over the spectrum strip.
+    pub tracked_freq_hz: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -193,6 +205,7 @@ impl PluginShared {
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 ess_gr_db: AtomicF32::new(0.0),
                 click_gr_db: AtomicF32::new(0.0),
+                tracked_freq_hz: AtomicF32::new(6000.0),
             }),
         }
     }
@@ -465,6 +478,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let hum_str_t = self.shared.params[P_HUM_STR].load(Ordering::Relaxed);
         let ess_track = self.shared.params[P_ESS_TRACK].load(Ordering::Relaxed) >= 0.5;
         let ess_listen = self.shared.params[P_ESS_LISTEN].load(Ordering::Relaxed) >= 0.5;
+        // Sub mode masks everything except the de-esser core. Done in
+        // the audio thread so the user's actual param values are left
+        // intact (toggling Sub off restores their previous setup).
+        let sub_mode = self.shared.params[P_SUB_MODE].load(Ordering::Relaxed) >= 0.5;
+        let (plos_on, hum_on, lo_amt_t, clk_amt_t) = if sub_mode {
+            (false, false, 0.0, 0.0)
+        } else {
+            (plos_on, hum_on, lo_amt_t, clk_amt_t)
+        };
 
         // Snapshot the sidechain (port 1) into our scratch buffers if
         // the user wants external keying. If the SC port is unrouted
@@ -567,6 +589,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         self.shared.ess_gr_db.store(max_ess_gr_db, Ordering::Relaxed);
         self.shared.click_gr_db.store(max_click_gr_db, Ordering::Relaxed);
+        self.shared
+            .tracked_freq_hz
+            .store(self.track_freq_smoothed, Ordering::Relaxed);
 
         Ok(ProcessStatus::Continue)
     }
@@ -703,7 +728,13 @@ fn step_sample(
         p.track_freq_smoothed = target + (p.track_freq_smoothed - target) * coef;
         p.track_freq_smoothed
     } else {
-        ess_freq
+        // Tracking off — pull the smoother toward the static knob so
+        // the GUI pointer animates instead of jumping when tracking is
+        // re-enabled, and so a static "where is the cut" readout still
+        // reflects the param.
+        let coef = (-1.0 / (0.008 * sr)).exp();
+        p.track_freq_smoothed = ess_freq + (p.track_freq_smoothed - ess_freq) * coef;
+        p.track_freq_smoothed
     };
     if (effective_ess_freq - p.ess_freq_state).abs() > 5.0 {
         p.ess_hpf_l.set_hpf(sr, effective_ess_freq, 0.707);

@@ -98,7 +98,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         ui.add_space(8.0);
         core_gui::section(ui, "Master", |ui| {
-            core_gui::dirty_param_row_g(ui, &state.shared.params[P_SYNC], &PARAMS[P_SYNC], &state.shared.dirty_params[P_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_SYNC);
+            core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_SYNC], &PARAMS[P_SYNC], &state.shared.dirty_params[P_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_SYNC);
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_BARS], &PARAMS[P_BARS], &state.shared.dirty_params[P_BARS], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_BARS);
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRY], &PARAMS[P_DRY], &state.shared.dirty_params[P_DRY], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRY);
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_MASTER], &PARAMS[P_MASTER], &state.shared.dirty_params[P_MASTER], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MASTER);

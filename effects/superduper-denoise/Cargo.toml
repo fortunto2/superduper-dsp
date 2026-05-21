@@ -1,0 +1,10 @@
+[package]
+name = "superduper-denoise"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Neural noise / breath suppressor — RNNoise or nnnoiseless inference. STUB — implementation pending."
+
+[lib]
+name = "superduper_denoise"
+crate-type = ["rlib"]

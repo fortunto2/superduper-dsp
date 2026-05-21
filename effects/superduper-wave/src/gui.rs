@@ -1467,7 +1467,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Filter", |ui| {
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], &state.shared.midi_learn, P_CUTOFF, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_RESONANCE], &PARAMS[P_RESONANCE], &state.shared.dirty_params[P_RESONANCE], &state.shared.midi_learn, P_RESONANCE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
-                core_gui::learn_param_row_g(ui, &state.shared.params[P_FILTER_MODE], &PARAMS[P_FILTER_MODE], &state.shared.dirty_params[P_FILTER_MODE], &state.shared.midi_learn, P_FILTER_MODE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
+                const WAVE_FILTER_NAMES: [&str; 3] = ["LP", "HP", "BP"];
+                core_gui::dirty_choice_row_g(ui, &state.shared.params[P_FILTER_MODE], &PARAMS[P_FILTER_MODE], &WAVE_FILTER_NAMES, &state.shared.dirty_params[P_FILTER_MODE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_FILTER_MODE);
                 core_gui::learn_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], &state.shared.midi_learn, P_DRIVE, core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end });
             });
             core_gui::section(ui, "Filter Envelope", |ui| {
@@ -1533,6 +1534,49 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         .store(if aa_on { 1.0 } else { 0.0 }, Ordering::Relaxed);
                 }
             });
+            core_gui::help_block(
+                ui,
+                "wave_help",
+                &[
+                    (
+                        "Wavetables",
+                        "Multi-frame storage: 1..16 frames per table. `WT Pos` morphs \
+                         linearly between adjacent frames so you can sweep the whole \
+                         set with one knob (or a CC, or an envelope). Edit the active \
+                         frame by clicking + dragging the curve; the wavetable updates \
+                         the next time the voice reads.",
+                    ),
+                    (
+                        "Smart WAV import",
+                        "Drop a WAV onto `Open WAV` — the importer pitch-detects (YIN), \
+                         finds a clean cycle, normalises, and slots it as frame_a. \
+                         Multi-frame: pick N=8 / 16 to extract N evenly-spaced cycles \
+                         from the file → a morphing table out of a vocal recording, a \
+                         talkbox, or a Cassette808 kit.",
+                    ),
+                    (
+                        "Serum-style export",
+                        "`Save .wav` writes a single-cycle WAV when N=1, or a stitched \
+                         N×WT_SIZE file when N≥2 — loadable directly in Serum, Vital, \
+                         Phase Plant. The companion .json preserves the synth state \
+                         so you can round-trip patches.",
+                    ),
+                    (
+                        "Transforms",
+                        "11 one-click curves derived from the current frame: Mirror, \
+                         Invert (phase-only — sound identical to ear but flip the wave). \
+                         Octave±, Smooth, Bright, Phaser, Fold, Crush, Skew, S+H (audibly \
+                         distinct). Stackable + Undo/Redo. Use `wave-inspect` CLI to see \
+                         spectral diffs per transform.",
+                    ),
+                    (
+                        "CC mapping",
+                        "Right-click any knob → MIDI Learn. Pre-mapped defaults: \
+                         CC 1 → LFO Depth, CC 11 → Cutoff, CC 71 → Resonance, CC 74 → \
+                         WT Pos. Channel Aftertouch → LFO Depth.",
+                    ),
+                ],
+            );
         });
     });
 }

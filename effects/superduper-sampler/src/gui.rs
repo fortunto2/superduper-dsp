@@ -443,7 +443,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_TRIM_END], &PARAMS[P_TRIM_END], &state.shared.dirty_params[P_TRIM_END], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TRIM_END);
             });
             core_gui::section(ui, "Loop", |ui| {
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOP], &PARAMS[P_LOOP], &state.shared.dirty_params[P_LOOP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOP);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_LOOP], &PARAMS[P_LOOP], &state.shared.dirty_params[P_LOOP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOP);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOP_START], &PARAMS[P_LOOP_START], &state.shared.dirty_params[P_LOOP_START], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOP_START);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOP_END], &PARAMS[P_LOOP_END], &state.shared.dirty_params[P_LOOP_END], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOP_END);
             });
@@ -456,26 +456,23 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Filter", |ui| {
                 // Filter type as a 5-state selector with named options
                 // — easier to read than a numeric slider stepping 0..4.
-                let cur_ft = state.shared.params[P_FILTER_TYPE].load(Ordering::Relaxed).round() as i32;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Type").color(core_gui::GREEN).monospace());
-                    for (val, label) in [(0, "Off"), (1, "LP"), (2, "HP"), (3, "BP"), (4, "Notch")] {
-                        let selected = cur_ft == val;
-                        if ui.selectable_label(selected, label).clicked() {
-                            state.shared.params[P_FILTER_TYPE].store(val as f32, Ordering::Relaxed);
-                            state.shared.dirty_params[P_FILTER_TYPE].store(true, Ordering::Relaxed);
-                        }
-                    }
-                    // Live readout of the actual cutoff in Hz, computed
-                    // off the same units→Hz mapping the audio thread uses.
-                    let hz = cutoff_units_to_hz(state.shared.params[P_CUTOFF].load(Ordering::Relaxed));
-                    let label = if hz < 1000.0 {
-                        format!("@ {:.0} Hz", hz)
-                    } else {
-                        format!("@ {:.2} kHz", hz / 1000.0)
-                    };
-                    ui.label(egui::RichText::new(label).color(core_gui::GREEN_DIM).monospace().small());
-                });
+                const FILTER_NAMES: [&str; 5] = ["Off", "LP", "HP", "BP", "Notch"];
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_FILTER_TYPE],
+                    &PARAMS[P_FILTER_TYPE],
+                    &FILTER_NAMES,
+                    &state.shared.dirty_params[P_FILTER_TYPE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_FILTER_TYPE,
+                );
+                let hz = cutoff_units_to_hz(state.shared.params[P_CUTOFF].load(Ordering::Relaxed));
+                let label = if hz < 1000.0 {
+                    format!("@ {:.0} Hz", hz)
+                } else {
+                    format!("@ {:.2} kHz", hz / 1000.0)
+                };
+                ui.label(egui::RichText::new(label).color(core_gui::GREEN_DIM).monospace().small());
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CUTOFF);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RESO], &PARAMS[P_RESO], &state.shared.dirty_params[P_RESO], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RESO);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ENV_CUTOFF], &PARAMS[P_ENV_CUTOFF], &state.shared.dirty_params[P_ENV_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ENV_CUTOFF);
@@ -485,23 +482,56 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_VEL_CUTOFF], &PARAMS[P_VEL_CUTOFF], &state.shared.dirty_params[P_VEL_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_VEL_CUTOFF);
             });
             core_gui::section(ui, "Playback", |ui| {
-                // Reverse as a labelled selectable button — clearer
-                // than a 0..1 slider for a binary toggle.
-                let reversed = state.shared.params[P_REVERSE].load(Ordering::Relaxed) >= 0.5;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Reverse").color(core_gui::GREEN).monospace());
-                    if ui.selectable_label(reversed,
-                        if reversed { "ON  (◀ play backwards)" } else { "off  (▶ play forwards)" }
-                    ).clicked() {
-                        let v = if reversed { 0.0 } else { 1.0 };
-                        state.shared.params[P_REVERSE].store(v, Ordering::Relaxed);
-                        state.shared.dirty_params[P_REVERSE].store(true, Ordering::Relaxed);
-                    }
-                });
+                core_gui::dirty_toggle_row_g(
+                    ui,
+                    &state.shared.params[P_REVERSE],
+                    &PARAMS[P_REVERSE],
+                    &state.shared.dirty_params[P_REVERSE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_REVERSE,
+                );
             });
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_OUTPUT);
             });
+            core_gui::help_block(
+                ui,
+                "sampler_help",
+                &[
+                    (
+                        "Sample folders",
+                        "Drop WAV files / packs into ~/Music/SuperDuper Samples/ or \
+                         ~/Music/Favorite 808s/. Recursive scan, max depth 4. Each \
+                         sub-folder shows up as a Pack in the dropdown. Free WAV \
+                         sources: Goldbaby Free Stuff, Hyperreal Music Machines \
+                         Roland archive (TR-808/909/606/707/Juno/SH-101).",
+                    ),
+                    (
+                        "Pitch",
+                        "Root note is auto-detected by YIN on import (or pick manually). \
+                         Tune / Fine offset the pitch in semitones / cents. Playback rate \
+                         is computed from `(MIDI note - Root) + Tune + Fine/100`.",
+                    ),
+                    (
+                        "Loop region",
+                        "Click + drag the green/orange markers on the waveform to set \
+                         Loop Start / Loop End. Loop toggle wraps playback inside the \
+                         region after the initial attack. Reverse plays the entire \
+                         sample backwards (loop region still respected).",
+                    ),
+                    (
+                        "Filter",
+                        "5-mode SVF: Off / LP / HP / BP / Notch. Cutoff in display Hz, \
+                         Resonance up to self-oscillation, Env Cutoff modulates from \
+                         the amp envelope so a `Vel→Cutoff` swell is one knob away.",
+                    ),
+                    (
+                        "Velocity",
+                        "Vel→Amp scales note loudness with MIDI velocity (1 = full, \
+                         0 = ignore). Combine with Vel→Cutoff for natural drum dynamics.",
+                    ),
+                ],
+            );
         });
     });
 }

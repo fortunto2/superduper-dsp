@@ -193,6 +193,7 @@ dependencies = [
  "raw-window-handle 0.6.2",
  "serde",
  "serde_repr",
+ "tokio",
  "url",
  "wayland-backend",
  "wayland-client",
@@ -2255,6 +2256,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nam-test"
+version = "0.1.0"
+dependencies = [
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "ndk"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3773,6 +3781,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-denoise"
+version = "0.0.1"
+
+[[package]]
 name = "superduper-drum"
 version = "0.2.0"
 dependencies = [
@@ -4015,6 +4027,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-nam"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "rfd",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-pad"
 version = "0.1.0"
 dependencies = [
@@ -4074,6 +4106,25 @@ dependencies = [
 [[package]]
 name = "superduper-saturator"
 version = "0.2.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
+name = "superduper-soothe"
+version = "0.1.0"
 dependencies = [
  "atomic_float",
  "baseview",
@@ -4519,6 +4570,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -5713,6 +5765,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid 1.23.1",

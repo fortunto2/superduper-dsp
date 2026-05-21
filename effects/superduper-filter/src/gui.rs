@@ -110,72 +110,64 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Filter", |ui| {
-                // Type selector — clearer as labelled buttons than a 0..3 slider.
-                let cur_type = state.shared.params[P_TYPE].load(Ordering::Relaxed).round() as i32;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Type").color(core_gui::GREEN).monospace());
-                    for (i, name) in TYPE_NAMES.iter().enumerate() {
-                        let selected = cur_type == i as i32;
-                        if ui.selectable_label(selected, *name).clicked() {
-                            state.shared.params[P_TYPE].store(i as f32, Ordering::Relaxed);
-                            state.shared.dirty_params[P_TYPE].store(true, Ordering::Relaxed);
-                        }
-                    }
-                    // Live cutoff readout in Hz/kHz.
-                    let hz = cutoff_units_to_hz(state.shared.params[P_CUTOFF].load(Ordering::Relaxed));
-                    let label = if hz < 1000.0 {
-                        format!("@ {:.0} Hz", hz)
-                    } else {
-                        format!("@ {:.2} kHz", hz / 1000.0)
-                    };
-                    ui.label(egui::RichText::new(label).color(core_gui::GREEN_DIM).monospace().small());
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_TYPE],
+                    &PARAMS[P_TYPE],
+                    &TYPE_NAMES,
+                    &state.shared.dirty_params[P_TYPE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_TYPE,
+                );
+                // Live cutoff readout in Hz/kHz.
+                let hz = cutoff_units_to_hz(state.shared.params[P_CUTOFF].load(Ordering::Relaxed));
+                let label = if hz < 1000.0 {
+                    format!("@ {:.0} Hz", hz)
+                } else {
+                    format!("@ {:.2} kHz", hz / 1000.0)
+                };
+                ui.label(egui::RichText::new(label).color(core_gui::GREEN_DIM).monospace().small());
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_CUTOFF], &PARAMS[P_CUTOFF], &state.shared.dirty_params[P_CUTOFF], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CUTOFF);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RESO], &PARAMS[P_RESO], &state.shared.dirty_params[P_RESO], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RESO);
             });
 
             core_gui::section(ui, "Drive", |ui| {
-                // DriveType as a labelled selectable row.
-                let cur_drv = state.shared.params[P_DRV_TYPE].load(Ordering::Relaxed).round() as i32;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Mode").color(core_gui::GREEN).monospace());
-                    for (i, name) in DRV_NAMES.iter().enumerate() {
-                        let selected = cur_drv == i as i32;
-                        if ui.selectable_label(selected, *name).clicked() {
-                            state.shared.params[P_DRV_TYPE].store(i as f32, Ordering::Relaxed);
-                            state.shared.dirty_params[P_DRV_TYPE].store(true, Ordering::Relaxed);
-                        }
-                    }
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_DRV_TYPE],
+                    &PARAMS[P_DRV_TYPE],
+                    &DRV_NAMES,
+                    &state.shared.dirty_params[P_DRV_TYPE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_DRV_TYPE,
+                );
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRIVE);
             });
 
             core_gui::section(ui, "LFO", |ui| {
-                let cur_shp = state.shared.params[P_LFO_SHP].load(Ordering::Relaxed).round() as i32;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Shape").color(core_gui::GREEN).monospace());
-                    for (i, name) in SHAPE_NAMES.iter().enumerate() {
-                        let selected = cur_shp == i as i32;
-                        if ui.selectable_label(selected, *name).clicked() {
-                            state.shared.params[P_LFO_SHP].store(i as f32, Ordering::Relaxed);
-                            state.shared.dirty_params[P_LFO_SHP].store(true, Ordering::Relaxed);
-                        }
-                    }
-                });
-                // Sync toggle + Div label
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_LFO_SHP],
+                    &PARAMS[P_LFO_SHP],
+                    &SHAPE_NAMES,
+                    &state.shared.dirty_params[P_LFO_SHP],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_LFO_SHP,
+                );
+                core_gui::dirty_toggle_row_g(
+                    ui,
+                    &state.shared.params[P_LFO_SYNC],
+                    &PARAMS[P_LFO_SYNC],
+                    &state.shared.dirty_params[P_LFO_SYNC],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_LFO_SYNC,
+                );
                 let sync_on = state.shared.params[P_LFO_SYNC].load(Ordering::Relaxed) >= 0.5;
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(sync_on, "Sync (host BPM)").clicked() {
-                        let v = if sync_on { 0.0 } else { 1.0 };
-                        state.shared.params[P_LFO_SYNC].store(v, Ordering::Relaxed);
-                        state.shared.dirty_params[P_LFO_SYNC].store(true, Ordering::Relaxed);
-                    }
-                    if sync_on {
-                        let div = state.shared.params[P_LFO_DIV].load(Ordering::Relaxed).round() as u32;
-                        ui.label(egui::RichText::new(format!("Div: {}", sync_division_label(div)))
-                            .color(core_gui::GREEN_BRIGHT).monospace());
-                    }
-                });
+                if sync_on {
+                    let div = state.shared.params[P_LFO_DIV].load(Ordering::Relaxed).round() as u32;
+                    ui.label(egui::RichText::new(format!("Div: {}", sync_division_label(div)))
+                        .color(core_gui::GREEN_BRIGHT).monospace());
+                }
                 if sync_on {
                     core_gui::dirty_param_row_g(ui, &state.shared.params[P_LFO_DIV], &PARAMS[P_LFO_DIV], &state.shared.dirty_params[P_LFO_DIV], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LFO_DIV);
                 } else {
@@ -194,6 +186,39 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_OUTPUT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
             });
+            core_gui::help_block(
+                ui,
+                "filter_help",
+                &[
+                    (
+                        "Daft Punk-style sweep",
+                        "Master-bus filter built for resonant build-ups. Pick `LP` for \
+                         classic high-cut sweep, crank `Resonance` close to 1 for the \
+                         characteristic shriek, modulate `Cutoff` with LFO or by hand. \
+                         Drive adds dirt that lives well on a master.",
+                    ),
+                    (
+                        "Drive modes",
+                        "Tanh — soft symmetric saturation (clean overdrive). Tape — \
+                         asymmetric, adds 2nd-harmonic warmth. Tube — odd harmonics, \
+                         honk. Drive amount + Resonance interact: high drive softens the \
+                         resonant peak.",
+                    ),
+                    (
+                        "LFO sync",
+                        "Engage `Sync` to lock LFO Rate to host BPM via a tempo division \
+                         (1/1 down to 1/16t, with dotted + triplet variants). \
+                         Off = free-running rate in Hz. Shape: Sine / Tri / Square / Saw \
+                         / Random S+H.",
+                    ),
+                    (
+                        "Env Follow",
+                        "Sidechain-style envelope from the input signal modulates Cutoff. \
+                         Positive Env Dpt opens on transients (\"wah\" on drum hits). \
+                         Atk / Rel shape the follower curve.",
+                    ),
+                ],
+            );
         });
     });
 }

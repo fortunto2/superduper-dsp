@@ -105,27 +105,15 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             core_gui::section(ui, "Drive", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRIVE);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [90.0, 18.0],
-                        egui::Label::new(
-                            egui::RichText::new("Type").color(core_gui::GREEN).monospace(),
-                        ),
-                    );
-                    let cur = state.shared.params[P_TYPE].load(Ordering::Relaxed).round() as usize;
-                    let cur = cur.min(CURVE_NAMES.len() - 1);
-                    egui::ComboBox::from_id_salt("sat_type_combo")
-                        .selected_text(CURVE_NAMES[cur])
-                        .width(140.0)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in CURVE_NAMES.iter().enumerate() {
-                                if ui.selectable_label(cur == i, *name).clicked() {
-                                    state.shared.params[P_TYPE]
-                                        .store(i as f32, Ordering::Relaxed);
-                                }
-                            }
-                        });
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_TYPE],
+                    &PARAMS[P_TYPE],
+                    &CURVE_NAMES,
+                    &state.shared.dirty_params[P_TYPE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_TYPE,
+                );
             });
 
             core_gui::section(ui, "Tone", |ui| {
@@ -133,27 +121,15 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
 
             core_gui::section(ui, "Quality", |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [90.0, 18.0],
-                        egui::Label::new(
-                            egui::RichText::new("OS").color(core_gui::GREEN).monospace(),
-                        ),
-                    );
-                    let cur = state.shared.params[P_OS].load(Ordering::Relaxed).round() as usize;
-                    let cur = cur.min(OS_NAMES.len() - 1);
-                    egui::ComboBox::from_id_salt("sat_os_combo")
-                        .selected_text(OS_NAMES[cur])
-                        .width(100.0)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in OS_NAMES.iter().enumerate() {
-                                if ui.selectable_label(cur == i, *name).clicked() {
-                                    state.shared.params[P_OS]
-                                        .store(i as f32, Ordering::Relaxed);
-                                }
-                            }
-                        });
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_OS],
+                    &PARAMS[P_OS],
+                    &OS_NAMES,
+                    &state.shared.dirty_params[P_OS],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_OS,
+                );
             });
 
             core_gui::section(ui, "Output", |ui| {

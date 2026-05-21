@@ -616,7 +616,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                         "sync:  off  ·  free Hz".to_string()
                     });
                 });
-                dirty_param_row(ui, &state.shared, P_MOUTH_SYNC);
+                core_gui::dirty_toggle_row_g(
+                    ui,
+                    &state.shared.params[P_MOUTH_SYNC],
+                    &PARAMS[P_MOUTH_SYNC],
+                    &state.shared.dirty_params[P_MOUTH_SYNC],
+                    core_gui::GestureBridge {
+                        begin: &state.shared.gesture_begin,
+                        end: &state.shared.gesture_end,
+                    },
+                    P_MOUTH_SYNC,
+                );
                 dirty_param_row(ui, &state.shared, P_MOUTH_DIV);
             });
             core_gui::section(ui, "Timbre", |ui| {
@@ -632,6 +642,47 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Output", |ui| {
                 dirty_param_row(ui, &state.shared, P_OUTPUT);
             });
+            core_gui::help_block(
+                ui,
+                "kubyz_help",
+                &[
+                    (
+                        "What it is",
+                        "Physical-model jaw harp / khomus. 16-harmonic additive engine \
+                         shaped by a 3-band formant filter you drive with an IPA vowel \
+                         pad. Played by MIDI; pitch = drone note, articulation = mouth \
+                         trajectory.",
+                    ),
+                    (
+                        "Mouth pad (IPA)",
+                        "Drag the cursor on the vowel grid to morph between F1/F2/F3 \
+                         resonances of real vowel formants (Peterson-Barney male \
+                         averages). Snap targets: ɑ, ɛ, i, o, u. Different vowels = \
+                         different timbres on the same note.",
+                    ),
+                    (
+                        "Mouth motion",
+                        "Mouth Shape (Circle/Sine/Figure-8/Triangle/Line) defines the \
+                         trajectory of the auto-mouth motion. Mouth Rate sets speed \
+                         (or sync to host BPM with `M Sync`). Mouth Depth = how much \
+                         the trajectory moves through formant space. Mouth Stereo \
+                         pans the motion left/right for a wider field.",
+                    ),
+                    (
+                        "Presets",
+                        "Bashkir — folk khomus tuning, breathy. Khomus — Yakutian metal \
+                         jaw harp, hard timbre. Real-D2 — analysed from a real recording \
+                         in D2. Tweak with the Mouth pad first, formant gain second, \
+                         envelope last.",
+                    ),
+                    (
+                        "CC mapping",
+                        "CC 1 → Mouth Depth, CC 2 → Mouth Stereo, CC 11 → F1, CC 71 → \
+                         F3, CC 74 → F2. Send Modulation+Expression from a foot \
+                         controller for hands-free morphing while playing.",
+                    ),
+                ],
+            );
         });
     });
 }

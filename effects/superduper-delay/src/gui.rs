@@ -105,29 +105,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Time", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME], &PARAMS[P_TIME], &state.shared.dirty_params[P_TIME], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_WIDTH], &PARAMS[P_WIDTH], &state.shared.dirty_params[P_WIDTH], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_WIDTH);
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME_SYNC], &PARAMS[P_TIME_SYNC], &state.shared.dirty_params[P_TIME_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME_SYNC);
+                core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_TIME_SYNC], &PARAMS[P_TIME_SYNC], &state.shared.dirty_params[P_TIME_SYNC], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME_SYNC);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_TIME_DIV], &PARAMS[P_TIME_DIV], &state.shared.dirty_params[P_TIME_DIV], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TIME_DIV);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [90.0, 18.0],
-                        egui::Label::new(
-                            egui::RichText::new("Mode").color(core_gui::GREEN).monospace(),
-                        ),
-                    );
-                    let cur = state.shared.params[P_MODE].load(Ordering::Relaxed).round() as usize;
-                    let cur = cur.min(MODE_NAMES.len() - 1);
-                    egui::ComboBox::from_id_salt("delay_mode_combo")
-                        .selected_text(MODE_NAMES[cur])
-                        .width(140.0)
-                        .show_ui(ui, |ui| {
-                            for (i, name) in MODE_NAMES.iter().enumerate() {
-                                if ui.selectable_label(cur == i, *name).clicked() {
-                                    state.shared.params[P_MODE]
-                                        .store(i as f32, Ordering::Relaxed);
-                                }
-                            }
-                        });
-                });
+                core_gui::dirty_choice_row_g(
+                    ui,
+                    &state.shared.params[P_MODE],
+                    &PARAMS[P_MODE],
+                    &MODE_NAMES,
+                    &state.shared.dirty_params[P_MODE],
+                    core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
+                    P_MODE,
+                );
             });
 
             core_gui::section(ui, "Feedback", |ui| {

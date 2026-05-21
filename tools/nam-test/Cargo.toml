@@ -1,0 +1,13 @@
+[package]
+name = "nam-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Autotest harness for NAM model loading + inference. Scans ~/.superduper-dsp/nam/ (or a custom dir), loads each file, runs sine + impulse + DC + sweep probes, reports per-model summary, exits non-zero on any failure so CI can gate on it."
+
+[[bin]]
+name = "nam-test"
+path = "src/main.rs"
+
+[dependencies]
+superduper-synth-core = { path = "../../synth-core" }

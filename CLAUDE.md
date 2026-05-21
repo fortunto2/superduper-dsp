@@ -7,15 +7,17 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 13 plugins (9 effects + 4 instruments)
+## Current state — 23 plugins (17 effects + 6 instruments)
 
 **Effects (audio-in, audio-out):**
 
 - **superduper-reverb** — Dattorro figure-of-eight plate. Sidechain ducking.
 - **superduper-supermass** — Valhalla-style cascade (reverb 35m/15s →
   stereo chorus → reverb 50m/28s) on fundsp 0.23. Sidechain ducking.
-- **superduper-spectrum** — pass-through analyzer (Spectrum / Spectrogram
-  / Split view, 3 colour palettes).
+- **superduper-spectrum** — pass-through analyzer (Spectrum / Spectrogram /
+  Split view, 3 colour palettes) **+ BS.1770 LUFS-M/S/I meter + dBTP
+  true-peak monitoring** for mastering. K-weighted, gated per ITU-R
+  BS.1770-4. Live readings update every 100 ms.
 - **superduper-saturator** — Tape / Tube / Soft-tanh curves + Tilt EQ,
   2×/4× polyphase oversampling.
 - **superduper-delay** — 3rd-order Lagrange-interp delay, tape-style
@@ -25,28 +27,96 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   Clean/Pump/Smooth curves, Range + Hold params, oversampled ceiling clipper.
 - **superduper-eq** — 3-band parametric (low shelf + mid peak + high shelf)
   RBJ biquad + HP/LP, output trim.
+- **superduper-lineq** *(new)* — linear-phase 3-band mastering EQ via
+  FIR convolution. Same RBJ biquad target curve, then iFFT-designed
+  symmetric FIR (2048 taps, ~21 ms latency reported via CLAP latency
+  extension so PDC compensates).
 - **superduper-limiter** — lookahead brickwall, 4× true-peak detection
   on a sidechain upsampler, live GR meter.
-- **superduper-vocal** *(new)* — split-band de-esser + mouth de-clicker
-  tuned for rap vocals. 11th plugin.
+- **superduper-vocal** — 23-param vocal cleanup chain:
+  - Peaking-EQ de-esser (phase-coherent — replaced the previous
+    band-split design that suffered from phase mismatch and only cut
+    ~0.2 dB on sustained content; new architecture cuts 7 dB+).
+  - **Ess Track** — frequency-tracking cutoff steered by 5/7.5 kHz
+    bandpass energy ratio (Sibalance-style).
+  - **Ess Listen** — solo the cut signal for precise tuning.
+  - Lo-band peaking-EQ for body/plosive resonance.
+  - Plosive Killer (sub-200 Hz transient detector → dynamic HPF cut).
+  - Hum Remover (50/60 Hz + 5 harmonics adaptive notch bank).
+  - De-clicker (ratio short-env / long-env detection).
+  - **Sub Mode** — masks Plos / Hum / Clk / Lo so a second chained
+    Vocal instance can be a pure de-esser (2-band Sib 1 + Sib 2
+    workflow via presets, FabFilter Pro-DS style).
+  - **Spectrum tracker pointer + Range/Plos/Hum overlays** — colour-
+    coded markers show exactly which frequencies each stage touches.
+- **superduper-chorus** — multi-tap modulated delay, band-named factory
+  presets.
+- **superduper-looper** — Mobius-style 4-track live looper with host-BPM sync.
+- **superduper-filter** — multi-mode resonant filter (LP/HP/BP/Notch)
+  with Drive (Tanh/Tape/Tube), LFO (free + tempo sync), Env Follow.
+  Designed for Daft Punk-style filter sweeps on the master bus.
+- **superduper-midside** — stereo width + mid/side per-channel
+  gain via L-R sum/difference matrix. Three modes: Width (process
+  in-place), Encode → (split L/R to M/S for inserting a stereo
+  processor between), ← Decode.
+- **superduper-soothe** *(new)* — dynamic resonance suppressor.
+  24-band filter bank measures per-band envelopes in dB; baseline
+  is the mean of each band's 4 nearest neighbours; bands that
+  exceed baseline + Sensitivity get a dynamic peaking-EQ cut at
+  their centre frequency, depth scales with the excess up to
+  Amount. Tames rolled-r resonances, harsh sibilance, mud peaks.
+  Soft / Sharp / Hard modes (ratio 0.4 / 0.7 / 1.0). 5 presets
+  including Russian Voice + Master Polish.
+- **superduper-nam** *(new)* — Neural Amp Modeler. Pure-Rust port
+  of Steven Atkinson's WaveNet / LSTM / Linear inference (see
+  `synth_core::nam`), bit-compatible weight ordering with NAM
+  C++ Core. Loads community `.nam` files from
+  `~/.superduper-dsp/nam/`. In-plugin library browser: drag-and-
+  drop import, URL download via curl on worker thread, prev/next
+  arrows, search filter, per-row delete with confirm, in-app
+  links to ToneHunt / Tone3000 / NAM Hub. Built-in tube preamp
+  default model. Supports gating_mode (gated/blended) + secondary
+  activation + head1x1. FiLM / grouped conv rejected with typed
+  errors (no community models use them).
 
 **Instruments (MIDI-in or generator, audio-out):**
 
 - **superduper-ambient** — autonomous chord-drone generator (no MIDI input).
 - **superduper-pad** — polyphonic MIDI synth, 8-voice PadVoice pool +
   per-voice ADSR + TPT/ZDF SVF, click-free voice steal.
-- **superduper-wave** *(new)* — wavetable bass/lead synth with
-  mouse-editable curve (sharp/smooth nodes + Catmull-Rom, RDP simplify),
-  mip-mapped anti-aliasing pyramid, per-voice unison + sub + noise +
-  filter envelope + LFO with 3 destinations + tempo-sync LFO + Undo/Redo
-  for the curve editor.
-- **superduper-kubyz** *(new)* — physical-model jaw-harp / khomus.
+- **superduper-wave** — wavetable bass/lead synth. Features:
+  - **N-frame multi-frame wavetables** (1..16, user-pickable on
+    WAV import) — WT Pos × (N-1) morphs between adjacent frames.
+  - **Smart WAV import** — pitch detect → cycle extract → normalise.
+    Loads kubyz / vocal / synth recordings into proper wavetables
+    instead of linear-resampling the whole file. Multi-frame import
+    extracts N evenly-spaced cycles for timbre evolution.
+  - **Serum-style stitched WAV** save/load — `<name>.wav` is
+    N×WT_SIZE samples concatenated, readable by Serum / Vital /
+    Phase Plant. Auto-detected on import: file length divisible by
+    WT_SIZE → split into N frames.
+  - **11 wavetable transforms** in a toolbar — Mirror, Invert,
+    Octave±, Smooth, Bright, Phaser, Fold, Crush, Skew, S+H. Each
+    derives a new timbre from the current curve. Stack-able. Spectral
+    diff reported by `wave-inspect` proves which are "phase-only"
+    (mirror/invert) vs "clearly audible".
+  - Mouse-editable curve (Catmull-Rom + RDP simplify + Undo/Redo).
+  - Mip-mapped anti-aliasing pyramid, unison + sub + noise + filter
+    env + LFO with 3 dests + tempo sync.
+  - **Native Open WAV / Export WAV file dialogs** (rfd, on a worker
+    thread so the modal doesn't deadlock REAPER's main loop).
+- **superduper-kubyz** — physical-model jaw-harp / khomus.
   16-harmonic additive engine + 3-band bandpass formant + interactive
   IPA vowel pad + animated mouth trajectory (Circle / Sine / Figure-8 /
   Triangle / Line) + stereo motion from the trajectory + tempo-sync
   Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets.
+- **superduper-drum** — 6 analog drum voices (Kick / Snare / HHc / HHo /
+  Clap / Cowbell) on consecutive white keys C-A, mouse-click pads.
+- **superduper-sampler** — polyphonic WAV player with YIN pitch tuner,
+  multi-mode SVF filter (LP/HP/BP/Notch), reverse playback,
+  velocity→amp/cutoff, click-to-audition on the waveform.
 
-All thirteen ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+All 23 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
@@ -76,9 +146,37 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
   `sdk::clap_helpers::emit_gesture_events` once per `process()` block,
   ordered after `emit_dirty_param_events` so the host receives
   `Begin → Value → End` for each drag.
-- **User file presets** (Kubyz — pattern available for porting) —
-  Save/Load buttons → `~/.superduper-dsp/<plugin>/presets/*.json`,
-  plain-text and shareable.
+- **Booleans → LED toggles, enums → radio rows** — boolean params
+  (Plos On, Hum On, Ess Listen, Time Sync, …) render as `[●] ON` /
+  `[ ] OFF` LED buttons. Enum-style params (Saturator Type, Compressor
+  Curve, Filter Type, MidSide Mode, Soothe Mode) render as radio chips
+  `●Tape ○Tube ○Soft`. Helpers: `core_gui::dirty_toggle_row_g`,
+  `core_gui::dirty_choice_row_g` — same dirty + gesture plumbing as
+  `dirty_param_row_g`, just a different visual.
+- **In-plugin Help blocks** — every complex plugin has a collapsible
+  `? help` section under its main controls explaining workflow,
+  parameter intent, and links to external docs. Helpers:
+  `core_gui::help_block(ui, id, &[(heading, body)])` and
+  `core_gui::help_block_with_links(ui, id, &[(heading, body, &[(label, url)])])`.
+  Underlying `core_gui::link_button` shells out to `open` / `start` /
+  `xdg-open` so URLs open in the user's default browser without
+  leaving the DAW. Currently wired in NAM, Vocal, Soothe, Wave,
+  Kubyz, Sampler, Filter, Compressor.
+- **Coloured spectrum overlays** — `core_gui::draw_spectrum_marker_colored`
+  + `core_gui::draw_spectrum_band_overlay` paint per-frequency dashed
+  markers / translucent bands on top of an existing spectrum strip so
+  the user sees exactly which frequencies a stage is touching. Vocal
+  uses green (Ess), red (Plos), violet (Hum + 5 harmonics), cyan (Lo
+  body). Soothe uses red bars per-band proportional to current cut.
+- **User file presets** (Wave + Kubyz currently — pattern available
+  for porting) — Save/Load buttons → `~/.superduper-dsp/<plugin>/
+  presets/<name>.json`, plain-text and shareable. Wave additionally
+  writes a sibling `.wav` (single-cycle if N=1, Serum-style stitched
+  N×WT_SIZE if N≥2 — readable by Serum / Vital / Phase Plant).
+  `last.json` auto-saves on every edit and becomes the default for
+  fresh plugin instances. Domain model in
+  `synth_core::user_preset` (`PresetRepo<E: PresetExtra>`,
+  `PresetName` value object, `PresetError` enum, validation).
 
 **Synth-specific now in Pad / Wave / Kubyz:**
 
@@ -97,6 +195,35 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 **Tempo sync** in Kubyz Mouth Rate + Wave LFO Rate — toggle `Sync`,
 pick a `Div` (1/1 ↔ 1/16t, dotted + triplet variants), rate computes
 from host BPM read out of `CoreEventSpace::Transport` events.
+
+## Headless CLI tools (no REAPER required)
+
+- **`tools/sdsp-runner`** — standalone CLAP host. Loads any `.clap`,
+  plays a WAV file through it to cpal output. Single-plugin testing.
+  Effects only — synth/MIDI plugins won't make sound (no MIDI events).
+- **`tools/sdsp-chain`** — headless multi-plugin chain runner.
+  Statically links 12 of our plugins, reads TOML config, processes
+  audio serially, reports per-stage LUFS-I + dBTP + RMS. Same plugins
+  REAPER would load, but in a CLI process — perfect for CI mastering
+  pipelines / reproducible A/B / render farms. Example:
+  `sdsp-chain example.toml in.wav out.wav`.
+- **`tools/wave-inspect`** — diagnostic CLI for Wave's WAV-to-wavetable
+  pipeline. Pitch detection, single + multi-frame extraction,
+  spectrum diff per transform, asserts on invariants. Default input
+  `~/Music/kubiz1000.wav` — drop any file as arg to test.
+- **`tools/vocal-inspect`** — headless test harness for Vocal DSP.
+  Reconstructs the de-esser pipeline from `synth-core` blocks,
+  synthesises voice-like test signal + sibilance bursts, measures
+  reduction in dB. Catches false negatives early (revealed the
+  old band-split phase-mismatch bug — now 7 dB+ reduction confirmed).
+- **`tools/nam-test`** — autotest harness for NAM model loading +
+  inference. Scans `~/.superduper-dsp/nam/` (or a custom dir), loads
+  each `.nam` through the same code path as the plugin, runs four
+  probes per model — silence / DC step / 1 kHz sine / 50 Hz→8 kHz
+  log sweep — and asserts finite output + non-trivial RMS. Skip-result
+  with typed reason for unsupported features (FiLM, grouped conv,
+  unknown arch). Exit code non-zero on failure so CI can gate on it.
+  `cargo run --release -p nam-test [<dir>]`.
 
 `tools/sdsp-runner` is the standalone CLAP host — loads any `.clap`,
 plays a WAV file through it to cpal output (`sdsp-runner <plugin.clap>
@@ -130,32 +257,48 @@ superduper-dsp/
                              sine sweep, measure_thd_db, measure_aliasing_db,
                              measure_imd_smpte_db, make_bin_aligned_sine
       supermass.rs           Valhalla-style cascade reverb (Net builder)
+      loudness.rs            BS.1770-4 LUFS-M/S/I + dBTP true-peak detector
+      linphase.rs            iFFT-designed symmetric FIR + RT-safe convolver
+      nam.rs                 NAM WaveNet / LSTM / Linear inference (port of
+                             NeuralAmpModelerCore NAM/wavenet/model.cpp)
       gui.rs                 shared egui_baseview helpers (feature = "gui")
     tests/dsp_blocks.rs      unit tests on shared blocks
   effects/
     superduper-reverb/       Dattorro plate effect plugin
     superduper-supermass/    Cascade reverb effect plugin
-    superduper-spectrum/     pass-through analyzer + visualiser
+    superduper-spectrum/     pass-through analyzer + LUFS/dBTP meter
     superduper-saturator/    tape/tube/soft-tanh + oversampling
     superduper-delay/        Lagrange-interp delay + tape feedback
     superduper-compressor/   feed-forward comp + lookahead + GR meter
     superduper-eq/           3-band RBJ parametric + HP/LP
+    superduper-lineq/        linear-phase 3-band FIR mastering EQ
     superduper-limiter/      lookahead brickwall + true-peak detect
-    superduper-vocal/        split-band de-esser + de-clicker (rap vocal)
+    superduper-vocal/        peaking-EQ de-esser + 2-band Sub Mode
+    superduper-chorus/       multi-tap modulated stereo chorus
+    superduper-looper/       Mobius-style 4-track host-sync looper
+    superduper-filter/       multi-mode resonant filter + Drive + LFO + Env
+    superduper-midside/      L/R ↔ M/S encode/decode + per-channel gain
+    superduper-soothe/       24-band dynamic resonance suppressor
+    superduper-nam/          NAM WaveNet/LSTM/Linear inference + library UI
     superduper-ambient/      autonomous chord-drone generator
     superduper-pad/          polyphonic MIDI pad synth
     superduper-wave/         wavetable bass/lead synth (curve editor + mip-AA)
     superduper-kubyz/        physical-model jaw-harp / khomus
+    superduper-drum/         6 analog drum voices on consecutive white keys
+    superduper-sampler/      polyphonic WAV player + YIN pitch + SVF filter
     example-passthrough/     toy effect for the (deprecated) hot-reload path
   tools/kubyz_analyser/      Python FFT analyser → Rust preset snippet
   tools/sdsp-runner/         standalone CLAP host (file-in → cpal-out)
+  tools/sdsp-chain/          headless multi-plugin chain runner (TOML config)
+  tools/wave-inspect/        WAV-to-wavetable diagnostic CLI for Wave
+  tools/vocal-inspect/       de-esser pipeline test harness
+  tools/nam-test/            autotest harness for NAM models
   plugin/                    old shell-plugin code (deprecated, kept for reference)
   daemon/, protocol/         IPC infrastructure (deprecated for now)
   scripts/
-    build_reverb_bundle.sh, build_supermass_bundle.sh, build_spectrum_bundle.sh,
-    build_saturator_bundle.sh, build_delay_bundle.sh, build_compressor_bundle.sh,
-    build_eq_bundle.sh, build_limiter_bundle.sh, build_vocal_bundle.sh,
-    build_ambient_bundle.sh, build_pad_bundle.sh,
+    build_<name>_bundle.sh    one per plugin (23 total), all derive from
+                             build_saturator_bundle.sh — copy + change
+                             two strings to add another.
     build_bundle.sh             generic helper used by the per-effect scripts
     build_release.sh            full local release zip with SHA256SUMS
     restart_reaper.sh           graceful (or --force) REAPER restart

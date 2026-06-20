@@ -218,6 +218,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush denormals to zero — long decays / feedback loops
+        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
+        // periodic ticks at the buffer rate. RAII restores host CSR.
+        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
         apply_param_events(self.shared, events.input);
         superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
             &self.shared.params, &self.shared.dirty_params, events.output);

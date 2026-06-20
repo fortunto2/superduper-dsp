@@ -45,6 +45,7 @@
 pub mod dsp;
 pub mod build_meta;
 pub mod clap_helpers;
+pub mod denormals;
 pub mod log;
 
 /// Stamp out the standard `Preset` struct + `from_overrides` const

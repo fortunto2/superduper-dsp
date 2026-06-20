@@ -662,6 +662,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Flush denormals to zero — long decays / feedback loops
+        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
+        // periodic ticks at the buffer rate. RAII restores host CSR.
+        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
         // Flush any GUI-driven param changes into the host's output queue
         // FIRST so REAPER sees them at the start of this block and records
         // them into the automation lane.

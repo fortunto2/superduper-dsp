@@ -8,7 +8,7 @@
 #
 # `make` (no args) is the same as `make all`.
 
-.PHONY: help all clap wrappers install test test-fast clean release \
+.PHONY: help all clap wrappers install test test-fast clean release ios \
         ambient compressor delay eq kubyz limiter pad reverb saturator \
         spectrum supermass vocal wave
 
@@ -25,6 +25,8 @@ help:
 	@echo "                          (requires CLAP installed first; depends on 'make clap')"
 	@echo "  make <plugin>         One plugin's .clap bundle (e.g. 'make wave')"
 	@echo "                          plugins: $(PLUGINS)"
+	@echo "  make ios              Rebuild the live2play in-app synth XCFramework"
+	@echo "                          (synth-core DSP → SDSP.xcframework in the reelcam repo)"
 	@echo "  make test             cargo test --release --workspace"
 	@echo "  make test-fast        Just the smoke + e2e tests (skip quality_audit)"
 	@echo "  make release VERSION=0.11.0"
@@ -46,6 +48,12 @@ wrappers: clap
 
 # `install` is the natural verb users reach for.
 install: all
+
+# Rebuild the iOS XCFramework that the live2play app links for its in-app synth. Any DSP you put
+# in synth-core (the iOS-safe shared crate) flows to the phone through here — the repeatable
+# "rebuild my DSP for iPhone" step. Then `make deploy` in the reelcam repo installs it.
+ios:
+	@./mobile/sdsp-ios/build-xcframework.sh
 
 # Per-plugin shortcuts.
 $(PLUGINS):

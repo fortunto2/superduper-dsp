@@ -14,7 +14,10 @@
 // — Kubyz uses it directly. Wave dropped its formant stage after user
 // feedback (too subtle on bass voices).
 pub mod gui;
-pub mod osc;
+// The wavetable DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the old
+// `osc` path so every `crate::osc::…` / `osc::…` reference keeps working unchanged. The old
+// src/osc.rs is now dead (left in place; delete on request).
+pub use superduper_synth_core::wave_osc as osc;
 pub mod presets;
 pub mod user_extra;
 

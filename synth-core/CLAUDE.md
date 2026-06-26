@@ -2,6 +2,26 @@
 
 Anything reusable across SuperDuper effect/synth plugins lives here.
 
+## Reaching iOS (live2play in-app synth)
+
+**synth-core is the bridge to iPhone.** The live2play app's in-app synth links a thin C-ABI
+staticlib (`mobile/sdsp-ios`) that depends ONLY on synth-core with `default-features = false`
+(no `gui`/egui/clack — those don't cross-compile to iOS). So **any DSP placed in synth-core
+automatically reaches the phone**; DSP that lives in a plugin crate (`effects/superduper-*`) does
+NOT, because those crates hard-depend on egui/baseview.
+
+**To make a plugin's DSP playable on iOS:** move its pure-DSP module into synth-core (keep the
+egui GUI in the plugin crate, re-export the moved module under its old path so the desktop plugin
+keeps compiling — see `superduper-wave`'s `pub use superduper_synth_core::wave_osc as osc;`). Then
+wire it into `mobile/sdsp-ios/src/lib.rs` and rebuild:
+
+```
+make ios        # rebuilds SDSP.xcframework into the reelcam repo (synth-core DSP → iPhone)
+# then in ~/startups/active/reelcam:  make deploy
+```
+
+This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the worked example.
+
 ## Modules
 
 - **`dsp_blocks`** — `Ducker`, `Tilt`, `DcBlocker`, `SmoothedParam`. RT-safe

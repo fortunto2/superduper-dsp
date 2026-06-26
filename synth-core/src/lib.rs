@@ -18,6 +18,7 @@ pub mod pitch;
 pub mod supermass;
 pub mod user_preset;
 pub mod wav;
+pub mod wave_osc; // wavetable oscillator/voice (extracted from superduper-wave so it reaches iOS too)
 
 #[cfg(feature = "gui")]
 pub mod gui;

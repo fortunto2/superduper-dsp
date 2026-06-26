@@ -18,6 +18,10 @@ void sdsp_set_param(SDSPEngine *engine, uint32_t id, float value);
 // Instrument engine (main thread). id: 0 Pad · 1 Wave · 2 Kubyz · 3 Drum (notes→drums).
 void sdsp_set_instrument(SDSPEngine *engine, uint32_t id);
 
+// Built-in timbre preset for the active instrument (main thread). Wave: 0 Saw·1 Square·2 Triangle·
+// 3 Pulse·4 Morph. Kubyz: 0 Bashkir·1 Khomus·2 Real-D2.
+void sdsp_set_instr_preset(SDSPEngine *engine, uint32_t id);
+
 // Instrument-specific param (main thread). idx 0/1, meaning depends on the active instrument:
 // Wave 0 Sub / 1 Noise · Kubyz 0 Vowel · Drum 0 Tune / 1 Decay.
 void sdsp_set_instr_param(SDSPEngine *engine, uint32_t idx, float value);

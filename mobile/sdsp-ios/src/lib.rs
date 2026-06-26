@@ -35,8 +35,15 @@ const INSTR_DRUM: u32 = 3; // 6 analog drum voices (superduper-drum DSP) — not
 
 // Built-in Kubyz timbre (Bashkir reference): per-harmonic levels in dB + a fixed formant. Converted
 // to linear at create. The plugin exposes these as editable; iOS ships the reference voice.
-const KUBYZ_HARM_DB: [f32; N_HARMONICS] = [
+const KUBYZ_HARM_DB: [f32; N_HARMONICS] = [ // Bashkir
     0.0, 6.6, 19.0, 24.1, 17.0, 38.6, 9.4, 16.7, 15.2, 17.9, 19.9, 9.8, 14.3, -0.5, 7.6, 3.3,
+];
+const KUBYZ_KHOMUS_DB: [f32; N_HARMONICS] = [
+    0.0, 2.6, 17.6, 24.8, 25.4, 31.4, 19.6, 20.0, 7.9, 19.7, 16.4, 16.8, 16.4, 8.0, 16.3, 3.1,
+];
+const KUBYZ_REALD2_DB: [f32; N_HARMONICS] = [
+    0.0, -33.83, -9.50, -14.71, -16.52, -26.03, -11.07, -20.27,
+    -16.22, -9.19, 27.25, -0.99, 34.42, 20.46, 45.10, 13.55,
 ];
 const KUBYZ_FORMANT_F: [f32; 3] = [705.0, 1301.0, 2165.0];
 const KUBYZ_FORMANT_BW: [f32; 3] = [90.0, 110.0, 130.0];
@@ -201,9 +208,10 @@ pub struct Engine {
     wt_pos: f32, wt_pos_t: f32,       // Wave: wavetable morph position 0..1 (param 3, raw)
     // Instrument selector + Wave wavetable frames (built once at create — FFT mip pyramid).
     instrument: u32,
-    wave_frames: Vec<MipWavetable>,
-    wave_prev: MipWavetable,
-    kubyz_harm: [f32; N_HARMONICS], // Kubyz harmonic levels (linear), built from the dB reference
+    // Per-instrument TIMBRE presets (the plugins' built-in defaults), switched by index (RT-safe — the
+    // pre-built sets aren't reallocated). Wave = wavetable-frame sets; Kubyz = harmonic sets.
+    wave_presets: Vec<Vec<MipWavetable>>, wave_preset: usize,
+    kubyz_presets: Vec<[f32; N_HARMONICS]>, kubyz_preset: usize,
     // Instrument-specific params (0/1), meaning depends on the active instrument (smoothed):
     //   Wave: 0 Sub · 1 Noise   Kubyz: 0 Vowel (formant morph)   Drum: 0 Tune · 1 Decay
     instr_param: [f32; 2], instr_param_t: [f32; 2],
@@ -218,13 +226,23 @@ pub struct Engine {
 #[no_mangle]
 pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
     let sr = if sample_rate > 0.0 { sample_rate } else { 48_000.0 };
-    // Wave wavetable frames (FFT mip pyramids — build here, never in process).
-    let wave_frames: Vec<MipWavetable> =
+    // Wave wavetable PRESETS (FFT mip pyramids — built here, never in process). Single-shape presets
+    // + a Morph set the WT Pos sweeps through.
+    let wave_presets: Vec<Vec<MipWavetable>> = vec![
+        vec![render_formula_mip(wt_saw)],
+        vec![render_formula_mip(wt_square)],
+        vec![render_formula_mip(wt_triangle)],
+        vec![render_formula_mip(wt_pulse)],
         vec![render_formula_mip(wt_saw), render_formula_mip(wt_square),
-             render_formula_mip(wt_triangle), render_formula_mip(wt_pulse)];
-    let wave_prev = render_formula_mip(wt_saw);
-    let mut kubyz_harm = [0.0_f32; N_HARMONICS]; // dB → linear once
-    for (i, db) in KUBYZ_HARM_DB.iter().enumerate() { kubyz_harm[i] = 10.0_f32.powf(db / 20.0); }
+             render_formula_mip(wt_triangle), render_formula_mip(wt_pulse)],
+    ];
+    // Kubyz harmonic PRESETS (dB → linear): Bashkir · Khomus · Real-D2.
+    let to_lin = |db: &[f32; N_HARMONICS]| {
+        let mut a = [0.0_f32; N_HARMONICS];
+        for (i, d) in db.iter().enumerate() { a[i] = 10.0_f32.powf(d / 20.0); }
+        a
+    };
+    let kubyz_presets = vec![to_lin(&KUBYZ_HARM_DB), to_lin(&KUBYZ_KHOMUS_DB), to_lin(&KUBYZ_REALD2_DB)];
     let e = Box::new(Engine {
         sr,
         voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
@@ -234,7 +252,7 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         mod_cents: 25.0, mod_cents_t: 25.0,
         wt_pos: 0.0, wt_pos_t: 0.0,
         instrument: INSTR_AMBIENT,
-        wave_frames, wave_prev, kubyz_harm,
+        wave_presets, wave_preset: 4, kubyz_presets, kubyz_preset: 0, // Wave=Morph, Kubyz=Bashkir
         instr_param: [0.0, 0.0], instr_param_t: [0.0, 0.0],
         kick: Kick::default(), snare: Snare::default(), hat: HiHat::default(),
         clap: Clap::default(), cowbell: Cowbell::default(), hat_decay: 0.06,
@@ -247,6 +265,19 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
 #[no_mangle]
 pub extern "C" fn sdsp_set_instrument(p: *mut Engine, id: u32) {
     if let Some(e) = unsafe { p.as_mut() } { e.instrument = id; }
+}
+
+/// Pick a built-in TIMBRE preset for the active instrument (Wave wavetable shape / Kubyz harmonics).
+/// Main thread; switching is just an index change (the pre-built sets stay put — RT-safe).
+#[no_mangle]
+pub extern "C" fn sdsp_set_instr_preset(p: *mut Engine, id: u32) {
+    if let Some(e) = unsafe { p.as_mut() } {
+        match e.instrument {
+            INSTR_WAVE => if (id as usize) < e.wave_presets.len() { e.wave_preset = id as usize; },
+            INSTR_KUBYZ => if (id as usize) < e.kubyz_presets.len() { e.kubyz_preset = id as usize; },
+            _ => {}
+        }
+    }
 }
 
 /// Instrument-specific param `idx` (0/1) 0..1 — meaning depends on the active instrument. Smoothed.
@@ -375,6 +406,7 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             (e.cutoff, e.resonance, e.drive, e.mod_cents, e.wt_pos);
         let (srate, instrument) = (e.sr, e.instrument);
         let (ip0, ip1) = (e.instr_param[0], e.instr_param[1]);
+        let (wp, kp) = (e.wave_preset, e.kubyz_preset);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         if instrument == INSTR_DRUM {
@@ -404,7 +436,7 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                     fenv_amount_oct: 0.0, fenv: AdsrParams::adsr(srate, 0.005, 0.1, 1.0, 0.1),
                     lfo_shape: LfoShape::from_index(0), lfo_dest: LfoDest::from_index(0),
                     lfo_rate_hz: 1.0, lfo_depth: 0.0,
-                    frames: &e.wave_frames, frame_a_prev: &e.wave_prev, frame_a_fade: 1.0,
+                    frames: &e.wave_presets[wp], frame_a_prev: &e.wave_presets[wp][0], frame_a_fade: 1.0,
                     sync_on: false, sync_ratio: 1.0, fm_ratio: 1.0, fm_amount: 0.0,
                     mod_slots: [ModSlot::default(); 2], mod_wheel: 0.0, aftertouch: 0.0,
                 };
@@ -421,7 +453,7 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                     2200.0 * (1.0 - ip0) + 2600.0 * ip0,
                 ];
                 let params = KubyzParams {
-                    sr: srate, root_hz: f, harmonics: &e.kubyz_harm,
+                    sr: srate, root_hz: f, harmonics: &e.kubyz_presets[kp],
                     formant_f: fmt, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,
                     formant_mix: (mod_cents / 60.0).clamp(0.0, 1.0), velocity_formant_shift: 0.1,
                 };

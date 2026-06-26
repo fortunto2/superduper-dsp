@@ -32,10 +32,12 @@ impl Voice {
 pub struct Engine {
     sr: f32,
     voices: Vec<Voice>,
-    cutoff: f32,     // Hz
-    resonance: f32,  // 0..0.95
-    drive: f32,      // 0..1
-    mod_cents: f32,  // LFO detune depth
+    // Each param keeps a TARGET (set by control) + a smoothed CURRENT (used per sample) so knob /
+    // gesture moves glide instead of stepping (no zipper) — real-time playable.
+    cutoff: f32, cutoff_t: f32,     // Hz
+    resonance: f32, resonance_t: f32, // 0..0.95
+    drive: f32, drive_t: f32,        // 0..1
+    mod_cents: f32, mod_cents_t: f32, // LFO detune depth
 }
 
 #[no_mangle]
@@ -43,10 +45,10 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
     let e = Box::new(Engine {
         sr: if sample_rate > 0.0 { sample_rate } else { 48_000.0 },
         voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
-        cutoff: 2_400.0,
-        resonance: 0.30,
-        drive: 0.25,
-        mod_cents: 25.0,
+        cutoff: 2_400.0, cutoff_t: 2_400.0,
+        resonance: 0.30, resonance_t: 0.30,
+        drive: 0.25, drive_t: 0.25,
+        mod_cents: 25.0, mod_cents_t: 25.0,
     });
     Box::into_raw(e)
 }
@@ -95,10 +97,10 @@ pub extern "C" fn sdsp_set_param(p: *mut Engine, id: u32, value: f32) {
     let e = match unsafe { p.as_mut() } { Some(e) => e, None => return };
     let v = value.clamp(0.0, 1.0);
     match id {
-        0 => e.cutoff = 150.0 + v * v * 9_000.0, // perceptual-ish cutoff sweep
-        1 => e.resonance = v * 0.95,
-        2 => e.drive = v,
-        3 => e.mod_cents = v * 60.0,
+        0 => e.cutoff_t = 150.0 + v * v * 9_000.0, // perceptual-ish cutoff sweep
+        1 => e.resonance_t = v * 0.95,
+        2 => e.drive_t = v,
+        3 => e.mod_cents_t = v * 60.0,
         _ => {}
     }
 }
@@ -111,10 +113,18 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
     if out_l.is_null() || out_r.is_null() { return; }
     let ol = unsafe { core::slice::from_raw_parts_mut(out_l, n) };
     let or = unsafe { core::slice::from_raw_parts_mut(out_r, n) };
-    // One-pole AR coefficients (~12 ms attack, ~700 ms release).
+    // One-pole AR coefficients (~12 ms attack, ~700 ms release) + param smoothing (~20 ms) so knob /
+    // gesture moves glide in real time without zipper noise.
     let atk = 1.0 - (-1.0 / (0.012 * e.sr)).exp();
     let rel = 1.0 - (-1.0 / (0.700 * e.sr)).exp();
+    let psm = 1.0 - (-1.0 / (0.020 * e.sr)).exp();
     for i in 0..n {
+        // Smooth params toward their targets, then snapshot for this sample (before borrowing voices).
+        e.cutoff += (e.cutoff_t - e.cutoff) * psm;
+        e.resonance += (e.resonance_t - e.resonance) * psm;
+        e.drive += (e.drive_t - e.drive) * psm;
+        e.mod_cents += (e.mod_cents_t - e.mod_cents) * psm;
+        let (cutoff, resonance, drive, mod_cents) = (e.cutoff, e.resonance, e.drive, e.mod_cents);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         for v in e.voices.iter_mut() {
@@ -124,8 +134,8 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             if !v.gate && v.env < 0.0005 { continue; }
             let f = midi_note_to_hz(v.key as f32);
             let base = PadParams {
-                sr: e.sr, root_hz: f, cutoff_hz: e.cutoff, resonance: e.resonance,
-                modulation_cents: e.mod_cents, drive: e.drive,
+                sr: e.sr, root_hz: f, cutoff_hz: cutoff, resonance,
+                modulation_cents: mod_cents, drive,
             };
             // Slight L/R detune for stereo width.
             let pr = PadParams { root_hz: f * 1.003, ..base };

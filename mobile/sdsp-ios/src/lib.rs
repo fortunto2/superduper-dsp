@@ -470,24 +470,11 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             } else if instrument == INSTR_KUBYZ {
                 // Kubyz jaw-harp — superduper-kubyz DSP. Built-in Bashkir timbre; the Motion param
                 // (mod_cents 0..60) opens the formant mix for a vowel sweep.
-                // Vowel (ip0) morphs through 5 real vowels u→o→a→e→i (the jaw-harp's mouth shape);
-                // Frequency (ip1) shifts all formants (cavity size). This IS the kubyz expression.
-                const VOWELS: [[f32; 3]; 5] = [
-                    [350.0, 800.0, 2400.0],  // u (оо)
-                    [500.0, 1000.0, 2400.0], // o (о)
-                    [700.0, 1200.0, 2500.0], // a (а)
-                    [500.0, 1800.0, 2500.0], // e (э)
-                    [300.0, 2300.0, 3000.0], // i (и)
-                ];
-                let vpos = (ip0 * 4.0).clamp(0.0, 4.0);
-                let vi = (vpos.floor() as usize).min(3);
-                let vf = vpos - vi as f32;
-                let shift = 0.6 + ip1 * 1.2; // 0.6×..1.8×
-                let fmt = [
-                    (VOWELS[vi][0] * (1.0 - vf) + VOWELS[vi + 1][0] * vf) * shift,
-                    (VOWELS[vi][1] * (1.0 - vf) + VOWELS[vi + 1][1] * vf) * shift,
-                    (VOWELS[vi][2] * (1.0 - vf) + VOWELS[vi + 1][2] * vf) * shift,
-                ];
+                // 2D vowel pad (like the plugin): X = F2 back→front, Y = F1 close→open. The hand moving
+                // over the field IS the melody.
+                let f2 = 850.0 + ip0 * 1500.0; // X: u/o (back) → e/i (front)
+                let f1 = 290.0 + ip1 * 450.0;  // Y: u/i (close) → a (open)
+                let fmt = [f1, f2, 2700.0];
                 let params = KubyzParams {
                     sr: srate, root_hz: f, harmonics: &e.kubyz_presets[kp],
                     formant_f: fmt, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,

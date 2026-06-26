@@ -212,6 +212,9 @@ pub struct Engine {
     // pre-built sets aren't reallocated). Wave = wavetable-frame sets; Kubyz = harmonic sets.
     wave_presets: Vec<Vec<MipWavetable>>, wave_preset: usize,
     kubyz_presets: Vec<[f32; N_HARMONICS]>, kubyz_preset: usize,
+    // A real jaw-harp drones on ONE fixed pitch (the tonality root); the melody is the formant/vowel.
+    // `kubyz_fixed` on (default) = play at `kubyz_root`, ignore note pitch; off = normal poly (piano).
+    kubyz_root: u8, kubyz_fixed: bool,
     // Instrument-specific params (0/1), meaning depends on the active instrument (smoothed):
     //   Wave: 0 Sub · 1 Noise   Kubyz: 0 Vowel (formant morph)   Drum: 0 Tune · 1 Decay
     instr_param: [f32; 2], instr_param_t: [f32; 2],
@@ -252,7 +255,8 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         mod_cents: 25.0, mod_cents_t: 25.0,
         wt_pos: 0.0, wt_pos_t: 0.0,
         instrument: INSTR_AMBIENT,
-        wave_presets, wave_preset: 4, kubyz_presets, kubyz_preset: 0, // Wave=Morph, Kubyz=Bashkir
+        wave_presets, wave_preset: 4, kubyz_presets, kubyz_preset: 0,
+        kubyz_root: 45, kubyz_fixed: true, // Wave=Morph · Kubyz=Bashkir, drones on root (A2) by default
         instr_param: [0.0, 0.0], instr_param_t: [0.0, 0.0],
         kick: Kick::default(), snare: Snare::default(), hat: HiHat::default(),
         clap: Clap::default(), cowbell: Cowbell::default(), hat_decay: 0.06,
@@ -278,6 +282,13 @@ pub extern "C" fn sdsp_set_instr_preset(p: *mut Engine, id: u32) {
             _ => {}
         }
     }
+}
+
+/// Kubyz drone: `root` MIDI note (the tonality root) + `fixed` (1 = drone on one pitch, ignore notes;
+/// 0 = play like a piano). Main thread.
+#[no_mangle]
+pub extern "C" fn sdsp_set_kubyz(p: *mut Engine, root: u8, fixed: u32) {
+    if let Some(e) = unsafe { p.as_mut() } { e.kubyz_root = root & 0x7F; e.kubyz_fixed = fixed != 0; }
 }
 
 /// Instrument-specific param `idx` (0/1) 0..1 — meaning depends on the active instrument. Smoothed.
@@ -331,6 +342,18 @@ pub extern "C" fn sdsp_note_on(p: *mut Engine, key: u8, _velocity: f32) {
         }
         return;
     }
+    if e.instrument == INSTR_KUBYZ && e.kubyz_fixed {
+        // Jaw-harp DRONE: monophonic, ONE fixed pitch (the tonality root) — the note's pitch is ignored;
+        // the melody comes from the Vowel/formant knobs. (Un-fix to play it like a piano.)
+        let sr = e.sr;
+        if e.voices[0].env < 0.01 { e.voices[0].kubyz = KubyzVoice::default(); }
+        let dk = e.kubyz_root;
+        e.voices[0].kubyz.on_note_on(sr);
+        e.voices[0].key = dk;
+        e.voices[0].gate = true;
+        for i in 1..e.voices.len() { e.voices[i].gate = false; } // mono
+        return;
+    }
     // Reuse a held voice on the same key, else the most-released (quietest) slot.
     let idx = e.voices.iter().position(|v| v.gate && v.key == key)
         .or_else(|| e.voices.iter().position(|v| !v.gate && v.env < 0.01))
@@ -354,6 +377,7 @@ pub extern "C" fn sdsp_note_on(p: *mut Engine, key: u8, _velocity: f32) {
 #[no_mangle]
 pub extern "C" fn sdsp_note_off(p: *mut Engine, key: u8) {
     let e = match unsafe { p.as_mut() } { Some(e) => e, None => return };
+    if e.instrument == INSTR_KUBYZ && e.kubyz_fixed { e.voices[0].gate = false; return; } // release the drone
     for v in e.voices.iter_mut() {
         if v.gate && v.key == key { v.gate = false; }
     }

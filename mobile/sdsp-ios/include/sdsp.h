@@ -22,6 +22,9 @@ void sdsp_set_instrument(SDSPEngine *engine, uint32_t id);
 // 3 Pulse·4 Morph. Kubyz: 0 Bashkir·1 Khomus·2 Real-D2.
 void sdsp_set_instr_preset(SDSPEngine *engine, uint32_t id);
 
+// Kubyz drone (main thread). root = MIDI note (tonality root); fixed = 1 drone on one pitch / 0 piano.
+void sdsp_set_kubyz(SDSPEngine *engine, uint8_t root, uint32_t fixed);
+
 // Instrument-specific param (main thread). idx 0/1, meaning depends on the active instrument:
 // Wave 0 Sub / 1 Noise · Kubyz 0 Vowel · Drum 0 Tune / 1 Decay.
 void sdsp_set_instr_param(SDSPEngine *engine, uint32_t idx, float value);

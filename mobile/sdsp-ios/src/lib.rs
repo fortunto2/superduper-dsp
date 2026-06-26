@@ -13,7 +13,7 @@
 
 use fundsp::prelude::{AudioUnit, Net};
 use superduper_synth_core::dsp_blocks::{
-    midi_note_to_hz, tanh_drive, AdsrParams, DelayLine, OnePoleLp, PadParams, PadVoice,
+    midi_note_to_hz, tanh_drive, AdsrParams, Biquad, DelayLine, OnePoleLp, PadParams, PadVoice,
 };
 use superduper_synth_core::drum_voices::{
     note_to_voice, Clap, Cowbell, DrumParams, HiHat, Kick, Snare, VoiceKind,
@@ -59,6 +59,7 @@ const FX_SATURATE: u32 = 3;
 const FX_DELAY: u32 = 4; // feedback delay (DelayLine)
 const FX_CHORUS: u32 = 5; // LFO-modulated short delay
 const FX_COMPRESS: u32 = 6; // peak compressor
+const FX_EQ: u32 = 7; // 3-band EQ (low shelf · mid peak · high shelf) — the DJ tone control
 
 /// One effect in the chain — its id + 3 smoothed params (meaning per effect) + all the per-effect DSP
 /// state it might need. Slots run in series (Compressor → Delay → Reverb…). Built once at create.
@@ -71,6 +72,7 @@ struct FxSlot {
     delay_l: DelayLine, delay_r: DelayLine,
     chorus_phase: f32,
     comp_env_l: f32, comp_env_r: f32,
+    eq_l: [Biquad; 3], eq_r: [Biquad; 3], eq_count: u32, // 3-band EQ (low/mid/high), coeffs refreshed
 }
 
 impl FxSlot {
@@ -83,6 +85,7 @@ impl FxSlot {
             filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
             delay_l: DelayLine::new(sr as usize), delay_r: DelayLine::new(sr as usize),
             chorus_phase: 0.0, comp_env_l: 0.0, comp_env_r: 0.0,
+            eq_l: [Biquad::default(); 3], eq_r: [Biquad::default(); 3], eq_count: 0,
         }
     }
     fn smooth(&mut self, psm: f32) { for k in 0..3 { self.p[k] += (self.pt[k] - self.p[k]) * psm; } }
@@ -142,6 +145,23 @@ impl FxSlot {
                 let gain = |env: f32| if env > thr { (env / thr).powf(1.0 / ratio - 1.0) } else { 1.0 };
                 dl *= gain(self.comp_env_l) * mu;
                 dr *= gain(self.comp_env_r) * mu;
+            }
+            FX_EQ => {
+                // P0/P1/P2 = low/mid/high gain (each 0..1 → ±12 dB). Refresh coeffs every 64 samples
+                // (the trig is too costly per sample) — gestures still feel smooth.
+                self.eq_count += 1;
+                if self.eq_count >= 64 {
+                    self.eq_count = 0;
+                    let (lg, mg, hg) = ((a - 0.5) * 24.0, (b - 0.5) * 24.0, (c - 0.5) * 24.0);
+                    self.eq_l[0].set_low_shelf(sr, 200.0, 1.0, lg);
+                    self.eq_l[1].set_peaking(sr, 1000.0, 1.0, mg);
+                    self.eq_l[2].set_high_shelf(sr, 4000.0, 1.0, hg);
+                    self.eq_r[0].set_low_shelf(sr, 200.0, 1.0, lg);
+                    self.eq_r[1].set_peaking(sr, 1000.0, 1.0, mg);
+                    self.eq_r[2].set_high_shelf(sr, 4000.0, 1.0, hg);
+                }
+                dl = self.eq_l[0].process(dl); dl = self.eq_l[1].process(dl); dl = self.eq_l[2].process(dl);
+                dr = self.eq_r[0].process(dr); dr = self.eq_r[1].process(dr); dr = self.eq_r[2].process(dr);
             }
             _ => {}
         }

@@ -58,6 +58,96 @@ const FX_FILTER: u32 = 2;
 const FX_SATURATE: u32 = 3;
 const FX_DELAY: u32 = 4; // feedback delay (DelayLine)
 const FX_CHORUS: u32 = 5; // LFO-modulated short delay
+const FX_COMPRESS: u32 = 6; // peak compressor
+
+/// One effect in the chain — its id + 3 smoothed params (meaning per effect) + all the per-effect DSP
+/// state it might need. Slots run in series (Compressor → Delay → Reverb…). Built once at create.
+struct FxSlot {
+    id: u32,
+    p: [f32; 3], pt: [f32; 3], // params + targets (smoothed on the audio thread)
+    reverb: Net,
+    rev_lp_l: OnePoleLp, rev_lp_r: OnePoleLp,
+    filt_l: OnePoleLp, filt_r: OnePoleLp,
+    delay_l: DelayLine, delay_r: DelayLine,
+    chorus_phase: f32,
+    comp_env_l: f32, comp_env_r: f32,
+}
+
+impl FxSlot {
+    fn new(sr: f32) -> Self {
+        let mut reverb = supermass::build_wet();
+        reverb.set_sample_rate(sr as f64);
+        Self {
+            id: FX_OFF, p: [0.35, 0.5, 0.5], pt: [0.35, 0.5, 0.5], reverb,
+            rev_lp_l: OnePoleLp::default(), rev_lp_r: OnePoleLp::default(),
+            filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
+            delay_l: DelayLine::new(sr as usize), delay_r: DelayLine::new(sr as usize),
+            chorus_phase: 0.0, comp_env_l: 0.0, comp_env_r: 0.0,
+        }
+    }
+    fn smooth(&mut self, psm: f32) { for k in 0..3 { self.p[k] += (self.pt[k] - self.p[k]) * psm; } }
+
+    /// Apply this effect to a stereo sample. P0/P1/P2 = the effect's main params.
+    fn process(&mut self, mut dl: f32, mut dr: f32, sr: f32) -> (f32, f32) {
+        let (a, b, c) = (self.p[0], self.p[1], self.p[2]);
+        match self.id {
+            FX_REVERB => {
+                let mut wet = [0.0_f32; 2];
+                self.reverb.tick(&[dl, dr], &mut wet);
+                let dampc = 1000.0 * 16.0_f32.powf(b); // P1 damp: 1k..16k high-cut on the tail
+                let wl = self.rev_lp_l.process(wet[0], sr, dampc);
+                let wr = self.rev_lp_r.process(wet[1], sr, dampc);
+                dl = dl * (1.0 - a) + wl * a; // P0 mix
+                dr = dr * (1.0 - a) + wr * a;
+            }
+            FX_FILTER => {
+                let cut = 200.0 * 80.0_f32.powf(a); // P0 cutoff 200..16k
+                dl = self.filt_l.process(dl, sr, cut);
+                dr = self.filt_r.process(dr, sr, cut);
+            }
+            FX_SATURATE => {
+                let drv = 1.0 + a * 8.0; // P0 drive
+                let comp = 1.0 / (1.0 + a * 1.5);
+                let m = b; // P1 mix
+                dl = dl * (1.0 - m) + tanh_drive(dl, drv) * comp * m;
+                dr = dr * (1.0 - m) + tanh_drive(dr, drv) * comp * m;
+            }
+            FX_DELAY => {
+                let dt = (0.05 + a * 0.65) * sr; // P0 time 50..700 ms
+                let fb = b * 0.85; // P1 feedback
+                let (wl, wr) = (self.delay_l.read_lagrange3(dt), self.delay_r.read_lagrange3(dt));
+                self.delay_l.write(dl + wr * fb); // cross-feed → ping-pong
+                self.delay_r.write(dr + wl * fb);
+                dl = dl * (1.0 - c) + wl * c; // P2 mix
+                dr = dr * (1.0 - c) + wr * c;
+            }
+            FX_CHORUS => {
+                self.chorus_phase += (0.2 + a * 3.0) / sr; // P0 rate 0.2..3.2 Hz
+                if self.chorus_phase >= 1.0 { self.chorus_phase -= 1.0; }
+                let lfo = (self.chorus_phase * core::f32::consts::TAU).sin();
+                let dt = (0.012 + 0.008 * b * lfo) * sr; // P1 depth
+                let (wl, wr) = (self.delay_l.read_lagrange3(dt), self.delay_r.read_lagrange3(dt));
+                self.delay_l.write(dl);
+                self.delay_r.write(dr);
+                dl = dl * (1.0 - c * 0.5) + wl * c * 0.5; // P2 mix
+                dr = dr * (1.0 - c * 0.5) + wr * c * 0.5;
+            }
+            FX_COMPRESS => {
+                let thr = 0.08 + a * 0.7; // P0 threshold
+                let ratio = 1.0 + b * 7.0; // P1 ratio 1..8
+                let mu = 1.0 + c * 2.0; // P2 makeup
+                let (al, ar) = (dl.abs(), dr.abs());
+                self.comp_env_l += (al - self.comp_env_l) * if al > self.comp_env_l { 0.02 } else { 0.0015 };
+                self.comp_env_r += (ar - self.comp_env_r) * if ar > self.comp_env_r { 0.02 } else { 0.0015 };
+                let gain = |env: f32| if env > thr { (env / thr).powf(1.0 / ratio - 1.0) } else { 1.0 };
+                dl *= gain(self.comp_env_l) * mu;
+                dr *= gain(self.comp_env_r) * mu;
+            }
+            _ => {}
+        }
+        (dl, dr)
+    }
+}
 
 struct Voice {
     l: PadVoice,
@@ -97,20 +187,14 @@ pub struct Engine {
     // Drum kit (fixed voices, triggered by note — not the poly pool).
     kick: Kick, snare: Snare, hat: HiHat, clap: Clap, cowbell: Cowbell,
     hat_decay: f32, // open vs closed hat
-    // FX chain slot (post-instrument). Pre-built; `fx` selects which runs.
-    fx: u32,
-    fx_amt: f32, fx_amt_t: f32, // wet / amount, smoothed
-    reverb: Net,
-    filt_l: OnePoleLp, filt_r: OnePoleLp,
-    delay_l: DelayLine, delay_r: DelayLine, // shared by Delay + Chorus
-    chorus_phase: f32,
+    // FX CHAIN — 3 slots in series (e.g. Compressor → Delay → Reverb on one instrument). Each slot
+    // is any effect + its own params/state; built once at create.
+    fx: [FxSlot; 3],
 }
 
 #[no_mangle]
 pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
     let sr = if sample_rate > 0.0 { sample_rate } else { 48_000.0 };
-    let mut reverb = supermass::build_wet();
-    reverb.set_sample_rate(sr as f64); // RT-unsafe build/config done here, once — tick() in process is RT-safe
     // Wave wavetable frames (FFT mip pyramids — build here, never in process).
     let wave_frames: Vec<MipWavetable> =
         vec![render_formula_mip(wt_saw), render_formula_mip(wt_square),
@@ -130,12 +214,7 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         wave_frames, wave_prev, kubyz_harm,
         kick: Kick::default(), snare: Snare::default(), hat: HiHat::default(),
         clap: Clap::default(), cowbell: Cowbell::default(), hat_decay: 0.06,
-        fx: FX_OFF,
-        fx_amt: 0.35, fx_amt_t: 0.35,
-        reverb,
-        filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
-        delay_l: DelayLine::new(sr as usize), delay_r: DelayLine::new(sr as usize), // 1 s
-        chorus_phase: 0.0,
+        fx: [FxSlot::new(sr), FxSlot::new(sr), FxSlot::new(sr)],
     });
     Box::into_raw(e)
 }
@@ -146,16 +225,23 @@ pub extern "C" fn sdsp_set_instrument(p: *mut Engine, id: u32) {
     if let Some(e) = unsafe { p.as_mut() } { e.instrument = id; }
 }
 
-/// Pick the FX-slot effect (0 off · 1 reverb · 2 filter · 3 saturator). Main thread.
+/// Pick the effect for chain `slot` (0..2). id: 0 off · 1 reverb · 2 filter · 3 saturator ·
+/// 4 delay · 5 chorus · 6 compressor. Main thread.
 #[no_mangle]
-pub extern "C" fn sdsp_set_effect(p: *mut Engine, id: u32) {
-    if let Some(e) = unsafe { p.as_mut() } { e.fx = id; }
+pub extern "C" fn sdsp_set_effect(p: *mut Engine, slot: u32, id: u32) {
+    if let Some(e) = unsafe { p.as_mut() } {
+        if let Some(s) = e.fx.get_mut(slot as usize) { s.id = id; }
+    }
 }
 
-/// FX wet/amount 0..1. Main thread; smoothed on the audio thread.
+/// Slot `slot` (0..2) param `idx` (0..2) 0..1 — meaning depends on the slot's effect. Smoothed.
 #[no_mangle]
-pub extern "C" fn sdsp_set_effect_amount(p: *mut Engine, value: f32) {
-    if let Some(e) = unsafe { p.as_mut() } { e.fx_amt_t = value.clamp(0.0, 1.0); }
+pub extern "C" fn sdsp_set_effect_param(p: *mut Engine, slot: u32, idx: u32, value: f32) {
+    if let Some(e) = unsafe { p.as_mut() } {
+        if let Some(s) = e.fx.get_mut(slot as usize) {
+            if let Some(t) = s.pt.get_mut(idx as usize) { *t = value.clamp(0.0, 1.0); }
+        }
+    }
 }
 
 #[no_mangle]
@@ -250,10 +336,10 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         e.drive += (e.drive_t - e.drive) * psm;
         e.mod_cents += (e.mod_cents_t - e.mod_cents) * psm;
         e.wt_pos += (e.wt_pos_t - e.wt_pos) * psm;
-        e.fx_amt += (e.fx_amt_t - e.fx_amt) * psm;
+        for s in e.fx.iter_mut() { s.smooth(psm); }
         let (cutoff, resonance, drive, mod_cents, wt_pos) =
             (e.cutoff, e.resonance, e.drive, e.mod_cents, e.wt_pos);
-        let (fx, amt, srate, instrument) = (e.fx, e.fx_amt, e.sr, e.instrument);
+        let (srate, instrument) = (e.sr, e.instrument);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         if instrument == INSTR_DRUM {
@@ -317,44 +403,11 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         let g = if instrument == INSTR_DRUM { 1.0 } else { 0.22 };
         let mut dl = sl * g;
         let mut dr = sr * g;
-        match fx {
-            FX_REVERB => {
-                let mut wet = [0.0_f32; 2];
-                e.reverb.tick(&[dl, dr], &mut wet);
-                dl = dl * (1.0 - amt) + wet[0] * amt;
-                dr = dr * (1.0 - amt) + wet[1] * amt;
-            }
-            FX_FILTER => {
-                let cut = 200.0 * 80.0_f32.powf(amt); // amt 0→200Hz, 1→16kHz (open)
-                dl = e.filt_l.process(dl, srate, cut);
-                dr = e.filt_r.process(dr, srate, cut);
-            }
-            FX_SATURATE => {
-                let drv = 1.0 + amt * 8.0;
-                let comp = 1.0 / (1.0 + amt * 1.5); // keep level roughly constant as drive rises
-                dl = tanh_drive(dl, drv) * comp;
-                dr = tanh_drive(dr, drv) * comp;
-            }
-            FX_DELAY => {
-                let dt = 0.32 * srate; // 320 ms
-                let (wl, wr) = (e.delay_l.read_lagrange3(dt), e.delay_r.read_lagrange3(dt));
-                e.delay_l.write(dl + wr * 0.45); // cross-feed → ping-pong
-                e.delay_r.write(dr + wl * 0.45);
-                dl = dl * (1.0 - amt) + wl * amt;
-                dr = dr * (1.0 - amt) + wr * amt;
-            }
-            FX_CHORUS => {
-                e.chorus_phase += 0.8 / srate; // ~0.8 Hz
-                if e.chorus_phase >= 1.0 { e.chorus_phase -= 1.0; }
-                let lfo = (e.chorus_phase * core::f32::consts::TAU).sin();
-                let dt = (0.012 + 0.004 * lfo) * srate; // 12 ± 4 ms
-                let (wl, wr) = (e.delay_l.read_lagrange3(dt), e.delay_r.read_lagrange3(dt));
-                e.delay_l.write(dl);
-                e.delay_r.write(dr);
-                dl = dl * (1.0 - amt * 0.5) + wl * amt * 0.5;
-                dr = dr * (1.0 - amt * 0.5) + wr * amt * 0.5;
-            }
-            _ => {}
+        // FX CHAIN — run the 3 slots in series.
+        for slot in e.fx.iter_mut() {
+            let (nl, nr) = slot.process(dl, dr, srate);
+            dl = nl;
+            dr = nr;
         }
         ol[i] = dl.clamp(-1.0, 1.0);
         or[i] = dr.clamp(-1.0, 1.0);

@@ -12,10 +12,26 @@
 //! command ring (like livehub's rtrb) for correctness.
 
 use fundsp::prelude::{AudioUnit, Net};
-use superduper_synth_core::dsp_blocks::{midi_note_to_hz, tanh_drive, OnePoleLp, PadParams, PadVoice};
+use superduper_synth_core::dsp_blocks::{
+    midi_note_to_hz, tanh_drive, AdsrParams, OnePoleLp, PadParams, PadVoice,
+};
 use superduper_synth_core::supermass;
+use superduper_synth_core::wave_osc::{
+    render_formula_mip, FilterMode, LfoDest, LfoShape, MipWavetable, ModSlot, WaveParams, WaveVoice,
+};
 
 const MAX_VOICES: usize = 16;
+
+/// Instrument engines the chain can run (picked from a list in the Synth panel).
+const INSTR_AMBIENT: u32 = 0; // PadVoice drone pad
+const INSTR_WAVE: u32 = 1; // wavetable synth (superduper-wave DSP, extracted to synth-core)
+
+// Built-in wavetable frames (phase 0..1 → amplitude). render_formula_mip band-limits each via FFT,
+// so these naive shapes are anti-aliased per mip level. WT Pos morphs between adjacent frames.
+fn wt_saw(p: f32) -> f32 { 2.0 * p - 1.0 }
+fn wt_square(p: f32) -> f32 { if p < 0.5 { 1.0 } else { -1.0 } }
+fn wt_triangle(p: f32) -> f32 { 4.0 * (p - 0.5).abs() - 1.0 }
+fn wt_pulse(p: f32) -> f32 { if p < 0.25 { 1.0 } else { -1.0 } }
 
 /// One FX slot of the chain — a SuperDuper effect the user picks from a list (the `track_fx`
 /// equivalent on iOS). Built once at create so switching is just an id change (RT-safe, no alloc).
@@ -28,14 +44,18 @@ const FX_SATURATE: u32 = 3;
 struct Voice {
     l: PadVoice,
     r: PadVoice,
+    wave: WaveVoice, // Wave instrument (osc/filter state); amp comes from our shared `env` below
     key: u8,
     gate: bool, // note currently held
-    env: f32,   // 0..1 AR envelope (PadVoice has no envelope of its own)
+    env: f32,   // 0..1 AR envelope, drives amplitude for BOTH instruments
 }
 
 impl Voice {
     fn new() -> Self {
-        Self { l: PadVoice::default(), r: PadVoice::default(), key: 255, gate: false, env: 0.0 }
+        Self {
+            l: PadVoice::default(), r: PadVoice::default(), wave: WaveVoice::default(),
+            key: 255, gate: false, env: 0.0,
+        }
     }
 }
 
@@ -47,7 +67,12 @@ pub struct Engine {
     cutoff: f32, cutoff_t: f32,     // Hz
     resonance: f32, resonance_t: f32, // 0..0.95
     drive: f32, drive_t: f32,        // 0..1
-    mod_cents: f32, mod_cents_t: f32, // LFO detune depth
+    mod_cents: f32, mod_cents_t: f32, // Ambient: LFO detune depth
+    wt_pos: f32, wt_pos_t: f32,       // Wave: wavetable morph position 0..1 (param 3, raw)
+    // Instrument selector + Wave wavetable frames (built once at create — FFT mip pyramid).
+    instrument: u32,
+    wave_frames: Vec<MipWavetable>,
+    wave_prev: MipWavetable,
     // FX chain slot (post-instrument). Pre-built; `fx` selects which runs.
     fx: u32,
     fx_amt: f32, fx_amt_t: f32, // wet / amount, smoothed
@@ -60,6 +85,11 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
     let sr = if sample_rate > 0.0 { sample_rate } else { 48_000.0 };
     let mut reverb = supermass::build_wet();
     reverb.set_sample_rate(sr as f64); // RT-unsafe build/config done here, once — tick() in process is RT-safe
+    // Wave wavetable frames (FFT mip pyramids — build here, never in process).
+    let wave_frames: Vec<MipWavetable> =
+        vec![render_formula_mip(wt_saw), render_formula_mip(wt_square),
+             render_formula_mip(wt_triangle), render_formula_mip(wt_pulse)];
+    let wave_prev = render_formula_mip(wt_saw);
     let e = Box::new(Engine {
         sr,
         voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
@@ -67,12 +97,21 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         resonance: 0.30, resonance_t: 0.30,
         drive: 0.25, drive_t: 0.25,
         mod_cents: 25.0, mod_cents_t: 25.0,
+        wt_pos: 0.0, wt_pos_t: 0.0,
+        instrument: INSTR_AMBIENT,
+        wave_frames, wave_prev,
         fx: FX_OFF,
         fx_amt: 0.35, fx_amt_t: 0.35,
         reverb,
         filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
     });
     Box::into_raw(e)
+}
+
+/// Pick the instrument engine (0 Ambient pad · 1 Wave wavetable). Main thread.
+#[no_mangle]
+pub extern "C" fn sdsp_set_instrument(p: *mut Engine, id: u32) {
+    if let Some(e) = unsafe { p.as_mut() } { e.instrument = id; }
 }
 
 /// Pick the FX-slot effect (0 off · 1 reverb · 2 filter · 3 saturator). Main thread.
@@ -106,7 +145,10 @@ pub extern "C" fn sdsp_note_on(p: *mut Engine, key: u8, _velocity: f32) {
                 .map(|(i, _)| i).unwrap_or(0)
         });
     let v = &mut e.voices[idx];
-    if v.env < 0.01 { v.l = PadVoice::default(); v.r = PadVoice::default(); } // fresh slot → no click
+    if v.env < 0.01 {
+        // fresh slot → reset oscillator phase so the attack doesn't click
+        v.l = PadVoice::default(); v.r = PadVoice::default(); v.wave = WaveVoice::default();
+    }
     v.key = key;
     v.gate = true;
 }
@@ -134,7 +176,7 @@ pub extern "C" fn sdsp_set_param(p: *mut Engine, id: u32, value: f32) {
         0 => e.cutoff_t = 150.0 + v * v * 9_000.0, // perceptual-ish cutoff sweep
         1 => e.resonance_t = v * 0.95,
         2 => e.drive_t = v,
-        3 => e.mod_cents_t = v * 60.0,
+        3 => { e.mod_cents_t = v * 60.0; e.wt_pos_t = v; } // Ambient: LFO detune · Wave: WT morph
         _ => {}
     }
 }
@@ -158,9 +200,11 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         e.resonance += (e.resonance_t - e.resonance) * psm;
         e.drive += (e.drive_t - e.drive) * psm;
         e.mod_cents += (e.mod_cents_t - e.mod_cents) * psm;
+        e.wt_pos += (e.wt_pos_t - e.wt_pos) * psm;
         e.fx_amt += (e.fx_amt_t - e.fx_amt) * psm;
-        let (cutoff, resonance, drive, mod_cents) = (e.cutoff, e.resonance, e.drive, e.mod_cents);
-        let (fx, amt, srate) = (e.fx, e.fx_amt, e.sr);
+        let (cutoff, resonance, drive, mod_cents, wt_pos) =
+            (e.cutoff, e.resonance, e.drive, e.mod_cents, e.wt_pos);
+        let (fx, amt, srate, instrument) = (e.fx, e.fx_amt, e.sr, e.instrument);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         for v in e.voices.iter_mut() {
@@ -169,14 +213,32 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             v.env += (target - v.env) * rate;
             if !v.gate && v.env < 0.0005 { continue; }
             let f = midi_note_to_hz(v.key as f32);
-            let base = PadParams {
-                sr: e.sr, root_hz: f, cutoff_hz: cutoff, resonance,
-                modulation_cents: mod_cents, drive,
-            };
-            // Slight L/R detune for stereo width.
-            let pr = PadParams { root_hz: f * 1.003, ..base };
-            sl += v.l.process(base) * v.env;
-            sr += v.r.process(pr) * v.env;
+            if instrument == INSTR_WAVE {
+                // Wave wavetable voice — superduper-wave DSP (extracted to synth-core). It returns the
+                // raw osc+filter pair; our shared AR `env` is the amplitude (its internal env unused).
+                let params = WaveParams {
+                    sr: srate, root_hz: f, wt_pos, unison: 1, detune_cents: 0.0,
+                    sub_level: 0.0, noise_level: 0.0, cutoff_hz: cutoff, resonance,
+                    mode: FilterMode::from_index(0), drive, antialias: true,
+                    fenv_amount_oct: 0.0, fenv: AdsrParams::adsr(srate, 0.005, 0.1, 1.0, 0.1),
+                    lfo_shape: LfoShape::from_index(0), lfo_dest: LfoDest::from_index(0),
+                    lfo_rate_hz: 1.0, lfo_depth: 0.0,
+                    frames: &e.wave_frames, frame_a_prev: &e.wave_prev, frame_a_fade: 1.0,
+                    sync_on: false, sync_ratio: 1.0, fm_ratio: 1.0, fm_amount: 0.0,
+                    mod_slots: [ModSlot::default(); 2], mod_wheel: 0.0, aftertouch: 0.0,
+                };
+                let (wl, wr) = v.wave.process(params);
+                sl += wl * v.env;
+                sr += wr * v.env;
+            } else {
+                let base = PadParams {
+                    sr: srate, root_hz: f, cutoff_hz: cutoff, resonance,
+                    modulation_cents: mod_cents, drive,
+                };
+                let pr = PadParams { root_hz: f * 1.003, ..base }; // slight L/R detune for width
+                sl += v.l.process(base) * v.env;
+                sr += v.r.process(pr) * v.env;
+            }
         }
         // Dry stereo from the voices, then the selected FX slot (voices borrow released → can
         // borrow reverb/filters here).

@@ -11,9 +11,19 @@
 //! at worst a momentary glitch, never a crash. The production version routes control through an SPSC
 //! command ring (like livehub's rtrb) for correctness.
 
-use superduper_synth_core::dsp_blocks::{midi_note_to_hz, PadParams, PadVoice};
+use fundsp::prelude::{AudioUnit, Net};
+use superduper_synth_core::dsp_blocks::{midi_note_to_hz, tanh_drive, OnePoleLp, PadParams, PadVoice};
+use superduper_synth_core::supermass;
 
 const MAX_VOICES: usize = 16;
+
+/// One FX slot of the chain — a SuperDuper effect the user picks from a list (the `track_fx`
+/// equivalent on iOS). Built once at create so switching is just an id change (RT-safe, no alloc).
+/// 0 Off · 1 Reverb (supermass) · 2 Filter (one-pole LP sweep) · 3 Saturator (tanh drive).
+const FX_OFF: u32 = 0;
+const FX_REVERB: u32 = 1;
+const FX_FILTER: u32 = 2;
+const FX_SATURATE: u32 = 3;
 
 struct Voice {
     l: PadVoice,
@@ -38,19 +48,43 @@ pub struct Engine {
     resonance: f32, resonance_t: f32, // 0..0.95
     drive: f32, drive_t: f32,        // 0..1
     mod_cents: f32, mod_cents_t: f32, // LFO detune depth
+    // FX chain slot (post-instrument). Pre-built; `fx` selects which runs.
+    fx: u32,
+    fx_amt: f32, fx_amt_t: f32, // wet / amount, smoothed
+    reverb: Net,
+    filt_l: OnePoleLp, filt_r: OnePoleLp,
 }
 
 #[no_mangle]
 pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
+    let sr = if sample_rate > 0.0 { sample_rate } else { 48_000.0 };
+    let mut reverb = supermass::build_wet();
+    reverb.set_sample_rate(sr as f64); // RT-unsafe build/config done here, once — tick() in process is RT-safe
     let e = Box::new(Engine {
-        sr: if sample_rate > 0.0 { sample_rate } else { 48_000.0 },
+        sr,
         voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
         cutoff: 2_400.0, cutoff_t: 2_400.0,
         resonance: 0.30, resonance_t: 0.30,
         drive: 0.25, drive_t: 0.25,
         mod_cents: 25.0, mod_cents_t: 25.0,
+        fx: FX_OFF,
+        fx_amt: 0.35, fx_amt_t: 0.35,
+        reverb,
+        filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
     });
     Box::into_raw(e)
+}
+
+/// Pick the FX-slot effect (0 off · 1 reverb · 2 filter · 3 saturator). Main thread.
+#[no_mangle]
+pub extern "C" fn sdsp_set_effect(p: *mut Engine, id: u32) {
+    if let Some(e) = unsafe { p.as_mut() } { e.fx = id; }
+}
+
+/// FX wet/amount 0..1. Main thread; smoothed on the audio thread.
+#[no_mangle]
+pub extern "C" fn sdsp_set_effect_amount(p: *mut Engine, value: f32) {
+    if let Some(e) = unsafe { p.as_mut() } { e.fx_amt_t = value.clamp(0.0, 1.0); }
 }
 
 #[no_mangle]
@@ -124,7 +158,9 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         e.resonance += (e.resonance_t - e.resonance) * psm;
         e.drive += (e.drive_t - e.drive) * psm;
         e.mod_cents += (e.mod_cents_t - e.mod_cents) * psm;
+        e.fx_amt += (e.fx_amt_t - e.fx_amt) * psm;
         let (cutoff, resonance, drive, mod_cents) = (e.cutoff, e.resonance, e.drive, e.mod_cents);
+        let (fx, amt, srate) = (e.fx, e.fx_amt, e.sr);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         for v in e.voices.iter_mut() {
@@ -142,7 +178,31 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             sl += v.l.process(base) * v.env;
             sr += v.r.process(pr) * v.env;
         }
-        ol[i] = (sl * 0.22).clamp(-1.0, 1.0);
-        or[i] = (sr * 0.22).clamp(-1.0, 1.0);
+        // Dry stereo from the voices, then the selected FX slot (voices borrow released → can
+        // borrow reverb/filters here).
+        let mut dl = sl * 0.22;
+        let mut dr = sr * 0.22;
+        match fx {
+            FX_REVERB => {
+                let mut wet = [0.0_f32; 2];
+                e.reverb.tick(&[dl, dr], &mut wet);
+                dl = dl * (1.0 - amt) + wet[0] * amt;
+                dr = dr * (1.0 - amt) + wet[1] * amt;
+            }
+            FX_FILTER => {
+                let cut = 200.0 * 80.0_f32.powf(amt); // amt 0→200Hz, 1→16kHz (open)
+                dl = e.filt_l.process(dl, srate, cut);
+                dr = e.filt_r.process(dr, srate, cut);
+            }
+            FX_SATURATE => {
+                let drv = 1.0 + amt * 8.0;
+                let comp = 1.0 / (1.0 + amt * 1.5); // keep level roughly constant as drive rises
+                dl = tanh_drive(dl, drv) * comp;
+                dr = tanh_drive(dr, drv) * comp;
+            }
+            _ => {}
+        }
+        ol[i] = dl.clamp(-1.0, 1.0);
+        or[i] = dr.clamp(-1.0, 1.0);
     }
 }

@@ -15,6 +15,9 @@ crate-type = ["staticlib"]
 [dependencies]
 # DSP only — NO gui/clack/egui (default-features = false keeps it iOS-safe).
 superduper-synth-core = { path = "../../synth-core", default-features = false }
+# Already compiled for iOS as a synth-core transitive dep; declared here so we can call
+# the supermass reverb Net's AudioUnit::tick directly in the FX chain.
+fundsp = "0.23"
 
 [profile.release]
 opt-level = 3

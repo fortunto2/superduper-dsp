@@ -15,6 +15,10 @@ void sdsp_note_off(SDSPEngine *engine, uint8_t key);
 void sdsp_all_notes_off(SDSPEngine *engine);
 void sdsp_set_param(SDSPEngine *engine, uint32_t id, float value);
 
+// FX chain slot (main thread). effect id: 0 off · 1 reverb · 2 filter · 3 saturator.
+void sdsp_set_effect(SDSPEngine *engine, uint32_t id);
+void sdsp_set_effect_amount(SDSPEngine *engine, float value);
+
 // Render `frames` stereo samples (AUDIO THREAD ONLY — no allocation).
 void sdsp_process(SDSPEngine *engine, float *out_l, float *out_r, uint32_t frames);
 

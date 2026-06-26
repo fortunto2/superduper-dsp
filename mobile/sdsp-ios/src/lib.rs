@@ -13,7 +13,10 @@
 
 use fundsp::prelude::{AudioUnit, Net};
 use superduper_synth_core::dsp_blocks::{
-    midi_note_to_hz, tanh_drive, AdsrParams, OnePoleLp, PadParams, PadVoice,
+    midi_note_to_hz, tanh_drive, AdsrParams, DelayLine, OnePoleLp, PadParams, PadVoice,
+};
+use superduper_synth_core::drum_voices::{
+    note_to_voice, Clap, Cowbell, DrumParams, HiHat, Kick, Snare, VoiceKind,
 };
 use superduper_synth_core::kubyz::voice::{KubyzParams, KubyzVoice};
 use superduper_synth_core::kubyz::N_HARMONICS;
@@ -28,6 +31,7 @@ const MAX_VOICES: usize = 16;
 const INSTR_AMBIENT: u32 = 0; // PadVoice drone pad
 const INSTR_WAVE: u32 = 1; // wavetable synth (superduper-wave DSP, extracted to synth-core)
 const INSTR_KUBYZ: u32 = 2; // Bashkir jaw-harp additive model (superduper-kubyz DSP)
+const INSTR_DRUM: u32 = 3; // 6 analog drum voices (superduper-drum DSP) — notes map to drums
 
 // Built-in Kubyz timbre (Bashkir reference): per-harmonic levels in dB + a fixed formant. Converted
 // to linear at create. The plugin exposes these as editable; iOS ships the reference voice.
@@ -52,6 +56,8 @@ const FX_OFF: u32 = 0;
 const FX_REVERB: u32 = 1;
 const FX_FILTER: u32 = 2;
 const FX_SATURATE: u32 = 3;
+const FX_DELAY: u32 = 4; // feedback delay (DelayLine)
+const FX_CHORUS: u32 = 5; // LFO-modulated short delay
 
 struct Voice {
     l: PadVoice,
@@ -88,11 +94,16 @@ pub struct Engine {
     wave_frames: Vec<MipWavetable>,
     wave_prev: MipWavetable,
     kubyz_harm: [f32; N_HARMONICS], // Kubyz harmonic levels (linear), built from the dB reference
+    // Drum kit (fixed voices, triggered by note — not the poly pool).
+    kick: Kick, snare: Snare, hat: HiHat, clap: Clap, cowbell: Cowbell,
+    hat_decay: f32, // open vs closed hat
     // FX chain slot (post-instrument). Pre-built; `fx` selects which runs.
     fx: u32,
     fx_amt: f32, fx_amt_t: f32, // wet / amount, smoothed
     reverb: Net,
     filt_l: OnePoleLp, filt_r: OnePoleLp,
+    delay_l: DelayLine, delay_r: DelayLine, // shared by Delay + Chorus
+    chorus_phase: f32,
 }
 
 #[no_mangle]
@@ -117,10 +128,14 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         wt_pos: 0.0, wt_pos_t: 0.0,
         instrument: INSTR_AMBIENT,
         wave_frames, wave_prev, kubyz_harm,
+        kick: Kick::default(), snare: Snare::default(), hat: HiHat::default(),
+        clap: Clap::default(), cowbell: Cowbell::default(), hat_decay: 0.06,
         fx: FX_OFF,
         fx_amt: 0.35, fx_amt_t: 0.35,
         reverb,
         filt_l: OnePoleLp::default(), filt_r: OnePoleLp::default(),
+        delay_l: DelayLine::new(sr as usize), delay_r: DelayLine::new(sr as usize), // 1 s
+        chorus_phase: 0.0,
     });
     Box::into_raw(e)
 }
@@ -153,6 +168,20 @@ pub extern "C" fn sdsp_destroy(p: *mut Engine) {
 #[no_mangle]
 pub extern "C" fn sdsp_note_on(p: *mut Engine, key: u8, _velocity: f32) {
     let e = match unsafe { p.as_mut() } { Some(e) => e, None => return };
+    if e.instrument == INSTR_DRUM {
+        // Drums are one-shot voices triggered by note (C=kick, D=snare, E/F=hats, G=clap, A=cowbell).
+        if let Some(kind) = note_to_voice(key) {
+            match kind {
+                VoiceKind::Kick => e.kick.trigger(1.0),
+                VoiceKind::Snare => e.snare.trigger(1.0),
+                VoiceKind::HatClosed => { e.hat_decay = 0.06; e.hat.trigger(1.0); }
+                VoiceKind::HatOpen => { e.hat_decay = 0.40; e.hat.trigger(1.0); }
+                VoiceKind::Clap => e.clap.trigger(1.0),
+                VoiceKind::Cowbell => e.cowbell.trigger(1.0),
+            }
+        }
+        return;
+    }
     // Reuse a held voice on the same key, else the most-released (quietest) slot.
     let idx = e.voices.iter().position(|v| v.gate && v.key == key)
         .or_else(|| e.voices.iter().position(|v| !v.gate && v.env < 0.01))
@@ -227,6 +256,17 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         let (fx, amt, srate, instrument) = (e.fx, e.fx_amt, e.sr, e.instrument);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
+        if instrument == INSTR_DRUM {
+            // Fixed drum kit (not the poly pool) — sum the 6 voices.
+            let dp = DrumParams::default();
+            let m = e.kick.process(srate, dp)
+                + e.snare.process(srate, dp)
+                + e.hat.process(srate, DrumParams { decay_s: e.hat_decay, ..dp })
+                + e.clap.process(srate, dp)
+                + e.cowbell.process(srate, dp);
+            sl = m * 0.6;
+            sr = m * 0.6;
+        } else {
         for v in e.voices.iter_mut() {
             let target = if v.gate { 1.0 } else { 0.0 };
             let rate = if v.gate { atk } else { rel };
@@ -271,10 +311,12 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 sr += v.r.process(pr) * v.env;
             }
         }
-        // Dry stereo from the voices, then the selected FX slot (voices borrow released → can
-        // borrow reverb/filters here).
-        let mut dl = sl * 0.22;
-        let mut dr = sr * 0.22;
+        } // end else (poly pool)
+        // Dry stereo, then the selected FX slot (voices borrow released → can borrow reverb/filters).
+        // Drums are already a finished mix, so they bypass the 0.22 poly-sum gain.
+        let g = if instrument == INSTR_DRUM { 1.0 } else { 0.22 };
+        let mut dl = sl * g;
+        let mut dr = sr * g;
         match fx {
             FX_REVERB => {
                 let mut wet = [0.0_f32; 2];
@@ -292,6 +334,25 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 let comp = 1.0 / (1.0 + amt * 1.5); // keep level roughly constant as drive rises
                 dl = tanh_drive(dl, drv) * comp;
                 dr = tanh_drive(dr, drv) * comp;
+            }
+            FX_DELAY => {
+                let dt = 0.32 * srate; // 320 ms
+                let (wl, wr) = (e.delay_l.read_lagrange3(dt), e.delay_r.read_lagrange3(dt));
+                e.delay_l.write(dl + wr * 0.45); // cross-feed → ping-pong
+                e.delay_r.write(dr + wl * 0.45);
+                dl = dl * (1.0 - amt) + wl * amt;
+                dr = dr * (1.0 - amt) + wr * amt;
+            }
+            FX_CHORUS => {
+                e.chorus_phase += 0.8 / srate; // ~0.8 Hz
+                if e.chorus_phase >= 1.0 { e.chorus_phase -= 1.0; }
+                let lfo = (e.chorus_phase * core::f32::consts::TAU).sin();
+                let dt = (0.012 + 0.004 * lfo) * srate; // 12 ± 4 ms
+                let (wl, wr) = (e.delay_l.read_lagrange3(dt), e.delay_r.read_lagrange3(dt));
+                e.delay_l.write(dl);
+                e.delay_r.write(dr);
+                dl = dl * (1.0 - amt * 0.5) + wl * amt * 0.5;
+                dr = dr * (1.0 - amt * 0.5) + wr * amt * 0.5;
             }
             _ => {}
         }

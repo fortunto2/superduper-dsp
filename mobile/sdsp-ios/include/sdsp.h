@@ -15,10 +15,10 @@ void sdsp_note_off(SDSPEngine *engine, uint8_t key);
 void sdsp_all_notes_off(SDSPEngine *engine);
 void sdsp_set_param(SDSPEngine *engine, uint32_t id, float value);
 
-// Instrument engine (main thread). id: 0 Ambient pad · 1 Wave wavetable · 2 Kubyz jaw-harp.
+// Instrument engine (main thread). id: 0 Pad · 1 Wave · 2 Kubyz · 3 Drum (notes→drums).
 void sdsp_set_instrument(SDSPEngine *engine, uint32_t id);
 
-// FX chain slot (main thread). effect id: 0 off · 1 reverb · 2 filter · 3 saturator.
+// FX chain slot (main thread). id: 0 off · 1 reverb · 2 filter · 3 saturator · 4 delay · 5 chorus.
 void sdsp_set_effect(SDSPEngine *engine, uint32_t id);
 void sdsp_set_effect_amount(SDSPEngine *engine, float value);
 

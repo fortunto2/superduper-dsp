@@ -18,6 +18,10 @@ void sdsp_set_param(SDSPEngine *engine, uint32_t id, float value);
 // Instrument engine (main thread). id: 0 Pad · 1 Wave · 2 Kubyz · 3 Drum (notes→drums).
 void sdsp_set_instrument(SDSPEngine *engine, uint32_t id);
 
+// Instrument-specific param (main thread). idx 0/1, meaning depends on the active instrument:
+// Wave 0 Sub / 1 Noise · Kubyz 0 Vowel · Drum 0 Tune / 1 Decay.
+void sdsp_set_instr_param(SDSPEngine *engine, uint32_t idx, float value);
+
 // FX chain (main thread). 3 slots in series. effect id: 0 off · 1 reverb · 2 filter · 3 saturator ·
 // 4 delay · 5 chorus · 6 compressor. Per-slot params (idx 0..2) meaning depends on the effect.
 void sdsp_set_effect(SDSPEngine *engine, uint32_t slot, uint32_t id);

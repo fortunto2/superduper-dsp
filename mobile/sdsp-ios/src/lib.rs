@@ -204,6 +204,9 @@ pub struct Engine {
     wave_frames: Vec<MipWavetable>,
     wave_prev: MipWavetable,
     kubyz_harm: [f32; N_HARMONICS], // Kubyz harmonic levels (linear), built from the dB reference
+    // Instrument-specific params (0/1), meaning depends on the active instrument (smoothed):
+    //   Wave: 0 Sub · 1 Noise   Kubyz: 0 Vowel (formant morph)   Drum: 0 Tune · 1 Decay
+    instr_param: [f32; 2], instr_param_t: [f32; 2],
     // Drum kit (fixed voices, triggered by note — not the poly pool).
     kick: Kick, snare: Snare, hat: HiHat, clap: Clap, cowbell: Cowbell,
     hat_decay: f32, // open vs closed hat
@@ -232,6 +235,7 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         wt_pos: 0.0, wt_pos_t: 0.0,
         instrument: INSTR_AMBIENT,
         wave_frames, wave_prev, kubyz_harm,
+        instr_param: [0.0, 0.0], instr_param_t: [0.0, 0.0],
         kick: Kick::default(), snare: Snare::default(), hat: HiHat::default(),
         clap: Clap::default(), cowbell: Cowbell::default(), hat_decay: 0.06,
         fx: [FxSlot::new(sr), FxSlot::new(sr), FxSlot::new(sr)],
@@ -243,6 +247,14 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
 #[no_mangle]
 pub extern "C" fn sdsp_set_instrument(p: *mut Engine, id: u32) {
     if let Some(e) = unsafe { p.as_mut() } { e.instrument = id; }
+}
+
+/// Instrument-specific param `idx` (0/1) 0..1 — meaning depends on the active instrument. Smoothed.
+#[no_mangle]
+pub extern "C" fn sdsp_set_instr_param(p: *mut Engine, idx: u32, value: f32) {
+    if let Some(e) = unsafe { p.as_mut() } {
+        if let Some(t) = e.instr_param_t.get_mut(idx as usize) { *t = value.clamp(0.0, 1.0); }
+    }
 }
 
 /// Pick the effect for chain `slot` (0..2). id: 0 off · 1 reverb · 2 filter · 3 saturator ·
@@ -356,15 +368,18 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
         e.drive += (e.drive_t - e.drive) * psm;
         e.mod_cents += (e.mod_cents_t - e.mod_cents) * psm;
         e.wt_pos += (e.wt_pos_t - e.wt_pos) * psm;
+        e.instr_param[0] += (e.instr_param_t[0] - e.instr_param[0]) * psm;
+        e.instr_param[1] += (e.instr_param_t[1] - e.instr_param[1]) * psm;
         for s in e.fx.iter_mut() { s.smooth(psm); }
         let (cutoff, resonance, drive, mod_cents, wt_pos) =
             (e.cutoff, e.resonance, e.drive, e.mod_cents, e.wt_pos);
         let (srate, instrument) = (e.sr, e.instrument);
+        let (ip0, ip1) = (e.instr_param[0], e.instr_param[1]);
         let mut sl = 0.0_f32;
         let mut sr = 0.0_f32;
         if instrument == INSTR_DRUM {
-            // Fixed drum kit (not the poly pool) — sum the 6 voices.
-            let dp = DrumParams::default();
+            // Fixed drum kit (not the poly pool) — sum the 6 voices. ip0 Tune · ip1 Decay.
+            let dp = DrumParams { tune_st: (ip0 - 0.5) * 12.0, decay_s: 0.12 + ip1 * 0.5, level: 0.8, pan: 0.0 };
             let m = e.kick.process(srate, dp)
                 + e.snare.process(srate, dp)
                 + e.hat.process(srate, DrumParams { decay_s: e.hat_decay, ..dp })
@@ -384,7 +399,7 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 // raw osc+filter pair; our shared AR `env` is the amplitude (its internal env unused).
                 let params = WaveParams {
                     sr: srate, root_hz: f, wt_pos, unison: 1, detune_cents: 0.0,
-                    sub_level: 0.0, noise_level: 0.0, cutoff_hz: cutoff, resonance,
+                    sub_level: ip0, noise_level: ip1 * 0.5, cutoff_hz: cutoff, resonance,
                     mode: FilterMode::from_index(0), drive, antialias: true,
                     fenv_amount_oct: 0.0, fenv: AdsrParams::adsr(srate, 0.005, 0.1, 1.0, 0.1),
                     lfo_shape: LfoShape::from_index(0), lfo_dest: LfoDest::from_index(0),
@@ -399,9 +414,15 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
             } else if instrument == INSTR_KUBYZ {
                 // Kubyz jaw-harp — superduper-kubyz DSP. Built-in Bashkir timbre; the Motion param
                 // (mod_cents 0..60) opens the formant mix for a vowel sweep.
+                // Vowel (ip0): morph the formants closed→open for the jaw-harp "wah".
+                let fmt = [
+                    350.0 * (1.0 - ip0) + 650.0 * ip0,
+                    800.0 * (1.0 - ip0) + 1700.0 * ip0,
+                    2200.0 * (1.0 - ip0) + 2600.0 * ip0,
+                ];
                 let params = KubyzParams {
                     sr: srate, root_hz: f, harmonics: &e.kubyz_harm,
-                    formant_f: KUBYZ_FORMANT_F, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,
+                    formant_f: fmt, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,
                     formant_mix: (mod_cents / 60.0).clamp(0.0, 1.0), velocity_formant_shift: 0.1,
                 };
                 let (kl, kr) = v.kubyz.process(params);

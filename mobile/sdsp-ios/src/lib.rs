@@ -15,6 +15,8 @@ use fundsp::prelude::{AudioUnit, Net};
 use superduper_synth_core::dsp_blocks::{
     midi_note_to_hz, tanh_drive, AdsrParams, OnePoleLp, PadParams, PadVoice,
 };
+use superduper_synth_core::kubyz::voice::{KubyzParams, KubyzVoice};
+use superduper_synth_core::kubyz::N_HARMONICS;
 use superduper_synth_core::supermass;
 use superduper_synth_core::wave_osc::{
     render_formula_mip, FilterMode, LfoDest, LfoShape, MipWavetable, ModSlot, WaveParams, WaveVoice,
@@ -25,6 +27,16 @@ const MAX_VOICES: usize = 16;
 /// Instrument engines the chain can run (picked from a list in the Synth panel).
 const INSTR_AMBIENT: u32 = 0; // PadVoice drone pad
 const INSTR_WAVE: u32 = 1; // wavetable synth (superduper-wave DSP, extracted to synth-core)
+const INSTR_KUBYZ: u32 = 2; // Bashkir jaw-harp additive model (superduper-kubyz DSP)
+
+// Built-in Kubyz timbre (Bashkir reference): per-harmonic levels in dB + a fixed formant. Converted
+// to linear at create. The plugin exposes these as editable; iOS ships the reference voice.
+const KUBYZ_HARM_DB: [f32; N_HARMONICS] = [
+    0.0, 6.6, 19.0, 24.1, 17.0, 38.6, 9.4, 16.7, 15.2, 17.9, 19.9, 9.8, 14.3, -0.5, 7.6, 3.3,
+];
+const KUBYZ_FORMANT_F: [f32; 3] = [705.0, 1301.0, 2165.0];
+const KUBYZ_FORMANT_BW: [f32; 3] = [90.0, 110.0, 130.0];
+const KUBYZ_FORMANT_GAIN: [f32; 3] = [1.0, 0.8, 0.6];
 
 // Built-in wavetable frames (phase 0..1 → amplitude). render_formula_mip band-limits each via FFT,
 // so these naive shapes are anti-aliased per mip level. WT Pos morphs between adjacent frames.
@@ -44,16 +56,18 @@ const FX_SATURATE: u32 = 3;
 struct Voice {
     l: PadVoice,
     r: PadVoice,
-    wave: WaveVoice, // Wave instrument (osc/filter state); amp comes from our shared `env` below
+    wave: WaveVoice,   // Wave instrument (osc/filter state)
+    kubyz: KubyzVoice, // Kubyz instrument (additive + formant state)
     key: u8,
     gate: bool, // note currently held
-    env: f32,   // 0..1 AR envelope, drives amplitude for BOTH instruments
+    env: f32,   // 0..1 AR envelope, drives amplitude for ALL instruments
 }
 
 impl Voice {
     fn new() -> Self {
         Self {
-            l: PadVoice::default(), r: PadVoice::default(), wave: WaveVoice::default(),
+            l: PadVoice::default(), r: PadVoice::default(),
+            wave: WaveVoice::default(), kubyz: KubyzVoice::default(),
             key: 255, gate: false, env: 0.0,
         }
     }
@@ -73,6 +87,7 @@ pub struct Engine {
     instrument: u32,
     wave_frames: Vec<MipWavetable>,
     wave_prev: MipWavetable,
+    kubyz_harm: [f32; N_HARMONICS], // Kubyz harmonic levels (linear), built from the dB reference
     // FX chain slot (post-instrument). Pre-built; `fx` selects which runs.
     fx: u32,
     fx_amt: f32, fx_amt_t: f32, // wet / amount, smoothed
@@ -90,6 +105,8 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         vec![render_formula_mip(wt_saw), render_formula_mip(wt_square),
              render_formula_mip(wt_triangle), render_formula_mip(wt_pulse)];
     let wave_prev = render_formula_mip(wt_saw);
+    let mut kubyz_harm = [0.0_f32; N_HARMONICS]; // dB → linear once
+    for (i, db) in KUBYZ_HARM_DB.iter().enumerate() { kubyz_harm[i] = 10.0_f32.powf(db / 20.0); }
     let e = Box::new(Engine {
         sr,
         voices: (0..MAX_VOICES).map(|_| Voice::new()).collect(),
@@ -99,7 +116,7 @@ pub extern "C" fn sdsp_create(sample_rate: f32) -> *mut Engine {
         mod_cents: 25.0, mod_cents_t: 25.0,
         wt_pos: 0.0, wt_pos_t: 0.0,
         instrument: INSTR_AMBIENT,
-        wave_frames, wave_prev,
+        wave_frames, wave_prev, kubyz_harm,
         fx: FX_OFF,
         fx_amt: 0.35, fx_amt_t: 0.35,
         reverb,
@@ -144,11 +161,14 @@ pub extern "C" fn sdsp_note_on(p: *mut Engine, key: u8, _velocity: f32) {
                 .min_by(|a, b| a.1.env.partial_cmp(&b.1.env).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i).unwrap_or(0)
         });
+    let sr = e.sr;
     let v = &mut e.voices[idx];
     if v.env < 0.01 {
         // fresh slot → reset oscillator phase so the attack doesn't click
         v.l = PadVoice::default(); v.r = PadVoice::default(); v.wave = WaveVoice::default();
+        v.kubyz = KubyzVoice::default();
     }
+    v.kubyz.on_note_on(sr); // re-trigger the jaw-harp on-note fade
     v.key = key;
     v.gate = true;
 }
@@ -230,6 +250,17 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 let (wl, wr) = v.wave.process(params);
                 sl += wl * v.env;
                 sr += wr * v.env;
+            } else if instrument == INSTR_KUBYZ {
+                // Kubyz jaw-harp — superduper-kubyz DSP. Built-in Bashkir timbre; the Motion param
+                // (mod_cents 0..60) opens the formant mix for a vowel sweep.
+                let params = KubyzParams {
+                    sr: srate, root_hz: f, harmonics: &e.kubyz_harm,
+                    formant_f: KUBYZ_FORMANT_F, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,
+                    formant_mix: (mod_cents / 60.0).clamp(0.0, 1.0), velocity_formant_shift: 0.1,
+                };
+                let (kl, kr) = v.kubyz.process(params);
+                sl += kl * v.env;
+                sr += kr * v.env;
             } else {
                 let base = PadParams {
                     sr: srate, root_hz: f, cutoff_hz: cutoff, resonance,

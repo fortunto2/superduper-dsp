@@ -19,6 +19,8 @@ pub mod supermass;
 pub mod user_preset;
 pub mod wav;
 pub mod wave_osc; // wavetable oscillator/voice (extracted from superduper-wave so it reaches iOS too)
+pub mod drum_voices; // 6 analog drum voices (extracted from superduper-drum)
+pub mod kubyz; // Bashkir jaw-harp additive model (extracted from superduper-kubyz)
 
 #[cfg(feature = "gui")]
 pub mod gui;

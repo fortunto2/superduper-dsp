@@ -10,7 +10,8 @@
 
 use superduper_synth_core::formant::FormantPreset;
 
-pub const N_HARMONICS: usize = 16;
+// Single source of truth lives in synth-core (the voice + these preset tables must agree).
+pub use superduper_synth_core::kubyz::N_HARMONICS;
 
 #[derive(Clone, Copy)]
 pub struct KubyzPreset {

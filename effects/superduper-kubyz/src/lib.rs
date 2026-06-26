@@ -12,9 +12,11 @@
 
 pub mod gui;
 pub mod presets;
-pub mod trajectory;
 pub mod user_extra;
-pub mod voice;
+// Kubyz voice + trajectory DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the
+// old paths so every reference keeps working; the old src/voice.rs + src/trajectory.rs are now dead.
+pub use superduper_synth_core::kubyz::trajectory as trajectory;
+pub use superduper_synth_core::kubyz::voice as voice;
 
 use atomic_float::AtomicF32;
 use clack_common::events::Match;

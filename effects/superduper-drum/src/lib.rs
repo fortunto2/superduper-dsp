@@ -24,7 +24,9 @@
 
 pub mod gui;
 pub mod presets;
-pub mod voices;
+// Drum voice DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the old `voices`
+// path so every reference keeps working; old src/voices.rs is now dead (left in place).
+pub use superduper_synth_core::drum_voices as voices;
 
 use atomic_float::AtomicF32;
 use clack_common::events::{Match, Pckn};

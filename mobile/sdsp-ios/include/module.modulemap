@@ -1,0 +1,4 @@
+module SDSP {
+    header "sdsp.h"
+    export *
+}

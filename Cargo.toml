@@ -37,6 +37,7 @@ members = [
     "tools/vocal-inspect",
     "tools/sdsp-chain",
     "tools/nam-test","tools/nam-bench","tools/wave-pitch-bench",
+    "mobile/sdsp-ios",
 ]
 exclude = [
     "tools/nam-reference",

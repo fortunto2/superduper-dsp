@@ -1,0 +1,21 @@
+# Thin C-ABI staticlib bringing SuperDuper synth DSP to iOS (live2play in-app engine).
+# Spike: hosts the Ambient pad voice directly; the next layer swaps this for a clack-host
+# chain (instrument → FX) driven by the same note/param C ABI from the gesture engine.
+[package]
+name = "sdsp-ios"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "sdsp_ios"
+crate-type = ["staticlib"]
+
+[dependencies]
+# DSP only — NO gui/clack/egui (default-features = false keeps it iOS-safe).
+superduper-synth-core = { path = "../../synth-core", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true

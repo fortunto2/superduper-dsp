@@ -472,8 +472,8 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 // (mod_cents 0..60) opens the formant mix for a vowel sweep.
                 // 2D vowel pad (like the plugin): X = F2 back→front, Y = F1 close→open. The hand moving
                 // over the field IS the melody.
-                let f2 = 850.0 + ip0 * 1500.0; // X: u/o (back) → e/i (front)
-                let f1 = 290.0 + ip1 * 450.0;  // Y: u/i (close) → a (open)
+                let f2 = 850.0 + ip0 * 1500.0;       // X: u/o (back) → e/i (front)
+                let f1 = 290.0 + (1.0 - ip1) * 450.0; // Y: hand UP (ip1 high) → close (u/i), down → open (a)
                 let fmt = [f1, f2, 2700.0];
                 let params = KubyzParams {
                     sr: srate, root_hz: f, harmonics: &e.kubyz_presets[kp],

@@ -39,6 +39,15 @@ pub const PRESET_FORMAT_VERSION: u32 = 1;
 /// imposes a 255-byte path limit, with a long install dir we want margin).
 pub const PRESET_NAME_MAX: usize = 64;
 
+/// How far the saved param count may drift from the plugin's current count
+/// and still load. A build that *appends* a param (e.g. the Preset selector,
+/// 37 → 38) must keep loading older presets: the bounded apply loop leaves
+/// the new params at their defaults and ignores any extras. A larger gap
+/// means the file is for a different plugin and is rejected. Kept smaller
+/// than the closest gap between our plugins' param counts so cross-plugin
+/// loads still fail.
+pub const PARAM_COUNT_TOLERANCE: usize = 4;
+
 #[derive(Debug, Error)]
 pub enum PresetError {
     #[error("preset name empty after sanitisation")]
@@ -168,7 +177,9 @@ impl<E: PresetExtra> UserPreset<E> {
         if self.version != PRESET_FORMAT_VERSION {
             return Err(PresetError::UnsupportedVersion(self.version));
         }
-        if self.params.len() != expected_param_count {
+        let lo = expected_param_count.saturating_sub(PARAM_COUNT_TOLERANCE);
+        let hi = expected_param_count + PARAM_COUNT_TOLERANCE;
+        if !(lo..=hi).contains(&self.params.len()) {
             return Err(PresetError::ParamCountMismatch {
                 expected: expected_param_count,
                 got: self.params.len(),
@@ -385,8 +396,13 @@ mod tests {
             params: vec![0.0, 0.5, 1.0],
             extra: TestExtra { frame_a: vec![0.0; 16] },
         };
-        let err = preset.validate_for(5).unwrap_err();
-        assert!(matches!(err, PresetError::ParamCountMismatch { expected: 5, got: 3 }));
+        // Within PARAM_COUNT_TOLERANCE (build drift, e.g. an appended param):
+        // loads, with the bounded apply leaving new params at their defaults.
+        assert!(preset.validate_for(3).is_ok());
+        assert!(preset.validate_for(3 + PARAM_COUNT_TOLERANCE).is_ok());
+        // A large gap means a different plugin → still rejected.
+        let err = preset.validate_for(3 + PARAM_COUNT_TOLERANCE + 1).unwrap_err();
+        assert!(matches!(err, PresetError::ParamCountMismatch { got: 3, .. }));
     }
 
     #[test]

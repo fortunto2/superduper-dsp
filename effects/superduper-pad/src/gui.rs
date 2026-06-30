@@ -81,10 +81,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             &state.preset_names,
             &mut state.selected_preset,
         ) {
-            if let Some(preset) = PRESETS.get(i) {
-                crate::presets::apply(&state.shared, preset);
-            state.shared.active_preset.store(i as u32, std::sync::atomic::Ordering::Relaxed);
-            }
+            // Route through the shared recall so GUI + host stay consistent
+            // (writes values, marks dirty, reflects the P_PRESET selector,
+            // records active_preset). Safe to allocate — GUI is main thread.
+            crate::apply_preset(&state.shared, i);
 
         core_gui::ab_init_bar(
             ui,

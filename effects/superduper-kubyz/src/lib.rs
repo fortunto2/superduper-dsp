@@ -47,7 +47,7 @@ use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams, SmoothedParam, midi_note_to_hz};
 
-use presets::{presets, KubyzPreset, N_HARMONICS};
+use presets::{presets, KubyzPreset, N_HARMONICS, PRESET_COUNT};
 use voice::{KubyzParams, KubyzVoice, NOTE_FREE};
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,13 @@ pub const PARAMS: &[ParamDef] = &[
     // Note division — see synth_core::dsp_blocks::sync_division_label.
     // 0=1/1, 4=1/4, 7=1/8, 10=1/16, etc.
     ParamDef { id: 18, name: b"M Div",         min: 0.0, max: 11.0,  default: 4.0,    unit: ""   },
+    // Preset / voice selector — stepped 0..N-1. Set from the host or an
+    // agent (producer-pal / MCP) to recall a whole preset (harmonics +
+    // formant + envelope) without opening the GUI. The recall (apply_preset)
+    // touches the formant Mutexes / harmonic table, so it runs on the main
+    // thread — see PluginMainThreadParams::flush + on_main_thread. Default
+    // 1.0 = Bashkir, matching active_preset's initial value.
+    ParamDef { id: 19, name: b"Preset",        min: 0.0, max: (PRESET_COUNT - 1) as f64, default: 1.0, unit: "" },
 ];
 
 pub const P_F1: usize = 0;
@@ -115,6 +122,7 @@ pub const P_MOUTH_STEREO: usize = 15;
 pub const P_BEND_RANGE: usize = 16;
 pub const P_MOUTH_SYNC: usize = 17;
 pub const P_MOUTH_DIV: usize = 18;
+pub const P_PRESET: usize = 19;
 
 pub const VOICE_COUNT: usize = 8;
 
@@ -252,6 +260,26 @@ pub fn apply_preset(shared: &SharedParamsInner, preset: &KubyzPreset) {
     }
 }
 
+/// Index-based wrapper around `apply_preset` so the shared SDK preset-recall
+/// helpers (which work in preset *indices*) can drive Kubyz's reference-based
+/// `apply_preset`. Recalls preset `idx`, then reflects the selection back into
+/// the Preset selector param + the `active_preset` atomic so the host and any
+/// agent reading params observe the active index. Allocation/locks are fine
+/// here — this only ever runs on the main thread (on_main_thread / flush),
+/// never in `process()`.
+pub fn apply_preset_idx(shared: &SharedParamsInner, idx: usize) {
+    let all = presets();
+    let Some(preset) = all.get(idx) else { return };
+    apply_preset(shared, preset);
+    // Reflect the recalled index into the selector param so host/MCP read the
+    // active preset, and record the switch so preset_recall_target stops
+    // re-firing. apply_preset already marked every dirty flag (incl. P_PRESET).
+    if let Some(atom) = shared.params.get(P_PRESET) {
+        atom.store(idx as f32, Ordering::Relaxed);
+    }
+    shared.active_preset.store(idx as u32, Ordering::Relaxed);
+}
+
 /// GUI helper — write into a param atomic and signal that the host should
 /// be told about the change (so REAPER's automation lane records it).
 pub fn write_param(shared: &SharedParamsInner, idx: usize, value: f32) {
@@ -272,10 +300,25 @@ pub struct PluginMainThread<'a> {
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
 }
-impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
+    /// Host main-thread callback — the audio thread calls request_callback()
+    /// when the Preset param moved; here (main thread) the allocating /
+    /// Mutex-locking recall is legal.
+    fn on_main_thread(&mut self) {
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        ) {
+            apply_preset_idx(&self.shared.inner, idx);
+        }
+    }
+}
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    /// Host handle — used to wake the main thread (request_callback) when a
+    /// Preset param change needs the (locking/allocating) apply_preset recall.
+    host: HostAudioProcessorHandle<'a>,
     voices: [KubyzVoice; VOICE_COUNT],
     next_age: u64,
     smooth_f1: SmoothedParam,
@@ -637,7 +680,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     for PluginAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut PluginMainThread<'a>,
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
@@ -646,6 +689,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
             shared,
+            host,
             voices: std::array::from_fn(|_| KubyzVoice::default()),
             next_age: 0,
             smooth_f1: SmoothedParam::new(load(P_F1)),
@@ -686,6 +730,17 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
             &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+        // Preset selector: if the host or producer-pal/MCP moved the Preset
+        // param, wake the main thread to recall it — apply_preset locks the
+        // formant Mutexes (and the SDK rule keeps recall off the audio thread).
+        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        )
+        .is_some()
+        {
+            self.host.shared().request_callback();
+        }
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         for mut port_pair in &mut audio {
@@ -804,13 +859,42 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        let pid = id.get() as usize;
+        // Preset selector: show the preset name ("Bashkir Kubyz", …) instead
+        // of the raw index so the DAW's param readout is readable.
+        if pid == P_PRESET {
+            if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
+                |i| presets().get(i).map(|p| p.name),
+                v,
+                w,
+            ) {
+                return r;
+            }
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        // Let "Bashkir Kubyz" / "Khomus Sample" etc. resolve to the index too.
+        if id.get() as usize == P_PRESET {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
+                PRESET_COUNT,
+                |i| presets().get(i).map(|p| p.name),
+                t,
+            ) {
+                return Some(v);
+            }
+        }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
+        // Preset selector recall (main thread → apply_preset's lock/alloc is legal).
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        ) {
+            apply_preset_idx(&self.shared.inner, idx);
+        }
     }
 }
 

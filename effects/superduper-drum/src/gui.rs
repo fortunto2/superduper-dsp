@@ -73,10 +73,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             &state.shared.bypass,
             "drum_preset_combo", &state.preset_names, &mut state.selected_preset,
         ) {
-            if let Some(preset) = PRESETS.get(i) {
-                crate::presets::apply(&state.shared, preset);
-            state.shared.active_preset.store(i as u32, std::sync::atomic::Ordering::Relaxed);
-            }
+            // Recall the kit + reflect it into the Preset selector param so
+            // the host/agent reads the active index. apply_preset handles the
+            // param writes, dirty flags, and active_preset bookkeeping.
+            crate::apply_preset(&state.shared, i);
 
         core_gui::ab_init_bar(
             ui, &state.shared.ab_snapshot,

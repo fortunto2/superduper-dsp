@@ -129,7 +129,13 @@ const REAL_D2_FORMANT: FormantPreset = FormantPreset {
     gain: [1.0, 1.0, 1.0],
 };
 
-pub fn presets() -> [KubyzPreset; 4] {
+/// Number of factory presets — kept in sync with the `presets()` array
+/// length. Used by the Preset selector CLAP param (which needs the count
+/// at const-eval time, where `presets()` can't run because it does runtime
+/// `powf` for the harmonic dB→linear conversion).
+pub const PRESET_COUNT: usize = 4;
+
+pub fn presets() -> [KubyzPreset; PRESET_COUNT] {
     [
         KubyzPreset {
             name: "Init (sine)",

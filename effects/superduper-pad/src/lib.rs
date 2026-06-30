@@ -47,6 +47,8 @@ use superduper_synth_core::dsp_blocks::{
     AdsrEnvelope, AdsrParams, PadParams, PadVoice, SmoothedParam, midi_note_to_hz,
 };
 
+use presets::PRESETS;
+
 // ---------------------------------------------------------------------------
 // Logging — file in ~/.superduper-dsp/pad.log. Same pattern as Ambient.
 // ---------------------------------------------------------------------------
@@ -77,6 +79,13 @@ pub const PARAMS: &[ParamDef] = &[
     // Polyphony cap — clamped to [2, 16]. New voice allocations beyond
     // this count steal from the oldest releasing voice.
     ParamDef { id: 13, name: b"Polyphony",  min: 2.0,  max: 16.0,    default: 8.0,    unit: "v"     },
+    // Preset selector — stepped 0..N-1. Set from the host or an agent
+    // (producer-pal / MCP) to recall a whole preset (timbre) without
+    // opening the GUI. The recall (apply_preset) writes the preset's
+    // param defaults + marks them dirty, which is allocation-free here
+    // but mirrors Wave's main-thread recall pattern — see
+    // PluginMainThreadParams::flush + on_main_thread.
+    ParamDef { id: 14, name: b"Preset",     min: 0.0,  max: (presets::PRESET_COUNT - 1) as f64, default: 0.0, unit: "" },
 ];
 
 pub const P_CUTOFF: usize = 0;
@@ -93,6 +102,7 @@ pub const P_BEND_RANGE: usize = 10;
 pub const P_ENV_DELAY: usize = 11;
 pub const P_ENV_HOLD: usize = 12;
 pub const P_POLYPHONY: usize = 13;
+pub const P_PRESET: usize = 14;
 
 /// Hard cap on voice array size. The Polyphony param limits how many
 /// of these the user can actually trigger; raising the array gives
@@ -165,6 +175,36 @@ impl std::ops::Deref for PluginShared {
 }
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
+/// Recall a factory preset by index — used by both the GUI preset picker
+/// and the host-controllable Preset param (producer-pal / MCP). Writes the
+/// preset's full param value vector into the shared atomics (SKIPPING the
+/// Preset selector itself), marks every changed param dirty so the host's
+/// LOM / automation lane — and an agent reading params — observes the recall
+/// (lesson 21d), then records the active index. Allocation is fine because
+/// callers run this on the MAIN thread only (GUI, on_main_thread, main-thread
+/// flush) — NEVER from process()/audio flush.
+pub fn apply_preset(shared: &SharedParamsInner, idx: usize) {
+    let Some(preset) = PRESETS.get(idx) else { return };
+    for (i, &v) in preset.values.iter().enumerate() {
+        if i == P_PRESET {
+            continue; // never clobber the selector itself
+        }
+        if let Some(atom) = shared.params.get(i) {
+            atom.store(v, Ordering::Relaxed);
+            shared.dirty_params[i].store(true, Ordering::Relaxed);
+        }
+    }
+    // Reflect the recalled preset back into the selector param so the host
+    // and producer-pal/MCP read the active index, and record the switch.
+    if let Some(atom) = shared.params.get(P_PRESET) {
+        atom.store(idx as f32, Ordering::Relaxed);
+    }
+    shared.dirty_params[P_PRESET].store(true, Ordering::Relaxed);
+    shared
+        .active_preset
+        .store(idx as u32, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Voice — one PadVoice per stereo side plus an ADSR envelope. Identifies
 // itself by MIDI key + optional note_id so NoteOff finds the right voice
@@ -230,10 +270,25 @@ pub struct PluginMainThread<'a> {
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
 }
-impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
+    /// Host main-thread callback — the audio thread calls request_callback()
+    /// when the Preset param moved off the last-applied index; here (main
+    /// thread) the (allocation-allowed) recall is legal.
+    fn on_main_thread(&mut self) {
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        ) {
+            apply_preset(&self.shared.inner, idx);
+        }
+    }
+}
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    /// Host handle — used to wake the main thread (request_callback) when a
+    /// Preset param change needs the main-thread apply_preset recall.
+    host: HostAudioProcessorHandle<'a>,
     voices: [Voice; VOICE_COUNT],
     /// Wraps; only used relatively when comparing voice ages.
     next_age: u64,
@@ -633,7 +688,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     for PluginAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut PluginMainThread<'a>,
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
@@ -643,6 +698,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
             shared,
+            host,
             voices: [Voice::default(); VOICE_COUNT],
             next_age: 0,
             smooth_cutoff: SmoothedParam::new(load(P_CUTOFF)),
@@ -674,6 +730,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.gesture_end,
             events.output,
         );
+        // Preset selector: if the host or producer-pal/MCP moved the Preset
+        // param, wake the main thread to recall it — apply_preset is a
+        // main-thread operation (mirrors the Wave reference, where the recall
+        // allocates mip tables). The audio thread only requests the callback.
+        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        )
+        .is_some()
+        {
+            self.host.shared().request_callback();
+        }
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         // Walk the output port. Pad is a generator — we ignore any input
@@ -854,13 +922,41 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         v: f64,
         w: &mut ParamDisplayWriter,
     ) -> core::fmt::Result {
+        let pid = id.get() as usize;
+        // Preset selector: show the preset name instead of "0.00".
+        if pid == P_PRESET {
+            if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
+                |i| PRESETS.get(i).map(|p| p.name),
+                v,
+                w,
+            ) {
+                return r;
+            }
+        }
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        // Let "Choir" / "Glass" etc. resolve to the preset index too.
+        if id.get() as usize == P_PRESET {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
+                PRESETS.len(),
+                |i| PRESETS.get(i).map(|p| p.name),
+                t,
+            ) {
+                return Some(v);
+            }
+        }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
+        // Preset selector recall — main thread, so apply_preset is legal here.
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+        ) {
+            apply_preset(&self.shared.inner, idx);
+        }
     }
 }
 

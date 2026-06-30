@@ -12,7 +12,7 @@ use clack_plugin::events::event_types::{
 use clack_plugin::events::io::OutputEvents;
 use clack_plugin::prelude::{ChannelPair, InputEvents};
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicBool, Ordering as SyncOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as SyncOrdering};
 use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
@@ -298,4 +298,67 @@ pub fn output_slice<'b>(c: ChannelPair<'b, f32>) -> Option<&'b mut [f32]> {
         ChannelPair::InputOutput(_, buf) => Some(buf),
         ChannelPair::InputOnly(_) => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Preset selector — a host/agent-controllable stepped param that recalls a
+// whole preset (wavetable, voice timbre, drum kit, …) without opening the GUI.
+//
+// Why a helper: every synth duplicates the same recall plumbing, and the RT
+// rule is easy to get wrong. The actual recall (`apply_preset`) is plugin-
+// specific and ALLOCATES, so it must run on the main thread. Wire it like the
+// Wave reference:
+//   1. PARAMS: append `ParamDef { name: b"Preset", min: 0, max: N-1, .. }`.
+//   2. Shared: keep an `active_preset: AtomicU32` (the last-applied index).
+//   3. audio `process()`: if `preset_recall_target(params[P_PRESET], active)`
+//      is Some, call `host.shared().request_callback()` — DON'T apply here.
+//   4. `on_main_thread()` AND main-thread params `flush()`: if it's Some(idx),
+//      run `apply_preset(idx)` (which must store `active_preset = idx`).
+//   5. `apply_preset` marks every changed param dirty (see lesson 21d) so the
+//      host's LOM/automation — and an agent reading params — sees the recall.
+//   6. `value_to_text`/`text_to_value` for the Preset param map index<->name
+//      via `preset_value_to_text` / `preset_text_to_value`.
+// ---------------------------------------------------------------------------
+
+/// Returns the preset index to recall if the Preset param has moved away from
+/// the last-applied index, else `None`. Cheap (one atomic load + compare) and
+/// allocation-free, so it's safe to call from the audio thread. The caller
+/// decides what to do: the audio thread asks the host for a main-thread
+/// callback; the main thread runs the (allocating) `apply_preset`.
+#[inline]
+pub fn preset_recall_target(preset_param_value: f32, active: &AtomicU32) -> Option<usize> {
+    let want = preset_param_value.round();
+    if want >= 0.0 && (want as u32) != active.load(Ordering::Relaxed) {
+        Some(want as usize)
+    } else {
+        None
+    }
+}
+
+/// `value_to_text` body for a Preset selector param: write the preset name for
+/// the rounded index. `name_of(i)` returns the i-th preset's name. Returns
+/// `None` if the index is out of range (caller falls back to numeric display).
+pub fn preset_value_to_text<'a>(
+    name_of: impl Fn(usize) -> Option<&'a str>,
+    value: f64,
+    writer: &mut ParamDisplayWriter<'_>,
+) -> Option<core::fmt::Result> {
+    use core::fmt::Write;
+    let idx = value.round().max(0.0) as usize;
+    name_of(idx).map(|name| write!(writer, "{}", name))
+}
+
+/// `text_to_value` body for a Preset selector param: resolve a preset name
+/// (case-insensitive, trimmed) to its index. `count` presets, `name_of(i)`
+/// their names. Returns `None` if nothing matches (caller falls back to the
+/// default numeric parse).
+pub fn preset_text_to_value<'a>(
+    count: usize,
+    name_of: impl Fn(usize) -> Option<&'a str>,
+    text: &CStr,
+) -> Option<f64> {
+    let s = text.to_str().ok()?.trim();
+    (0..count)
+        .find(|&i| name_of(i).is_some_and(|n| n.eq_ignore_ascii_case(s)))
+        .map(|i| i as f64)
 }

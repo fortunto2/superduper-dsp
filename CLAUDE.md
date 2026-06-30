@@ -121,6 +121,20 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
 
+- **Preset selector param** (synths: Wave/Drum/Kubyz/Pad) — a stepped
+  `"Preset"` CLAP param appended last in `PARAMS` lets a host/agent
+  (producer-pal/MCP, automation) recall a whole preset — wavetable, voice
+  timbre, drum kit — without the GUI. Shared plumbing in
+  `sdk::clap_helpers`: `preset_recall_target()` (alloc-free change detect),
+  `preset_value_to_text` / `preset_text_to_value` (index↔name). RT rule: the
+  audio `process()` only calls `host.request_callback()`; the actual
+  (allocating) `apply_preset(idx)` runs on the **main thread** in
+  `on_main_thread()` + the main-thread `flush`. `apply_preset` marks every
+  param dirty (lesson 21d) so the host/LOM reflects the recall. Indices:
+  Wave 37, Pad 14, Drum 27, Kubyz 19. **Gotcha:** if a plugin's presets
+  const-build from `PARAMS.len()`, referencing `PRESETS.len()` in the const
+  `PARAMS` table is a const-eval cycle (E0391) — break it with a separate
+  `const PRESET_COUNT` + a `const _: () = assert!(...)` sync guard.
 - **Automation write** — GUI knob moves emit `ParamValueEvent` to the
   host on the next `process()` block so REAPER / Bitwig / Studio One
   record them into FX automation lanes. Driven by a

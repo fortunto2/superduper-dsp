@@ -5,6 +5,29 @@ use crate::{
 
 superduper_dsp_sdk::define_preset!(PARAMS);
 
+/// Preset count, decoupled from the `Preset` type. `PARAMS`' Preset-selector
+/// param needs the preset count as its `max`, but reading `PRESETS.len()`
+/// from inside `PARAMS` creates a const-eval cycle: `Preset.values` is
+/// `[f32; PARAMS.len()]`, so the type of `PRESETS` depends on `PARAMS`, and
+/// `PARAMS`' `max` would depend on `PRESETS`. This standalone count is built
+/// from a names array that does NOT touch the `Preset` type, breaking the
+/// cycle. A static assert below keeps it equal to `PRESETS.len()`.
+pub const PRESET_COUNT: usize = PRESET_NAMES.len();
+
+const PRESET_NAMES: &[&str] = &[
+    "Init",
+    "Pad Default",
+    "Slow Strings",
+    "Choir",
+    "Glass",
+    "Wide Ambient",
+    "Pluck",
+    "Vangelis (Blade Runner)",
+    "Joy Division (Atmosphere)",
+    "Cocteau Twins (Pad)",
+    "Boards of Canada (Lo-Fi)",
+];
+
 pub static PRESETS: &[Preset] = &[
     Preset::from_overrides("Init", &[]),
 
@@ -155,6 +178,11 @@ pub static PRESETS: &[Preset] = &[
         (P_OUTPUT, -8.0),
     ]),
 ];
+
+// Keep PRESET_NAMES (used for the cycle-free count) in lock-step with the
+// real PRESETS table — counts must match or the Preset-selector param's max
+// would be wrong. A length mismatch fails the build here.
+const _: () = assert!(PRESET_COUNT == PRESETS.len());
 
 pub fn apply(shared: &crate::SharedParamsInner, preset: &Preset) {
     use std::sync::atomic::Ordering;

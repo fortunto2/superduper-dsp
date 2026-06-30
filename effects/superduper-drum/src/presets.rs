@@ -67,6 +67,17 @@ pub static PRESETS: &[Preset] = &[
     ]),
 ];
 
+/// Number of factory presets. Hand-maintained literal (NOT `PRESETS.len()`)
+/// so it can be used in the const `PARAMS` table's Preset `max` field without
+/// creating a `PARAMS` ⇄ `PRESETS` const-evaluation cycle (`PRESETS` is itself
+/// const-built from `PARAMS` via `from_overrides`). The static assert below
+/// keeps it honest — add a preset above, bump this, or the build fails.
+pub const PRESET_COUNT: usize = 7;
+const _: () = assert!(
+    PRESET_COUNT == PRESETS.len(),
+    "PRESET_COUNT out of sync with PRESETS — update PRESET_COUNT in presets.rs",
+);
+
 pub fn apply(shared: &crate::SharedParamsInner, preset: &Preset) {
     use std::sync::atomic::Ordering;
     for (i, val) in preset.values.iter().enumerate() {

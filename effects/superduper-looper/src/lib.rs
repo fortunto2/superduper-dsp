@@ -43,10 +43,14 @@ use parking_lot::Mutex;
 use superduper_dsp_sdk::clap_helpers::{split_io, ParamDef};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 
-use track::{LoopTrack, TrackCommand, TrackState};
+use track::{LoopTrack, TrackCommand, TrackState, MAX_LAYERS};
 
 pub const TRACK_COUNT: usize = 4;
-pub const MAX_LOOP_SECONDS: f32 = 60.0;
+// 4 tracks × MAX_LAYERS layer buffers × this many seconds bounds the RAM
+// (≈ TRACK_COUNT·MAX_LAYERS·sec·sr·2·4 bytes). 30 s keeps it sane for layers.
+pub const MAX_LOOP_SECONDS: f32 = 30.0;
+/// Sentinel for "no layer is recording" in the shared recording_layer surface.
+pub const NO_LAYER: u32 = u32::MAX;
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -117,6 +121,7 @@ fn midi_cc_to_command(cc: u8) -> Option<(usize, TrackCommand)> {
         20..=23 => (cc as usize - 20, 1), // Rec
         24..=27 => (cc as usize - 24, 2), // Play/Stop
         28..=31 => (cc as usize - 28, 3), // Overdub
+        32..=35 => (cc as usize - 32, 5), // Undo
         // Block bumped — Clear lives at 60-63 to keep destructive
         // commands away from accidental presses.
         60..=63 => (cc as usize - 60, 4), // Clear
@@ -128,6 +133,7 @@ fn midi_cc_to_command(cc: u8) -> Option<(usize, TrackCommand)> {
         2 => TrackCommand::PlayStop,
         3 => TrackCommand::Overdub,
         4 => TrackCommand::Clear,
+        5 => TrackCommand::Undo,
         _ => return None,
     };
     Some((track, cmd))
@@ -160,6 +166,12 @@ pub struct SharedParamsInner {
     /// Track command submission atoms — set by GUI / MIDI handlers,
     /// drained by the audio thread.
     pub track_command: [AtomicU32; TRACK_COUNT],
+    /// Number of finalised layers per track (for the GUI layer stack).
+    pub layer_count: [AtomicU32; TRACK_COUNT],
+    /// The layer index currently being recorded (or NO_LAYER) — GUI pulses it.
+    pub recording_layer: [AtomicU32; TRACK_COUNT],
+    /// Per-layer volume 0..1.5 — GUI writes, audio thread reads for the mix.
+    pub layer_volume: [[AtomicF32; MAX_LAYERS]; TRACK_COUNT],
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -180,6 +192,9 @@ impl PluginShared {
                 track_progress: std::array::from_fn(|_| AtomicF32::new(0.0)),
                 host_bpm: AtomicF32::new(120.0),
                 track_command: std::array::from_fn(|_| AtomicU32::new(0)),
+                layer_count: std::array::from_fn(|_| AtomicU32::new(0)),
+                recording_layer: std::array::from_fn(|_| AtomicU32::new(NO_LAYER)),
+                layer_volume: std::array::from_fn(|_| std::array::from_fn(|_| AtomicF32::new(1.0))),
             }),
         }
     }

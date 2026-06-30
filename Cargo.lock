@@ -3487,6 +3487,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdsp-ios"
+version = "0.1.0"
+dependencies = [
+ "fundsp",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "sdsp-runner"
 version = "0.1.0"
 dependencies = [

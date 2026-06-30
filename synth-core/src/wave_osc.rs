@@ -52,25 +52,28 @@ impl MipWavetable {
     /// Pick the appropriate mip level for a given fundamental Hz at sr.
     /// Returns 0 (full bandwidth) when `antialias_on` is false.
     ///
-    /// Pre-refactor used `ceil` which rounded UP to the safer (more
-    /// filtering) slice. That cut wavetables by ~2× more harmonics than
-    /// strictly needed — subtle wavetable differences (where the
-    /// detail lives in harmonics 32-128) became inaudible on mid/high
-    /// notes because they were filtered away before the oscillator
-    /// even read them.
+    /// Mip level `k` keeps `WT_SIZE/2 >> k` harmonics. To avoid folding,
+    /// that ceiling must stay at/under the number of harmonics that fit
+    /// below Nyquist, which is `(WT_SIZE/2) / ratio` where
+    /// `ratio = WT_SIZE·freq/sr`. So we need `2^k >= ratio`, i.e.
+    /// `k = ceil(log2(ratio))`. `ceil` is the TIGHTEST safe level — it
+    /// keeps the most harmonics that *don't* alias.
     ///
-    /// `floor` lets a tiny amount of aliasing through on extreme high
-    /// notes (>10 kHz fundamental) in exchange for keeping ~2× the
-    /// harmonic content audible everywhere else. At typical playing
-    /// pitches the change is large + obvious: triangle vs sawtooth vs
-    /// edited curves are now distinguishable up through C6.
+    /// (This used `floor` for a while, to keep ~2× the harmonics for extra
+    /// "detail". But floor's level aliases the whole boundary octave on
+    /// every note above ~C2, and the loudest aliased harmonic survives —
+    /// so anti-alias ON measured no quieter than OFF (see antialias_audit).
+    /// That brightness was aliasing, not detail. For genuine per-note
+    /// detail without aliasing, blend the two adjacent levels by the
+    /// fractional part of log2(ratio) — a future upgrade; ceil is the
+    /// correct floor-of-quality.)
     #[inline]
     pub fn pick_level(&self, freq_hz: f32, sr: f32, antialias_on: bool) -> usize {
         if !antialias_on {
             return 0;
         }
         let ratio = WT_SIZE as f32 * freq_hz.max(1.0) / sr;
-        let level = ratio.log2().floor().max(0.0) as usize;
+        let level = ratio.log2().ceil().max(0.0) as usize;
         level.min(MIP_LEVELS - 1)
     }
 }

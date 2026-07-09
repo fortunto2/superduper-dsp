@@ -203,12 +203,24 @@ jobs:
           (cd dist/au && zip -qry "../superduper-dsp-${V}-macos-arm64-au.zip" SuperDuper*.component)
           (cd dist && shasum -a 256 *vst3*.zip *au*.zip >> SHA256SUMS-macos.txt)
 
+      - name: Build .pkg installer (CLAP / VST3 / AU chooser)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash installer/macos/build_pkg.sh "$V"
+          (cd dist && shasum -a 256 *.pkg >> SHA256SUMS-macos.txt)
+          ls -la dist/*.pkg
+
       - name: Upload artifact (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.pkg
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -217,6 +229,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             dist/*.zip
+            dist/*.pkg
             dist/SHA256SUMS-macos.txt
 
   # ---------------------------------------------------------------------------
@@ -230,6 +243,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # clap-wrapper — needed for the VST3 build step
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -303,6 +318,7 @@ jobs:
           V: ${{ steps.ver.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/clap | Out-Null
           $plugins = @(
             @{ dll = "superduper_reverb.dll";     name = "SuperDuperReverb" },
             @{ dll = "superduper_supermass.dll";  name = "SuperDuperSupermass" },
@@ -331,6 +347,7 @@ jobs:
             $src = "target/release/$($p.dll)"
             $clap = "dist/$($p.name).clap"
             Copy-Item -Path $src -Destination $clap -Force
+            Copy-Item -Path $clap -Destination "dist/clap/$($p.name).clap" -Force  # installer payload
             Compress-Archive -Path $clap -DestinationPath "dist/$($p.name)-$env:V-windows-x64.zip" -Force
           }
           $combined = $plugins | ForEach-Object { "dist/$($_.name).clap" }
@@ -338,12 +355,43 @@ jobs:
           Get-FileHash -Algorithm SHA256 dist/*.zip | Format-Table -AutoSize | Out-File -FilePath dist/SHA256SUMS-windows.txt -Encoding ascii
           Get-ChildItem dist/
 
+      - name: Build VST3 wrappers
+        shell: bash
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # clap-wrapper VST3 build (MSVC). AUv2 is Apple-only → off here.
+          cmake -B build-wrappers -DCMAKE_BUILD_TYPE=Release \
+            -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON \
+            -DCLAP_WRAPPER_BUILD_AUV2=OFF
+          cmake --build build-wrappers --config Release
+          mkdir -p dist/vst3
+          found=0
+          while IFS= read -r -d '' v; do
+            cp -R "$v" "dist/vst3/$(basename "$v")"; found=1
+          done < <(find build-wrappers -type d -name '*.vst3' -prune -print0)
+          [[ $found == 1 ]] || { echo "no VST3 bundles built under build-wrappers"; exit 1; }
+          (cd dist/vst3 && 7z a -tzip "../superduper-dsp-${V}-windows-x64-vst3.zip" . >/dev/null)
+          ls -la dist/vst3
+
+      - name: Build Windows installer (Inno Setup)
+        shell: pwsh
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          # iscc ships on the windows-latest image.
+          & iscc "/DMyAppVersion=$env:V" installer\windows\superduper.iss
+          Get-ChildItem dist/*.exe
+
       - name: Upload artifact (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.exe
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -352,6 +400,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             dist/*.zip
+            dist/*.exe
             dist/SHA256SUMS-windows.txt
 
   # ---------------------------------------------------------------------------

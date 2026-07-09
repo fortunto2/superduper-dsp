@@ -404,6 +404,7 @@ impl<'a> PluginAudioProcessor<'a> {
                             let cap = self.tracks[t].capacity();
                             self.tracks[t].length_frames = target.min(cap);
                             self.tracks[t].cursor = 0;
+                            self.tracks[t].layer_count = 1; // layer 0 finalised
                             self.tracks[t].set_state(TrackState::Playing);
                         } else if sync_on {
                             // Auto-quantise to the NEXT bar boundary.
@@ -412,6 +413,7 @@ impl<'a> PluginAudioProcessor<'a> {
                             // Free-form: lock at the current cursor.
                             self.tracks[t].length_frames = self.tracks[t].cursor.max(1);
                             self.tracks[t].cursor = 0;
+                            self.tracks[t].layer_count = 1; // layer 0 finalised
                             self.tracks[t].set_state(TrackState::Playing);
                         }
                     }
@@ -432,12 +434,15 @@ impl<'a> PluginAudioProcessor<'a> {
             }
             TrackCommand::Overdub => {
                 match state {
-                    TrackState::Playing => self.tracks[t].set_state(TrackState::Overdubbing),
-                    TrackState::Overdubbing => self.tracks[t].set_state(TrackState::Playing),
+                    // Opens a fresh layer at `layer_count` (no-op if the stack is full).
+                    TrackState::Playing => { self.tracks[t].begin_overdub(); }
+                    // Commit the in-progress layer into the mix.
+                    TrackState::Overdubbing => self.tracks[t].finalize_overdub(),
                     _ => {}
                 }
             }
             TrackCommand::Clear => self.tracks[t].clear(),
+            TrackCommand::Undo => self.tracks[t].undo(),
             TrackCommand::None => {}
         }
     }
@@ -470,8 +475,8 @@ impl<'a> PluginAudioProcessor<'a> {
                         // Append to buffer; auto-stop on quantize-pending
                         // when we reach the next bar boundary.
                         if tr.cursor < cap {
-                            tr.buffer[tr.cursor * 2] = dry_l;
-                            tr.buffer[tr.cursor * 2 + 1] = dry_r;
+                            tr.layers[0][tr.cursor * 2] = dry_l;
+                            tr.layers[0][tr.cursor * 2 + 1] = dry_r;
                             tr.cursor += 1;
                             tr.length_frames = tr.cursor;
                         }
@@ -480,6 +485,7 @@ impl<'a> PluginAudioProcessor<'a> {
                             if tr.cursor.is_multiple_of(bar) && tr.cursor > 0 {
                                 tr.length_frames = tr.cursor;
                                 tr.cursor = 0;
+                                tr.layer_count = 1; // layer 0 finalised
                                 tr.set_state(TrackState::Playing);
                                 self.pending_quantize_stop[t] = None;
                             }
@@ -487,8 +493,12 @@ impl<'a> PluginAudioProcessor<'a> {
                     }
                     TrackState::Playing => {
                         if tr.length_frames > 0 && !mute {
-                            let l = tr.buffer[tr.cursor * 2];
-                            let r = tr.buffer[tr.cursor * 2 + 1];
+                            let mut l = 0.0_f32;
+                            let mut r = 0.0_f32;
+                            for k in 0..tr.layer_count {
+                                l += tr.layers[k][tr.cursor * 2];
+                                r += tr.layers[k][tr.cursor * 2 + 1];
+                            }
                             wet_l += l * level;
                             wet_r += r * level;
                             tr.cursor = (tr.cursor + 1) % tr.length_frames;
@@ -499,12 +509,21 @@ impl<'a> PluginAudioProcessor<'a> {
                         // attenuating the old layer so loops can fade), write
                         // back, advance.
                         if tr.length_frames > 0 {
-                            let old_l = tr.buffer[tr.cursor * 2];
-                            let old_r = tr.buffer[tr.cursor * 2 + 1];
-                            let new_l = old_l * fb + dry_l;
-                            let new_r = old_r * fb + dry_r;
-                            tr.buffer[tr.cursor * 2] = new_l.clamp(-1.5, 1.5);
-                            tr.buffer[tr.cursor * 2 + 1] = new_r.clamp(-1.5, 1.5);
+                            // Output: sum of the already-finalised layers.
+                            let mut old_l = 0.0_f32;
+                            let mut old_r = 0.0_f32;
+                            for k in 0..tr.layer_count {
+                                old_l += tr.layers[k][tr.cursor * 2];
+                                old_r += tr.layers[k][tr.cursor * 2 + 1];
+                            }
+                            // Record the new input into the fresh overdub layer at
+                            // `layer_count` (feedback attenuates its own prior content
+                            // so repeated passes can fade). Guarded to a valid slot.
+                            let od = tr.layer_count.min(MAX_LAYERS - 1);
+                            let prev_l = tr.layers[od][tr.cursor * 2];
+                            let prev_r = tr.layers[od][tr.cursor * 2 + 1];
+                            tr.layers[od][tr.cursor * 2] = (prev_l * fb + dry_l).clamp(-1.5, 1.5);
+                            tr.layers[od][tr.cursor * 2 + 1] = (prev_r * fb + dry_r).clamp(-1.5, 1.5);
                             if !mute {
                                 wet_l += old_l * level;
                                 wet_r += old_r * level;

@@ -14,6 +14,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# A new run supersedes an older in-progress one for the same ref, so
+# repeated dry-runs don't pile up and starve the limited macOS runners.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ---------------------------------------------------------------------------
   # macOS (Apple Silicon). Builds three CLAP plugins, packages each as a

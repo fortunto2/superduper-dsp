@@ -1676,8 +1676,11 @@ mod tests {
 
     #[test]
     fn loads_reference_wavenet_a1_standard_nam() {
-        let p: PathBuf = std::env::var("HOME").map(PathBuf::from).unwrap()
-            .join(".superduper-dsp/nam/wavenet_a1_standard.nam");
+        let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => { eprintln!("skip: no HOME/USERPROFILE set"); return; }
+        };
+        let p: PathBuf = home.join(".superduper-dsp/nam/wavenet_a1_standard.nam");
         if !p.exists() {
             eprintln!("skip: reference .nam not present at {:?}", p);
             return;
@@ -1714,8 +1717,11 @@ mod tests {
 
     #[test]
     fn loads_reference_lstm_example_nam() {
-        let p: PathBuf = std::env::var("HOME").map(PathBuf::from).unwrap()
-            .join(".superduper-dsp/nam/lstm_example.nam");
+        let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => { eprintln!("skip: no HOME/USERPROFILE set"); return; }
+        };
+        let p: PathBuf = home.join(".superduper-dsp/nam/lstm_example.nam");
         if !p.exists() {
             eprintln!("skip: reference .nam not present at {:?}", p);
             return;

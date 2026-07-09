@@ -362,9 +362,14 @@ jobs:
         run: |
           set -euo pipefail
           # clap-wrapper VST3 build (MSVC). AUv2 is Apple-only → off here.
+          # Align the MSVC runtime CRT across ALL targets: the VST3 SDK defaults
+          # to static /MT while clap-wrapper's export obj is /MD → LNK2038/LNK1169.
+          # Force everything to the dynamic CRT (/MD) to match.
           cmake -B build-wrappers -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON \
-            -DCLAP_WRAPPER_BUILD_AUV2=OFF
+            -DCLAP_WRAPPER_BUILD_AUV2=OFF \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL \
+            -DSMTG_USE_STATIC_CRT=OFF
           cmake --build build-wrappers --config Release
           mkdir -p dist/vst3
           found=0

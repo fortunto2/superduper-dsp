@@ -1,0 +1,273 @@
+# Hypno-loop draft B — Amelie Lens «Higher» (136.0, A#m) × Detsl «Кто там
+# у руля» (хук-лупы). Кубыз-сет: peak-time техно в тонике кубыза, юзер
+# играет кубыз живьём поверх. Zero stretch, чоп-ретриггер на грид.
+# Higher lattice 0.209 + k*0.441176; grooves A 16-110, ambient break 128-160,
+# B 176-260. Фразы (word-timestamps): тизер «включайся в процесс, сейчас не
+# до сна» 64.05-66.25; чоп «Не важно, кто там у руля» 140.42-142.185 (ровно
+# 4 бита @136); breakdown = полный аутро-хук ×2 пары 140.42-149.19; акцент
+# «прогресс поглотит, как цунами волна» 66.25-68.30.
+
+bpm = 136.0
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.0
+release_ms = 100.0
+
+# ── intro: ambient break bed, beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -5.0
+start_sec = 128.150
+len_sec = 14.118
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = -6.0
+start_sec = 128.150
+len_sec = 14.118
+
+# ── groove A, beats 32-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = -1.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+saturate_db = 3.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -3.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+# ── breakdown: ambient break + хук почти соло, beats 96-128 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -5.0
+offset_beats = 96.0
+start_sec = 128.150
+len_sec = 14.118
+
+# ── DROP: groove B, beats 128-200 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/bass.wav"
+role = "beat-bass"
+gain_db = 3.5
+saturate_db = 3.0
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -1.5
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+# ── фразы ──
+[[source]]
+name = "detsl"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+
+# тизер: «включайся в процесс, сейчас не до сна»
+[[phrase]]
+track = "detsl"
+start_sec = 64.05
+end_sec = 66.25
+at_beat = 8.0
+throw = true
+gain_db = 6.0
+
+# гипно-чоп ×4: «Не важно, кто там у руля» (ровно 4 бита) — волна 1
+[[phrase]]
+track = "detsl"
+start_sec = 140.42
+end_sec = 142.185
+at_beat = 48.0
+loops = 4
+loop_gain_step_db = 0.7
+gain_db = 5.0
+
+# волна 2, плотнее
+[[phrase]]
+track = "detsl"
+start_sec = 140.42
+end_sec = 142.185
+at_beat = 72.0
+loops = 4
+loop_gain_step_db = 0.9
+gain_db = 5.5
+
+# breakdown: полный аутро-хук ×2 пары почти акапельно
+[[phrase]]
+track = "detsl"
+start_sec = 140.42
+end_sec = 149.19
+at_beat = 96.0
+throw = true
+gain_db = 6.5
+
+# DROP: чоп ×8, эскалация
+[[phrase]]
+track = "detsl"
+start_sec = 140.42
+end_sec = 142.185
+at_beat = 128.0
+loops = 8
+loop_gain_step_db = 0.8
+gain_db = 5.0
+
+# акцент: «прогресс поглотит, как цунами волна»
+[[phrase]]
+track = "detsl"
+start_sec = 66.25
+end_sec = 68.30
+at_beat = 160.0
+throw = true
+gain_db = 6.0
+
+# финальная волна чопа
+[[phrase]]
+track = "detsl"
+start_sec = 140.42
+end_sec = 142.185
+at_beat = 168.0
+loops = 6
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# стаб после стопа: «кто там у руля»
+[[phrase]]
+track = "detsl"
+start_sec = 140.88
+end_sec = 142.03
+at_beat = 200.6
+throw = true
+gain_db = 6.5
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 124.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 126.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 128.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "tape_stop"
+at_beat = 196.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 196.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 198.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 661.8
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

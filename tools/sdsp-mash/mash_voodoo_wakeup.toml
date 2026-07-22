@@ -1,0 +1,315 @@
+# Mashup — Voodoo People × Rage Against The Machine "Wake Up".
+#
+#   sdsp-mash tools/sdsp-mash/mash_voodoo_wakeup.toml out.wav
+#
+# Grid 167.64 = Wake Up's analyze tempo — Zack's vocal is UNSTRETCHED.
+# Voodoo People beat pulled up 149.016 → 167.64 (ratio 0.888905, +12.5%
+# speedup; stem tempo by 128-beat comb correlation). RATM is a LIVE band —
+# tempo drifts, so the lead is cut into SHORT blocks (≤28 s), each block's
+# attack re-anchored on a grid downbeat so drift never accumulates across
+# cuts. Voodoo drum groove enters at 19.37 s (bar-lattice verified: intro
+# bar hits at 14.54/16.15/17.76 s, 1.6106 s spacing = 149.016).
+#
+# Timeline (grid beat = 0.35793 s, bar = 1.4317 s):
+#   beats   0- 16  intro sweep + "Magic people, voodoo people" tease ×2
+#   beats  16- 69  lead A — "…networks at work, keepin' people calm…"
+#   beats  70- 78  mini-bridge — "The voodoo, who do what you don't dare do"
+#   beats  80-206  lead B — the long verse, split at the 147.9 s pause and
+#                  re-anchored at beat 128 (live-drift reset)
+#   beats 208-224  BREAKDOWN — drums+bass out, "WAKE UP!" screams ride,
+#                  scream tail bleeds over the drop
+#   beats 224-272  payoff — chant ×2 → "How long? Not long!…" → voodoo-line
+#   beat  272      tape_stop + closing sweep + echo out
+#                                                            total ≈ 102 s
+
+bpm = 167.64
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 110.0
+
+# ── the beat — Voodoo People, 149.016 → 167.64 ──
+# Native src beat 0.402665 s; grid↔source beats map 1:1. Drums+bass split
+# around the breakdown (208-224); their second half re-uses the strong
+# early groove (src 32.26 = groove bar 8) — same trick as Firestarter.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.888905
+start_sec = 19.37
+len_sec = 83.75
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.888905
+offset_beats = 224.0
+start_sec = 32.26
+len_sec = 20.94
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.888905
+saturate_db = 4.0
+start_sec = 19.37
+len_sec = 83.75
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.888905
+saturate_db = 4.0
+offset_beats = 224.0
+start_sec = 32.26
+len_sec = 20.94
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.888905
+start_sec = 19.37
+len_sec = 111.14
+
+# ── lead A: "It's in the head… networks at work, keepin' people calm…
+# turned the power to the have nots / then came the shot" (89.30 → 108.30)
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Wake Up/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 16.0
+start_sec = 89.30
+len_sec = 19.00
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── lead B1: the long verse, first half (130.60 → 147.90, cut at the deep
+# −60 dB pause) — attack re-anchored at beat 80.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Wake Up/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 80.0
+start_sec = 130.60
+len_sec = 17.30
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── lead B2: second half (147.90 → 176.00) re-anchored at beat 128 —
+# absorbs the live drift accumulated over B1.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Wake Up/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 128.0
+start_sec = 147.90
+len_sec = 28.10
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── Prodigy + RATM one-shot sources ──
+[[source]]
+name = "voodoo"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/vocals.wav"
+
+[[source]]
+name = "zack"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Wake Up/vocals.wav"
+
+# intro tease: "Magic people, voodoo people" ×2 (onset 24.20, 1.66 s unit).
+[[phrase]]
+track = "voodoo"
+start_sec = 24.20
+end_sec = 25.86
+at_beat = 4.0
+throw = true
+gain_db = -4.0
+
+[[phrase]]
+track = "voodoo"
+start_sec = 24.20
+end_sec = 25.86
+at_beat = 10.0
+throw = true
+gain_db = -4.0
+
+# mini-bridge between lead A and lead B: the big line
+# "The voodoo, who do what you don't dare do, people?" (54.64 → 57.42).
+[[phrase]]
+track = "voodoo"
+start_sec = 54.64
+end_sec = 57.42
+at_beat = 70.0
+throw = true
+gain_db = -2.0
+
+# breakdown: "WAKE UP!! (AAAAH) ×2" screams (307.30 → 313.80) — the tail
+# bleeds over the drop at 224 on purpose.
+[[phrase]]
+track = "zack"
+start_sec = 307.30
+end_sec = 313.80
+at_beat = 208.0
+throw = true
+gain_db = -1.0
+
+# payoff chants on the drop.
+[[phrase]]
+track = "voodoo"
+start_sec = 24.20
+end_sec = 25.86
+at_beat = 224.0
+gain_db = -2.0
+
+[[phrase]]
+track = "voodoo"
+start_sec = 24.20
+end_sec = 25.86
+at_beat = 232.0
+gain_db = -1.0
+
+# "How long? Not long! Cuz what you reap is what you sow!" (352.00 → 360.30)
+[[phrase]]
+track = "zack"
+start_sec = 352.00
+end_sec = 360.30
+at_beat = 240.0
+throw = true
+gain_db = -2.0
+
+# closing voodoo-line into the tape stop.
+[[phrase]]
+track = "voodoo"
+start_sec = 54.64
+end_sec = 57.42
+at_beat = 264.0
+throw = true
+gain_db = -1.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 16.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 80.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# verse tail build → breakdown.
+[[fx]]
+kind = "riser"
+at_beat = 200.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.65
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 204.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 206.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 208.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.8
+
+# scream riser into THE drop.
+[[fx]]
+kind = "riser"
+at_beat = 216.0
+len_beats = 8
+from_hz = 200.0
+to_hz = 16000.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 224.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 240.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 264.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# Finale.
+[[fx]]
+kind = "tape_stop"
+at_beat = 272.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 272.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 272.0
+len_beats = 8
+feedback = 0.65
+delay_ms = 536.9
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+# Post-meter-fix calibration (real ≈ −10.5 LUFS, mp3 TP ≤ −1.0 dBTP).
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.5, "1" = -2.8 }

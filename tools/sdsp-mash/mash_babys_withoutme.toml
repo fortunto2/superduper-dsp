@@ -1,0 +1,286 @@
+# Mashup — Baby's Got A Temper × Eminem "Without Me" (lead + hook-bridge).
+#
+#   sdsp-mash tools/sdsp-mash/mash_babys_withoutme.toml out.wav
+#
+# Grid 110 = counter-stretch meeting point: Baby's beat 105.71 → 110 (+4.1%,
+# the proven lead_bridge_babys ratio 0.9610) meets Without Me vocal
+# 112.28 → 110 (ratio 1.0207, −2% — well inside the ±5% vocal tolerance).
+# Eminem's verse-beat lattice: first downbeat 1.695 s, beat 0.534379 s
+# (verified: hook "back" onset 23.07 s = source beat 40.00 exactly).
+# All cuts anchored so source downbeats land on grid downbeats.
+#
+# Timeline (beat = 0.5455 s, bar = 2.182 s):
+#   beats   0- 16  intro sweep + "Two trailer park girls" tease
+#   beats  16- 99  verse 1 — "I've created a monster … Fuck you, damn it!"
+#   beats 100-115  bridge — "Guess who's back / Shady's back" hook (2 phrases)
+#   beats 116-146  chorus — "Now this looks like a job for me …" ×2
+#   beats 148-171  outro — "guess who's back" chant ×2 + final hook +1 dB
+#   beat  172      tape_stop + closing sweep + hook echo sails out
+#                                                            total ≈ 96 s
+
+bpm = 110.0
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+# Rap-vocal fix (2026-07-16): masking diagnosis showed the Em vocal reached
+# the mix 5-6 dB lower through the chain than Zack's in the RATM reference,
+# with 11 pp less of its energy in the 1-3 kHz intelligibility band. Fixes:
+# vocal gain −3 → +1, presence bell +3 dB @ 3 kHz, duck ratio 2.5 → 3.5,
+# beat-other −1 → −2, risers over continuous vocal trimmed.
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 135.0
+
+# ── the beat — Baby's Got A Temper, 105.71 → 110 grid ──
+# start_sec 22.02 = the analyze downbeat where the groove starts.
+# Drums + bass are SPLIT around a true breakdown at beats 100-116 (the
+# "Guess who's back" bridge rides near-acapella over the ducked riff) —
+# they slam back exactly on the chorus downbeat 116. Native source beat
+# 0.56758 s → beat 100 = 22.02+56.76, beat 116 = 22.02+65.84 = 87.86.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.9610
+start_sec = 22.02
+len_sec = 56.76
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.9610
+offset_beats = 116.0
+start_sec = 87.86
+len_sec = 34.05
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.9610
+saturate_db = 4.0
+start_sec = 22.02
+len_sec = 56.76
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.9610
+saturate_db = 4.0
+offset_beats = 116.0
+start_sec = 87.86
+len_sec = 34.05
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -2.0
+tempo_ratio = 0.9610
+start_sec = 22.02
+len_sec = 99.9
+
+# ── verse 1: Eminem, CONTINUOUS 46.58 → 90.80 (44.22 s ≈ 82.7 beats) ──
+# start 46.58 = source beat 84 (downbeat), "I've" pickup rides in naturally;
+# end 90.80 = the dip right after "Fuck you, damn it!" before the chorus.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Without Me/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+tempo_ratio = 1.0207
+offset_beats = 16.0
+start_sec = 46.58
+len_sec = 44.22
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── chorus: "Now this looks like a job for me …" double round, 90.80 → 107.55 ──
+# Source beat 168 (downbeat inside "looks like a") ↔ grid beat 116;
+# cut starts 1.25 beats early to keep the "Now" pickup → offset 114.75.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Without Me/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+tempo_ratio = 1.0207
+offset_beats = 114.75
+start_sec = 90.80
+len_sec = 16.75
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── hook source (unstretched one-shots — 112.28 native vs grid 110) ──
+[[source]]
+name = "shady"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Without Me/vocals.wav"
+
+# intro tease: "Two trailer park girls go round the outside …"
+# onset 4.74 = source beat 5.70 → pickup 0.30 to beat 6 ↔ grid 4.
+[[phrase]]
+track = "shady"
+start_sec = 4.74
+end_sec = 9.54
+at_beat = 3.70
+throw = true
+gain_db = -4.0
+
+# bridge A: "Guess who's back, back, back, back…" (onset 22.72, "back" = src
+# beat 40 ↔ grid 100 → at_beat 99.345). Split in two 8-beat phrases so the
+# 2% native-vs-grid drift re-anchors mid-hook instead of accumulating.
+[[phrase]]
+track = "shady"
+start_sec = 22.72
+end_sec = 26.98
+at_beat = 99.345
+gain_db = -2.0
+
+# bridge B: "Shady's back, back, back… tell a friend" (onset 26.98 = src beat
+# 47.32 → anchor 48 ↔ grid 108). Echo throw sails into the chorus pickup.
+[[phrase]]
+track = "shady"
+start_sec = 26.98
+end_sec = 31.20
+at_beat = 107.316
+throw = true
+gain_db = -2.0
+
+# outro chant ×2: "guess who's back guess who's back…" — onset-to-onset
+# 8-beat unit (31.31 → 35.60 = 4.29 s), seamless loop by construction.
+[[phrase]]
+track = "shady"
+start_sec = 31.31
+end_sec = 35.60
+at_beat = 147.42
+loops = 2
+loop_gain_step_db = 1.0
+gain_db = -3.0
+
+# final hook, +1 dB — the outro peak right before the tape stop.
+[[phrase]]
+track = "shady"
+start_sec = 22.72
+end_sec = 26.98
+at_beat = 163.345
+throw = true
+gain_db = -1.0
+
+# ── transitions: build → bridge → chorus payoff ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 16.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# verse tail → bridge: 2-bar riser, stuttered last bar, lowpass shut, sub hit.
+# (peak trimmed 0.65 → 0.45: the verse still raps until beat 99 — a hot
+# white-noise riser here was part of the masking.)
+[[fx]]
+kind = "riser"
+at_beat = 92.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 96.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 98.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 100.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# short build into the chorus — the payoff drop (trimmed under the hook tail).
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 4
+from_hz = 200.0
+to_hz = 16000.0
+peak = 0.4
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 116.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.8
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 148.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# final hook chest-hit.
+[[fx]]
+kind = "sub_drop"
+at_beat = 164.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.8
+
+# Finale: tape stop + closing lowpass + hook echo pulsing over the stop.
+[[fx]]
+kind = "tape_stop"
+at_beat = 172.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 172.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 172.0
+len_beats = 8
+feedback = 0.65
+delay_ms = 818.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+# Recalibrated after the BS.1770 channel-sum meter fix: the old input 9.5 was
+# tuned against a meter reading 3 dB low → real −6.7 LUFS, crushed-flat LRA.
+# Ceiling −1.5 leaves margin for intersample + mp3 codec overshoot so the
+# FINAL file stays ≤ −1.0 dBTP by ffmpeg ebur128 (the authoritative check).
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.5, "1" = -2.8 }

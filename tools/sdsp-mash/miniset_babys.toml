@@ -1,0 +1,97 @@
+# Mini-set #2 — Baby's Got A Temper × Detsl × Oxxxymiron (one beat, two rappers).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/miniset_babys.toml out.wav
+#
+# One Prodigy beat (Baby's Got A Temper, 106 → 111 grid) carries two Russian
+# rap verses that sit on the same tempo (compat map: both ~111 BPM):
+#   Detsl «Кто там у руля» (111) → Oxxxymiron «Организация» (112).
+# One continuous beat, two vocals at different offsets, a beat-repeat handoff
+# between them, tape-stop finale.
+
+bpm = 111.0
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[[section]]
+name = "Baby's Got A Temper × Detsl × Организация"
+start_beat = 0
+start_sec = 0.0
+bpm = 111.0
+
+# ── the beat (continuous through both verses) ──
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.954
+len_sec = 114.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+tempo_ratio = 0.954
+len_sec = 114.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.954
+len_sec = 114.0
+
+# ── verse 1: Detsl «Кто там у руля» (~4–50 s) ──
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 8
+start_sec = 6.2
+len_sec = 46.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── verse 2: Oxxxymiron «Организация» (~56–102 s) ──
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 104
+start_sec = 8.0
+len_sec = 46.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── FX: stutter handoff between verses + tape-stop finale ──
+[[fx]]
+kind = "beat_repeat"
+at_sec = 52.0
+len_beats = 4
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 108.0
+len_beats = 4
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 8.0, "1" = -1.0 }

@@ -237,6 +237,14 @@ struct Voice {
     choke_remaining: u32,
     choke_total: u32,
     choke_level: f32,
+    /// Deferred-steal parking. A busy voice that gets stolen is choke-faded to
+    /// silence (old note keeps sounding during the fade) and the new note is
+    /// parked here; the render loop starts it from silence when the fade ends,
+    /// so a stolen full-amplitude voice never hard-swaps pitch and clicks.
+    /// `pending_key == NOTE_FREE` means nothing parked.
+    pending_key: u8,
+    pending_note_id: i32,
+    pending_velocity: f32,
     /// MPE per-voice pitch offset in semitones. CLAP NoteExpression
     /// (Tuning channel) writes per-note bend here so each voice can be
     /// pitched independently — Roli Seaboard / Linnstrument workflows.
@@ -256,6 +264,9 @@ impl Default for Voice {
             choke_remaining: 0,
             choke_total: 0,
             choke_level: 0.0,
+            pending_key: NOTE_FREE,
+            pending_note_id: -1,
+            pending_velocity: 0.0,
             pitch_offset_st: 0.0,
         }
     }
@@ -334,7 +345,11 @@ impl<'a> PluginAudioProcessor<'a> {
         //    in-flight choke fade so a held key over CC 120 still sounds.
         for v in self.voices.iter_mut() {
             if v.key == key && v.note_id == note_id {
-                v.env.gate_on();
+                // Legato re-attack from the current level. `retrigger` (not
+                // `gate_on`) avoids the PreDelay level=0 drop that would silence
+                // a still-sounding held voice for a sample → a click when the
+                // same key is replayed over a sustained pad.
+                v.env.retrigger();
                 v.velocity = velocity;
                 v.age_stamp = stamp;
                 v.choke_remaining = 0;
@@ -367,11 +382,16 @@ impl<'a> PluginAudioProcessor<'a> {
                 return;
             }
         }
-        // 3. Quietest releasing voice.
+        // 3. Quietest releasing voice — skip voices already in a deferred-steal
+        //    fade (`choke_remaining > 0`): re-choking one resets its ramp (a
+        //    click) and clobbers the note parked on it. It frees in ~4 ms.
         let mut steal_idx = 0usize;
         let mut steal_score = f32::INFINITY;
         let mut found_release = false;
         for (i, v) in self.voices.iter().enumerate() {
+            if v.choke_remaining > 0 {
+                continue;
+            }
             if v.env.is_releasing() {
                 let lvl = v.env.level();
                 if lvl < steal_score {
@@ -384,26 +404,40 @@ impl<'a> PluginAudioProcessor<'a> {
         // 4. Oldest voice by stamp (smallest age_stamp = oldest).
         if !found_release {
             let mut oldest = u64::MAX;
+            let mut found = false;
             for (i, v) in self.voices.iter().enumerate() {
+                if v.choke_remaining > 0 {
+                    continue;
+                }
                 if v.age_stamp < oldest {
                     oldest = v.age_stamp;
                     steal_idx = i;
+                    found = true;
+                }
+            }
+            if !found {
+                let mut oldest = u64::MAX;
+                for (i, v) in self.voices.iter().enumerate() {
+                    if v.age_stamp < oldest {
+                        oldest = v.age_stamp;
+                        steal_idx = i;
+                    }
                 }
             }
         }
-        // Stealing a still-sounding voice: preserve oscillator + filter
-        // state (avoids the same click) and replay the attack from the
-        // current envelope level, not from zero. The amplitude jump from
-        // the previous-note velocity to the new attack is smoothed by
-        // the env's own ramp instead of being a hard cut.
+        // Deferred steal — the old note is at full amplitude, so replacing it
+        // in place (even with preserved oscillator state) steps the sound. Instead
+        // choke-fade the old note to silence over ~4 ms and park the new note;
+        // the render loop starts it from silence when the fade ends → 0→0, no click.
+        let fade_samples = ((self.sample_rate * 0.004) as u32).max(1);
         let v = &mut self.voices[steal_idx];
-        v.key = key;
-        v.note_id = note_id;
-        v.velocity = velocity;
+        v.choke_level = v.env.level();
+        v.choke_total = fade_samples;
+        v.choke_remaining = fade_samples;
+        v.pending_key = key;
+        v.pending_note_id = note_id;
+        v.pending_velocity = velocity;
         v.age_stamp = stamp;
-        v.choke_remaining = 0;
-        v.pitch_offset_st = 0.0;
-        v.env.gate_on();
     }
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
@@ -636,8 +670,21 @@ impl<'a> PluginAudioProcessor<'a> {
                     mix_r += v.voice_r.process(pr) * amp;
                     v.choke_remaining -= 1;
                     if v.choke_remaining == 0 {
-                        v.env = AdsrEnvelope::default();
-                        v.key = NOTE_FREE;
+                        if v.pending_key != NOTE_FREE {
+                            // Deferred steal fade done — start the parked note
+                            // from silence (env attacks from 0 → no click). Keep
+                            // the oscillator/filter state (lesson 17).
+                            v.key = v.pending_key;
+                            v.note_id = v.pending_note_id;
+                            v.velocity = v.pending_velocity;
+                            v.pending_key = NOTE_FREE;
+                            v.pitch_offset_st = 0.0;
+                            v.env = AdsrEnvelope::default();
+                            v.env.gate_on();
+                        } else {
+                            v.env = AdsrEnvelope::default();
+                            v.key = NOTE_FREE;
+                        }
                     }
                     continue;
                 }

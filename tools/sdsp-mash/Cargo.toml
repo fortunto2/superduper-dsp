@@ -1,0 +1,31 @@
+[package]
+name = "sdsp-mash"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless mashup engine — align the beat stems of one track with the vocal of another on a shared BPM grid, sidechain-duck, intro-sweep, and run a SuperDuper master chain. Renders a stereo WAV + per-stage LUFS / dBTP."
+
+[[bin]]
+name = "sdsp-mash"
+path = "src/main.rs"
+
+[dependencies]
+# Master chain plugins — statically linked, same set sdsp-chain hosts.
+# Adding a master plugin = add one dep here + one impl_stage! + match arm.
+superduper-eq         = { path = "../../effects/superduper-eq" }
+superduper-compressor = { path = "../../effects/superduper-compressor" }
+superduper-saturator  = { path = "../../effects/superduper-saturator" }
+superduper-limiter    = { path = "../../effects/superduper-limiter" }
+superduper-midside    = { path = "../../effects/superduper-midside" }
+superduper-lineq      = { path = "../../effects/superduper-lineq" }
+superduper-filter     = { path = "../../effects/superduper-filter" }
+
+superduper-synth-core = { path = "../../synth-core" }
+superduper-dsp-sdk    = { path = "../../sdk" }
+clack-host = { version = "0.1", features = ["clack-plugin"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "state", "clack-host"] }
+clack-plugin = "0.1"
+clack-common = "0.1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+realfft = "3"

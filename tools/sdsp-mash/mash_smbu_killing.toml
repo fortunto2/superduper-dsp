@@ -1,0 +1,387 @@
+# Mashup — Smack My Bitch Up × Rage Against The Machine "Killing In The Name".
+#
+#   sdsp-mash tools/sdsp-mash/mash_smbu_killing.toml out.wav
+#
+# RATM is a live band that ACCELERATES through this song — per-zone vocal tempo
+# measured from repetition periods (whisper onsets + drums beat-track):
+#   verse "Some of those…"      ≈ 158.4 (double-time)
+#   chant "Now you do what…"    ≈ 184.5
+#   "F*ck you…" quiet           ≈ 172-178 (drifting)
+#   "F*ck you…" screamed        ≈ 178-185 (drifting)
+# A single global grid (171.72 avg) would fight EVERY zone by 4-8 %, so this is
+# built on per-section tempo islands; the SMBU beat is re-stretched per section
+# (136.22 native, comb-corr 0.56/0.51 on the drums stem). The escalating
+# stretch (+16 → +35 %) mirrors the original's own acceleration.
+# Zack's vocal is NEVER stretched (ratio 1.0); the lead is cut into short
+# blocks (7-14.5 s), each block's attack re-anchored on a grid downbeat, cuts
+# in deep pauses (< −50 dB) or on the native drum beat before the attack so
+# pickups keep their phrasing. SMBU dead zones (170-208 s, 332 s+) avoided;
+# groove map: build 22-46, groove A 48-88 (drop at 48.10), groove B 88-134.
+#
+# Timeline (global grid 158.4, spb 0.378788):
+#    0.0- 6.1  intro sweep + "Killing in the name of" tease ×2
+#    6.1-29.4  S1 verse — "Some of those that work forces…" (2 blocks) @158.4
+#   30.3       hook "Killing in the name of!" + auto drop-riser
+#   33.3       S2 DROP — "And now you do what they told ya" chant @184.5,
+#              SMBU build-zone beat runs frantic (+35 %) as a long build
+#   48.9       S3 BREAKDOWN — drums+bass out, "F*ck you, I won't do what you
+#              tell me" rides near-acapella over a quiet riff bed @175
+#   64.0       S4 THE DROP — screamed chant slams on SMBU groove B @179
+#   77.4       F2 re-anchor + sub hit; 88.2 final rep; 90.8 hook stab
+#   94.9       tape_stop + closing sweep + "MOTHERF*CKER!" over the stopped
+#              tape + echo out                                total ≈ 102 s
+#
+# Vocal balance = the fixed Eminem recipe (2026-07-16 masking diagnosis):
+# rap-ish blocks gain +1 / presence +3 dB @3 kHz, screams −1 / presence +1.5,
+# duck ratio 3.5.
+
+bpm = 158.4
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 110.0
+
+# ─────────────── S1 · verse @158.4 — SMBU groove A (+16 %) ───────────────
+[[section]]
+name = "verse"
+start_sec = 0.0
+bpm = 158.4
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = -4.5
+tempo_ratio = 0.859975
+start_sec = 48.10
+len_sec = 40.7
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = -1.5
+tempo_ratio = 0.859975
+saturate_db = 4.0
+start_sec = 48.10
+len_sec = 40.7
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -5.5
+tempo_ratio = 0.859975
+start_sec = 48.10
+len_sec = 40.7
+
+# verse A: "Some of those that work forces…" ×2 — cut on the native drum beat
+# (53.56) just before the voiced attack; ends in the −61 dB pause at 68.0.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 16.0
+start_sec = 53.54
+len_sec = 14.46
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# verse B: "…are the same that burn crosses" answer half — re-anchored at
+# beat 56 (drift reset), attack 68.50.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 56.0
+start_sec = 68.44
+len_sec = 8.16
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ──────── S2 · chant @184.5 — SMBU build zone as a frantic build (+35 %) ────────
+# Beat from the pre-drop build (src 23.43 = drop 48.10 − 14 native bars, ends
+# before the 48.10 slam) — sparser material takes the big stretch cleanly and
+# the whole section reads as one long build into the breakdown.
+[[section]]
+name = "chant"
+start_sec = 33.3333
+bpm = 184.5
+transition = "drop"
+xfade_beats = 8
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 5.5
+tempo_ratio = 0.73832
+start_sec = 23.434
+len_sec = 22.6
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 8.5
+tempo_ratio = 0.73832
+saturate_db = 4.0
+start_sec = 23.434
+len_sec = 22.6
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = 4.5
+tempo_ratio = 0.73832
+start_sec = 23.434
+len_sec = 22.6
+
+# chant A: "And now you do what they told ya" ×3 (loud round) — cut on the
+# native beat 100.38, the "And" pickup keeps its phrasing.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 0.0
+start_sec = 100.37
+len_sec = 7.13
+highpass_hz = 120.0
+presence_db = 2.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# chant B: "…you never do what they told ya!" defiant turn — re-anchored at
+# beat 24 (live drift reset), cut on native beat 108.26.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 24.0
+start_sec = 108.26
+len_sec = 7.09
+highpass_hz = 120.0
+presence_db = 2.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────── S3 · BREAKDOWN @175 — near-acapella "F*ck you, I won't do…" ───────
+# Drums+bass OUT; only a quiet riff bed (early build zone) under the chant.
+# The quiet chant drifts 172→178 live — inaudible with no beat to expose it.
+[[section]]
+name = "breakdown"
+start_sec = 48.9431
+bpm = 175.0
+transition = "breakdown"
+xfade_beats = 4
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -7.0
+tempo_ratio = 0.7784
+start_sec = 19.91
+len_sec = 20.9
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 0.0
+start_sec = 251.41
+len_sec = 12.89
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────────── S4 · THE DROP @179 — screamed chant on SMBU groove B ───────────
+# Beat len ends EXACTLY at the tape-stop end (96.382 s out = 42.514 s src).
+[[section]]
+name = "drop"
+start_sec = 64.0288
+bpm = 179.0
+transition = "drop"
+xfade_beats = 8
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+tempo_ratio = 0.761006
+start_sec = 88.63
+len_sec = 42.514
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 4.5
+tempo_ratio = 0.761006
+saturate_db = 4.0
+start_sec = 88.63
+len_sec = 42.514
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = 0.5
+tempo_ratio = 0.761006
+start_sec = 88.63
+len_sec = 42.514
+
+# F1: screamed rounds 1-4 — attack 269.55 on the native beat.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+offset_beats = 0.0
+start_sec = 269.53
+len_sec = 12.97
+highpass_hz = 120.0
+presence_db = 1.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# F2: rounds 5-8 — re-anchored at beat 40 (native beat 283.03 = our downbeat).
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+offset_beats = 40.0
+start_sec = 283.03
+len_sec = 10.32
+highpass_hz = 120.0
+presence_db = 1.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# F3: THE final drawn-out "f*ck you I won't do what you tell me!" — its own
+# block at beat 72 so it lands dead on the grid before the hook stab.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 72.0
+start_sec = 293.50
+len_sec = 2.60
+highpass_hz = 120.0
+presence_db = 1.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ────────────── hook one-shots (unstretched, global 158.4 grid) ──────────────
+[[source]]
+name = "zack"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rage Against The Machine - Killing In The Name/vocals.wav"
+
+# intro tease ×2: "Killing in the name of" (attack 81.50, tail dies by 83.4).
+[[phrase]]
+track = "zack"
+start_sec = 81.47
+end_sec = 83.50
+at_beat = 4.0
+throw = true
+gain_db = -4.0
+
+[[phrase]]
+track = "zack"
+start_sec = 81.47
+end_sec = 83.50
+at_beat = 10.0
+throw = true
+gain_db = -3.0
+
+# the hook between verse and chant-drop (rides the auto riser into S2).
+[[phrase]]
+track = "zack"
+start_sec = 81.47
+end_sec = 83.50
+at_beat = 80.0
+throw = true
+gain_db = -2.0
+
+# climax return of the intro motif — S4 beat 80 = 90.844 s = global 239.83.
+[[phrase]]
+track = "zack"
+start_sec = 81.47
+end_sec = 83.50
+at_beat = 239.83
+throw = true
+gain_db = -1.0
+
+# "MOTHERF*CKER!" — lands AFTER the tape-stop end (96.38 s), a lone scream
+# over the dying echo (placing it earlier would get resampled by the stop).
+[[phrase]]
+track = "zack"
+start_sec = 297.90
+end_sec = 302.30
+at_beat = 254.66
+throw = true
+gain_db = -2.0
+
+# ─────────────────────────── transitions / finale ───────────────────────────
+# (S2/S4 "drop" transitions auto-add riser + sub_drop; S3 "breakdown" auto-
+# fades the S2 beat with a closing filter.)
+
+# F2 re-anchor chest hit.
+[[fx]]
+kind = "sub_drop"
+at_sec = 77.437
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# F3 final-rep hit.
+[[fx]]
+kind = "sub_drop"
+at_sec = 88.163
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.7
+
+# hook-stab hit.
+[[fx]]
+kind = "sub_drop"
+at_sec = 90.844
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# Finale: tape stop + closing lowpass together, echo reads the dying tape.
+[[fx]]
+kind = "tape_stop"
+at_sec = 94.867
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_sec = 94.867
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_sec = 95.537
+len_beats = 3
+feedback = 0.5
+delay_ms = 502.8
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+# Post-meter-fix calibration; +1 dB input over the flat configs to pay the
+# section-leveler cost (target real ≈ −10.5 LUFS, mp3 TP ≤ −1.0 dBTP).
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.1, "1" = -2.8 }

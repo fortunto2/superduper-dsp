@@ -1,0 +1,74 @@
+# Example 2 — Oxxxymiron "Организация" vocal over The Prodigy "Firestarter"
+# beat, on a 145 BPM grid. Shows off v1: per-track time-stretch (the beat is
+# nudged to the grid) + phase auto-align + vocal high-pass/compressor.
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/example2.toml out2.wav
+#
+# `sdsp-mash analyze` on the Firestarter drums reports ~142 BPM (2× the strong
+# 71 half-time candidate), so the beat is stretched 142→145 (tempo_ratio =
+# 142/145 ≈ 0.979). Firestarter's groove is half-time, so it reads as ~72 over
+# the 145 grid.
+
+bpm = 145.0
+
+# ── Beat: The Prodigy "Firestarter" (drums + bass + other), stretched to 145 ─
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.979
+len_sec = 55.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+tempo_ratio = 0.979
+len_sec = 55.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/other.wav"
+role = "beat-other"
+gain_db = -1.5
+tempo_ratio = 0.979
+len_sec = 55.0
+
+# ── Vocal: Oxxxymiron "Организация" ───────────────────────────────────────
+# Nominal drop at bar 8 (32 beats); auto_align snaps it onto the Firestarter
+# kick. Never stretched. High-pass + compressor clean and even the rap.
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+offset_beats = 32.0
+len_sec = 40.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── Sidechain duck + intro sweep + master ─────────────────────────────────
+
+[duck]
+threshold_db = -30.0
+ratio = 4.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[intro_sweep]
+bars = 8
+from_hz = 350.0
+to_hz = 20000.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "6" = 1.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -18.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 6.0, "1" = -1.0 }

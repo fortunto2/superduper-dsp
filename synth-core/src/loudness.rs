@@ -126,7 +126,11 @@ impl LoudnessMeter {
     }
 
     fn commit_block(&mut self) {
-        let mean_square = self.block_sum / (self.block_size as f64 * 2.0); // /2 for channel count
+        // BS.1770-4 §5.6: per-channel mean squares are SUMMED (G_L = G_R = 1),
+        // not averaged — divide by samples-per-channel only. The old `* 2.0`
+        // (channel averaging) read 3.01 dB low on stereo and mis-calibrated
+        // every master chain downstream (EBU 3341 case 1 regression test).
+        let mean_square = self.block_sum / self.block_size as f64;
         // History buffer of the most recent 30 blocks (Short-term).
         if self.block_history.len() >= 30 {
             self.block_history.remove(0);
@@ -213,48 +217,104 @@ fn lufs_to_mean_square(lufs: f32) -> f64 {
     10f64.powf(((lufs + 0.691) / 10.0) as f64)
 }
 
-/// True-peak detector — per ITU-R BS.1770-4 Annex 2. 4× upsamples
-/// via linear interpolation (cheap), tracks the max absolute sample
-/// in dBTP. For mastering the upsampler should ideally be a polyphase
-/// FIR; linear gives ~0.5 dB under-estimation on aggressive limiter
-/// outputs which is acceptable for a meter (not a limiter).
+/// True-peak detector — per ITU-R BS.1770-4 Annex 2: 4× oversampling
+/// with a polyphase windowed-sinc FIR (12 taps per phase, 48-tap
+/// prototype), tracks the max absolute interpolated sample in dBTP.
+///
+/// The previous implementation "interpolated" linearly — but a linear
+/// interpolation between two samples is bounded by their maximum, so it
+/// could never see an inter-sample peak at all (it was a plain sample-peak
+/// meter). Heavily limited masters true-peak 0.5–1 dB above their sample
+/// ceiling, which is exactly what it missed.
+const TP_TAPS: usize = 12;
+
 pub struct TruePeakDetector {
     peak: f32,
-    prev_l: f32,
-    prev_r: f32,
+    // Polyphase taps for fractional offsets k/4, k = 1..3 (k = 0 is the raw
+    // sample itself). Windowed sinc, DC-normalized per phase.
+    phases: [[f32; TP_TAPS]; 3],
+    hist_l: [f32; TP_TAPS],
+    hist_r: [f32; TP_TAPS],
+    pos: usize,
 }
 
 impl TruePeakDetector {
     pub fn new() -> Self {
-        Self { peak: 0.0, prev_l: 0.0, prev_r: 0.0 }
+        let mut phases = [[0.0f32; TP_TAPS]; 3];
+        for (k, phase) in phases.iter_mut().enumerate() {
+            let frac = (k + 1) as f64 * 0.25;
+            let mut sum = 0.0f64;
+            for (m, tap) in phase.iter_mut().enumerate() {
+                // Interpolation point sits `frac` after history index 5
+                // (newest sample = index 0 in read order, see process_stereo).
+                let x = m as f64 - (5.0 + frac);
+                // Slightly band-limited sinc (0.92 × Nyquist): a full-band
+                // 12-tap windowed sinc rings > +1 dB on synthetic Nyquist
+                // content; 0.92 tames the ringing with negligible effect on
+                // program material (matches ffmpeg ebur128 within ~0.2 dB).
+                const BW: f64 = 0.92;
+                let sinc = if x.abs() < 1e-12 {
+                    BW
+                } else {
+                    (core::f64::consts::PI * BW * x).sin() / (core::f64::consts::PI * x)
+                };
+                // Hann window over the 12-tap span, centred on the
+                // interpolation point.
+                let u = x / (TP_TAPS as f64 / 2.0);
+                let w = if u.abs() >= 1.0 {
+                    0.0
+                } else {
+                    0.5 * (1.0 + (core::f64::consts::PI * u).cos())
+                };
+                *tap = (sinc * w) as f32;
+                sum += sinc * w;
+            }
+            for tap in phase.iter_mut() {
+                *tap /= sum as f32;
+            }
+        }
+        Self {
+            peak: 0.0,
+            phases,
+            hist_l: [0.0; TP_TAPS],
+            hist_r: [0.0; TP_TAPS],
+            pos: 0,
+        }
     }
 
     pub fn reset(&mut self) {
         self.peak = 0.0;
-        self.prev_l = 0.0;
-        self.prev_r = 0.0;
+        self.hist_l = [0.0; TP_TAPS];
+        self.hist_r = [0.0; TP_TAPS];
+        self.pos = 0;
     }
 
     #[inline]
     pub fn process_stereo(&mut self, l: f32, r: f32) {
-        // Track the raw-sample peak across L and R first.
+        // Raw-sample peak (phase 0 of the interpolator).
         let raw = l.abs().max(r.abs());
         if raw > self.peak {
             self.peak = raw;
         }
-        // Estimate inter-sample peaks via 4× linear interp between
-        // the previous and current sample on each channel.
-        for k in 1..4 {
-            let t = k as f32 * 0.25;
-            let l_interp = self.prev_l * (1.0 - t) + l * t;
-            let r_interp = self.prev_r * (1.0 - t) + r * t;
-            let p = l_interp.abs().max(r_interp.abs());
+        // Push into the ring history.
+        self.hist_l[self.pos] = l;
+        self.hist_r[self.pos] = r;
+        self.pos = (self.pos + 1) % TP_TAPS;
+        // Inter-sample estimates at t = 1/4, 2/4, 3/4 between history
+        // samples via the polyphase FIR. Read order: m = 0 is the newest.
+        for phase in &self.phases {
+            let mut al = 0.0f32;
+            let mut ar = 0.0f32;
+            for (m, tap) in phase.iter().enumerate() {
+                let idx = (self.pos + TP_TAPS - 1 - m) % TP_TAPS;
+                al += self.hist_l[idx] * tap;
+                ar += self.hist_r[idx] * tap;
+            }
+            let p = al.abs().max(ar.abs());
             if p > self.peak {
                 self.peak = p;
             }
         }
-        self.prev_l = l;
-        self.prev_r = r;
     }
 
     /// Current true-peak in dBTP (decibels relative to full scale,
@@ -286,8 +346,12 @@ impl Default for TruePeakDetector {
 mod tests {
     use super::*;
 
-    /// BS.1770-4 calibration: a 1 kHz sine at -23 dBFS RMS into the
-    /// K-weighted meter should read -23 LUFS (within ~0.1 LU).
+    /// BS.1770-4 calibration: a 1 kHz sine at -23 dBFS RMS **per channel**
+    /// on both channels sums across channels (§5.6, G_L = G_R = 1) →
+    /// -23 + 3.01 ≈ -20 LUFS. (The old expectation of -23 encoded the
+    /// channel-averaging bug; EBU 3341's "-23 dBFS stereo sine → -23 LUFS"
+    /// uses the AES-17 convention where -23 dBFS means amplitude 10^(-23/20),
+    /// i.e. -26 dBFS RMS per channel — see the tests/dsp_blocks.rs case.)
     #[test]
     fn calibration_1khz_minus23_dbfs() {
         let sr = 48000.0;
@@ -301,10 +365,9 @@ mod tests {
             meter.process_stereo(s, s);
         }
         let stl = meter.short_term_lufs();
-        // K-weighting at 1 kHz is approximately flat → measured ≈ -23 LUFS.
         assert!(
-            (stl - (-23.0)).abs() < 0.5,
-            "expected ~-23 LUFS at 1 kHz / -23 dBFS RMS, got {stl}"
+            (stl - (-20.0)).abs() < 0.5,
+            "expected ~-20 LUFS for stereo 1 kHz / -23 dBFS RMS per channel, got {stl}"
         );
     }
 
@@ -328,12 +391,15 @@ mod tests {
             let s = if i % 2 == 0 { 1.0 } else { -1.0 };
             tp.process_stereo(s, s);
         }
-        // Linear interp BETWEEN +1 and -1 hits 0 at midpoint, doesn't
-        // exceed sample peak. So this isn't a clean test of true-peak
-        // detection — but a sine-burst sampled at near-Nyquist would
-        // exceed sample peak. Check that detector at least equals
-        // sample peak.
-        assert!((tp.dbtp() - 0.0).abs() < 0.5, "expected ≈ 0 dBTP, got {}", tp.dbtp());
+        // A ±1 Nyquist square is pathological: its bandlimited
+        // reconstruction peaks at exactly 1.0, but every finite
+        // interpolator rings some. Require: never UNDER the sample peak,
+        // and ringing bounded (≤ +1 dB with the 0.92-band sinc).
+        let db = tp.dbtp();
+        assert!(
+            (-0.1..=1.0).contains(&db),
+            "Nyquist square should read 0..+1 dBTP, got {db}"
+        );
     }
 
     #[test]
@@ -352,10 +418,11 @@ mod tests {
         }
         let i_lufs = meter.integrated_lufs();
         // Silence is below the -70 LUFS absolute gate → integrated
-        // should still reflect the loud sine portion (≈ -23 LUFS).
+        // should still reflect the loud sine portion (≈ -20 LUFS with
+        // correct BS.1770 channel summation).
         assert!(
-            (i_lufs - (-23.0)).abs() < 1.5,
-            "integrated should ignore silence, expected ~-23 LUFS, got {i_lufs}"
+            (i_lufs - (-20.0)).abs() < 1.5,
+            "integrated should ignore silence, expected ~-20 LUFS, got {i_lufs}"
         );
     }
 }

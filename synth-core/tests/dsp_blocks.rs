@@ -188,3 +188,83 @@ fn midi_note_to_hz_roundtrip() {
         assert!((r - 2.0).abs() < 1e-4, "{low}→{high}: ratio {r} not 2.0");
     }
 }
+
+// ── BS.1770 LUFS meter — EBU Tech 3341 reference cases ─────────────────────
+// Case 1: 997 Hz stereo sine, −23 dBFS per channel, → I = −23.0 LUFS ±0.1.
+// Regression for the channel-summation bug: averaging L/R mean-squares
+// (instead of SUMMING per BS.1770-4 §5.6) read −26.0 — 3.01 dB low — which
+// mis-calibrated every master downstream (limiters driven 3 dB too hard).
+#[test]
+fn lufs_stereo_sine_reads_minus_23() {
+    use superduper_synth_core::loudness::LoudnessMeter;
+    const SR: f32 = 48_000.0;
+    let mut m = LoudnessMeter::new(SR);
+    let amp = 10f32.powf(-23.0 / 20.0);
+    let n = (10.0 * SR) as usize;
+    for i in 0..n {
+        let s = amp * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / SR).sin();
+        m.process_stereo(s, s);
+    }
+    let i = m.integrated_lufs();
+    assert!(
+        (i - -23.0).abs() < 0.15,
+        "stereo 997 Hz −23 dBFS sine must read −23.0 LUFS (BS.1770-4 channel sum), got {i}"
+    );
+    let st = m.short_term_lufs();
+    assert!((st - -23.0).abs() < 0.15, "short-term should also read −23.0, got {st}");
+}
+
+// One-sided signal (L only, R silent): z_R = 0 contributes nothing, no
+// division by channel count — expect −26.0 LUFS for a −23 dBFS mono-in-L sine.
+#[test]
+fn lufs_left_only_sine_reads_minus_26() {
+    use superduper_synth_core::loudness::LoudnessMeter;
+    const SR: f32 = 48_000.0;
+    let mut m = LoudnessMeter::new(SR);
+    let amp = 10f32.powf(-23.0 / 20.0);
+    let n = (10.0 * SR) as usize;
+    for i in 0..n {
+        let s = amp * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / SR).sin();
+        m.process_stereo(s, 0.0);
+    }
+    let i = m.integrated_lufs();
+    assert!(
+        (i - -26.0).abs() < 0.15,
+        "left-only −23 dBFS sine must read −26.0 LUFS, got {i}"
+    );
+}
+
+// ── True-peak: fs/4 sine with π/4 phase — samples land at ±0.707 (−3.01
+// dBFS sample peak) while the continuous waveform peaks at 1.0 (0 dBTP).
+// Linear interpolation between samples can NEVER exceed the sample max, so
+// the old detector read −3.0; a proper 4× FIR must read ≈ 0 dBTP.
+#[test]
+fn true_peak_catches_intersample_overshoot() {
+    use superduper_synth_core::loudness::TruePeakDetector;
+    let mut tp = TruePeakDetector::new();
+    for i in 0..48_000usize {
+        let s = (std::f32::consts::PI * 0.5 * i as f32 + std::f32::consts::PI * 0.25).sin();
+        tp.process_stereo(s, s);
+    }
+    let db = tp.dbtp();
+    assert!(
+        db > -0.5,
+        "fs/4 sine @ π/4 phase true-peaks at 0 dBTP; detector saw only {db} dBTP"
+    );
+}
+
+// DC-ish input must not report phantom overshoot (interpolator
+// normalization). Fade the DC in over 100 samples — a hard 0→0.5 step
+// genuinely true-peaks above its plateau (Gibbs in the bandlimited
+// reconstruction), which is not what this test is about.
+#[test]
+fn true_peak_no_phantom_overshoot_on_dc() {
+    use superduper_synth_core::loudness::TruePeakDetector;
+    let mut tp = TruePeakDetector::new();
+    for i in 0..4_800usize {
+        let s = 0.5 * (i as f32 / 100.0).min(1.0);
+        tp.process_stereo(s, s);
+    }
+    let db = tp.dbtp();
+    assert!((db - -6.02).abs() < 0.15, "ramped DC 0.5 must read ≈ −6.02 dBTP, got {db}");
+}

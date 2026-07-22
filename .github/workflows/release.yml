@@ -76,7 +76,10 @@ jobs:
             -p superduper-midside \
             -p superduper-lineq \
             -p superduper-soothe \
-            -p superduper-nam
+            -p superduper-vocoder \
+            -p superduper-pitch \
+            -p superduper-nam \
+            -p superduper-harmonic
 
       - name: Run tests
         run: |
@@ -102,7 +105,10 @@ jobs:
             -p superduper-midside \
             -p superduper-lineq \
             -p superduper-soothe \
+            -p superduper-vocoder \
+            -p superduper-pitch \
             -p superduper-nam \
+            -p superduper-harmonic \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -134,7 +140,10 @@ jobs:
               "superduper_midside|SuperDuperMidSide|co.superduperai.midside" \
               "superduper_lineq|SuperDuperLineq|co.superduperai.lineq" \
               "superduper_soothe|SuperDuperSoothe|co.superduperai.soothe" \
-              "superduper_nam|SuperDuperNam|co.superduperai.nam"
+              "superduper_nam|SuperDuperNam|co.superduperai.nam" \
+              "superduper_vocoder|SuperDuperVocoder|co.superduperai.vocoder" \
+              "superduper_pitch|SuperDuperPitch|co.superduperai.pitch" \
+              "superduper_harmonic|SuperDuperHarmonic|co.superduperai.harmonic"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -170,7 +179,8 @@ jobs:
               SuperDuperKubyz.clap SuperDuperChorus.clap SuperDuperDrum.clap \
               SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap \
               SuperDuperMidSide.clap SuperDuperLineq.clap SuperDuperSoothe.clap \
-              SuperDuperNam.clap)
+              SuperDuperNam.clap SuperDuperVocoder.clap SuperDuperPitch.clap \
+              SuperDuperHarmonic.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -289,7 +299,10 @@ jobs:
             -p superduper-midside `
             -p superduper-lineq `
             -p superduper-soothe `
-            -p superduper-nam
+            -p superduper-vocoder `
+            -p superduper-pitch `
+            -p superduper-nam `
+            -p superduper-harmonic
 
       - name: Run tests
         run: |
@@ -315,7 +328,10 @@ jobs:
             -p superduper-midside `
             -p superduper-lineq `
             -p superduper-soothe `
+            -p superduper-vocoder `
+            -p superduper-pitch `
             -p superduper-nam `
+            -p superduper-harmonic `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -347,7 +363,10 @@ jobs:
             @{ dll = "superduper_midside.dll";    name = "SuperDuperMidSide" },
             @{ dll = "superduper_lineq.dll";      name = "SuperDuperLineq" },
             @{ dll = "superduper_soothe.dll";     name = "SuperDuperSoothe" },
-            @{ dll = "superduper_nam.dll";        name = "SuperDuperNam" }
+            @{ dll = "superduper_nam.dll";        name = "SuperDuperNam" },
+            @{ dll = "superduper_vocoder.dll";    name = "SuperDuperVocoder" },
+            @{ dll = "superduper_pitch.dll";      name = "SuperDuperPitch" },
+            @{ dll = "superduper_harmonic.dll";   name = "SuperDuperHarmonic" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
@@ -451,6 +470,8 @@ jobs:
             * SuperDuper Chorus — multi-tap modulated delay with band-named factory presets
             * SuperDuper Looper — Mobius-style 4-track live looper with host-BPM sync
             * SuperDuper Filter — multi-mode resonant filter (LP/HP/BP/Notch) with Drive, LFO (tempo sync) and Env Follow; Daft Punk sweeps on the master bus
+            * SuperDuper Vocoder — 16-band channel vocoder, robot voice / talkbox (Daft Punk / Kraftwerk), internal or sidechain carrier
+            * SuperDuper Pitch — manual voice pitch shifter with independent formant control (TD-PSOLA); chipmunk / bass / gender-flip
 
             **Instruments:**
             * SuperDuper Ambient — autonomous 4-voice chord-drone generator

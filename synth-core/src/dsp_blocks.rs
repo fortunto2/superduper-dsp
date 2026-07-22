@@ -1076,6 +1076,18 @@ impl AdsrEnvelope {
         self.stage_samples = 0;
     }
 
+    /// Re-trigger a note WITHOUT silencing first. Jumps straight to Attack and
+    /// keeps the current level, so the ramp continues up from wherever the
+    /// envelope is (a legato re-attack). Use this for same-key retrigger of a
+    /// still-sounding voice — `gate_on` routes through PreDelay, which forces
+    /// `level = 0` and drops a sounding voice to silence for a sample (an
+    /// audible click). `gate_on` stays correct for a fresh note that really
+    /// should start from silence.
+    pub fn retrigger(&mut self) {
+        self.stage = AdsrStage::Attack;
+        self.stage_samples = 0;
+    }
+
     /// Begin release from the current level.
     #[inline]
     pub fn gate_off(&mut self) {
@@ -1184,6 +1196,59 @@ impl AdsrEnvelope {
 #[inline]
 pub fn midi_note_to_hz(note: f32) -> f32 {
     440.0 * 2f32.powf((note - 69.0) / 12.0)
+}
+
+/// Fixed integer-sample delay line — pushes a sample and returns the one from
+/// `delay` samples ago, via a `delay+1` ring. Alloc-free/RT-safe after `new()`.
+/// Used to latency-match a dry path to a processed path, or to pad a processor's
+/// intrinsic latency up to a reported PDC value. The read-before-write order
+/// matches the hand-rolled rings it replaces, so swapping to it is bit-identical.
+#[derive(Clone)]
+pub struct LatencyDelay {
+    buf: Box<[f32]>,
+    w: usize,
+}
+
+impl LatencyDelay {
+    pub fn new(delay: usize) -> Self {
+        Self {
+            buf: vec![0.0; delay + 1].into_boxed_slice(),
+            w: 0,
+        }
+    }
+
+    /// Push `x`, return the sample from `delay` samples ago.
+    #[inline]
+    pub fn process(&mut self, x: f32) -> f32 {
+        let cap = self.buf.len();
+        let r = (self.w + 1) % cap;
+        let out = self.buf[r];
+        self.buf[self.w] = x;
+        self.w = (self.w + 1) % cap;
+        out
+    }
+
+    pub fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.w = 0;
+    }
+}
+
+/// Median of a small slice, computed in place (sorts `vals`) — alloc-free and
+/// RT-safe. Even lengths return the mean of the two middle elements. Used by
+/// pitch-median stabilisers and the period-comb denoiser to reject single-tap
+/// outliers (a transient copied into one window is discarded by the median).
+pub fn median_small(vals: &mut [f32]) -> f32 {
+    let n = vals.len();
+    if n == 0 {
+        return 0.0;
+    }
+    vals.sort_unstable_by(f32::total_cmp);
+    if n % 2 == 1 {
+        vals[n / 2]
+    } else {
+        0.5 * (vals[n / 2 - 1] + vals[n / 2])
+    }
 }
 
 // ---------------------------------------------------------------------------

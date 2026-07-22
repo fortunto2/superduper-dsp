@@ -1,0 +1,87 @@
+# Example mashup — House of Pain "Jump Around" beat under Oxxxymiron "Агент"
+# vocal. Both were split into stems with demucs (htdemucs). Run:
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/example.toml out.wav
+#
+# The stems live in the session scratchpad; point `path` at your own demucs
+# output to remix. v0 has no time-stretch, so the two sources must share a
+# tempo — 105.5 BPM here (Jump Around's grid, which the Агент a-cappella
+# happens to sit on).
+
+bpm = 105.5
+
+# ── Beat: House of Pain "Jump Around" (drums + bass + other) ──────────────
+# Trimmed to 60 s so the example renders quickly; drop `len_sec` for the
+# full track.
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+len_sec = 60.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+len_sec = 60.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+len_sec = 60.0
+
+# ── Vocal: Oxxxymiron "Агент" ─────────────────────────────────────────────
+# Skip the 10.4 s intro of the a-cappella, then drop the first verse in near
+# bar 8 of the grid (8 bars × 4 beats = 32 beats). `auto_align` snaps it onto
+# the drums (±half-bar). High-pass clears rumble/plosives; the compressor
+# evens out the rap delivery.
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Агент/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+start_sec = 10.4
+offset_beats = 32.0
+len_sec = 45.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── Sidechain duck: the vocal ducks only the "other" bus ──────────────────
+# Bass and drums punch through; the melodic "other" bed gets out of the way
+# of the rap.
+
+[duck]
+threshold_db = -30.0
+ratio = 4.0
+attack_ms = 8.0
+release_ms = 140.0
+knee_db = 6.0
+
+# ── Intro lowpass sweep on the beat bus ───────────────────────────────────
+# The beat opens from 350 Hz to fully bright over the first 8 bars so the
+# drop lands when the vocal enters.
+
+[intro_sweep]
+bars = 8
+from_hz = 350.0
+to_hz = 20000.0
+
+# ── Master chain (same plugins sdsp-chain hosts) ──────────────────────────
+
+[[master]]
+plugin = "eq"
+# 7 = HP (Hz) — clear sub rumble; 6 = High Gain (dB) — a little air.
+params = { "7" = 30.0, "6" = 1.5 }
+
+[[master]]
+plugin = "compressor"
+# 0 Threshold dB, 1 Ratio, 2 Attack ms, 3 Release ms, 5 Makeup dB — gentle glue.
+params = { "0" = -18.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+# 0 Input dB (drive into the limiter for loudness), 1 Ceiling dBTP.
+params = { "0" = 2.8, "1" = -2.8 }

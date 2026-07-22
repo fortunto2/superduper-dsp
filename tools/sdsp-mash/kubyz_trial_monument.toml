@@ -1,0 +1,301 @@
+# Kubyz trial 2 — Tale Of Us "Monument (Barnt Remix)" (125.16, A#) × кубыз.
+# Hypnotic loop-techno wall (uniform −9 dB, no own break) — the arc is built
+# by hand: layered lick loops accumulate, drums drop out for the kubyz solo,
+# then the drop. Lattice 34.714 + k*0.479387. Zero stretch.
+
+bpm = 125.16
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.0
+release_ms = 110.0
+
+# ── intro: bass + synth bed, no drums, beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/bass.wav"
+role = "beat-bass"
+gain_db = -3.0
+saturate_db = 3.0
+start_sec = 34.714
+len_sec = 15.340
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/other.wav"
+role = "beat-other"
+gain_db = -4.0
+start_sec = 34.714
+len_sec = 15.340
+
+# ── groove, beats 32-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/drums.wav"
+role = "beat-drums"
+gain_db = -1.5
+offset_beats = 32.0
+start_sec = 50.054
+len_sec = 30.681
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/bass.wav"
+role = "beat-bass"
+gain_db = 0.0
+saturate_db = 3.0
+offset_beats = 32.0
+start_sec = 50.054
+len_sec = 30.681
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/other.wav"
+role = "beat-other"
+gain_db = -3.5
+offset_beats = 32.0
+start_sec = 50.054
+len_sec = 30.681
+
+# ── BREAKDOWN: drums out, quiet bed + kubyz solo, beats 96-128 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/bass.wav"
+role = "beat-bass"
+gain_db = -6.0
+saturate_db = 3.0
+offset_beats = 96.0
+start_sec = 80.735
+len_sec = 15.340
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/other.wav"
+role = "beat-other"
+gain_db = -6.0
+offset_beats = 96.0
+start_sec = 80.735
+len_sec = 15.340
+
+# ── DROP, beats 128-200 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+offset_beats = 128.0
+start_sec = 115.251
+len_sec = 34.516
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+saturate_db = 3.0
+offset_beats = 128.0
+start_sec = 115.251
+len_sec = 34.516
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/other.wav"
+role = "beat-other"
+gain_db = -2.0
+offset_beats = 128.0
+start_sec = 115.251
+len_sec = 34.516
+
+# ── kubyz ──
+[[source]]
+name = "kub034"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-034.wav"
+
+[[source]]
+name = "kub014"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-014.wav"
+
+[[source]]
+name = "kub032"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-032.wav"
+
+[[source]]
+name = "kub007"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-007.wav"
+
+[[source]]
+name = "kub018"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-018.wav"
+
+[[source]]
+name = "kub029"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-029.wav"
+
+[[source]]
+name = "kub010"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-010.wav"
+
+# intro drone
+[[phrase]]
+track = "kub034"
+start_sec = 0.0
+end_sec = 9.59
+at_beat = 8.0
+throw = true
+gain_db = 6.0
+
+# groove licks, layering up
+[[phrase]]
+track = "kub007"
+start_sec = 0.0
+end_sec = 0.96
+at_beat = 48.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.0
+
+[[phrase]]
+track = "kub018"
+start_sec = 0.0
+end_sec = 0.96
+at_beat = 64.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.5
+
+[[phrase]]
+track = "kub029"
+start_sec = 0.0
+end_sec = 0.96
+at_beat = 80.0
+loops = 4
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# BREAKDOWN solo
+[[phrase]]
+track = "kub014"
+start_sec = 0.0
+end_sec = 11.66
+at_beat = 96.0
+throw = true
+gain_db = 9.0
+
+# drop: 16-beat riff unit looped, then accelerating licks
+[[phrase]]
+track = "kub032"
+start_sec = 0.3
+end_sec = 7.97
+at_beat = 128.0
+loops = 2
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+[[phrase]]
+track = "kub007"
+start_sec = 0.0
+end_sec = 0.96
+at_beat = 168.0
+loops = 6
+loop_gain_step_db = 0.9
+gain_db = 6.0
+
+# final twang AFTER the tape stop
+[[phrase]]
+track = "kub010"
+start_sec = 0.0
+end_sec = 0.23
+at_beat = 200.6
+throw = true
+gain_db = 8.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 124.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 126.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 128.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "tape_stop"
+at_beat = 196.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 196.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 198.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 719.1
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

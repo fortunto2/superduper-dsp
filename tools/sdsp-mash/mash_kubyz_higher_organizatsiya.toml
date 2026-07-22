@@ -1,0 +1,117 @@
+# Kubyz-loop draft 2 — Amelie Lens "Higher" (135.98, main hypnotic groove)
+# × Oxxxymiron "Организация" chorus chopped into a ~1s hyped stab, retriggered
+# and escalating (loops/gain/echo) — a backing loop for live kubyz, not a
+# song-structure mashup. tempo_ratio=1.0 everywhere (chop+retrigger only).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/mash_kubyz_higher_organizatsiya.toml out.wav
+#
+# Phrase cut found by RMS breath-dip scan of the vocals stem (40/10 ms
+# windows): clean onset ~151.20 s (recovers from a -50 dB breath dip),
+# clean cutoff ~152.24 s (right before the next -50 dB breath dip) =
+# 1.04 s single hyped line from deep in the loudest chorus (147-158s,
+# energy 1.00). Native vocal BPM measured 111.90 — irrelevant here since
+# the clip is a one-shot stab, not stretched or beat-matched internally.
+
+bpm = 135.98
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -26.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 130.0
+
+[pump]
+depth_db = 4.0
+release_ms = 100.0
+
+[breath]
+every_bars = 8
+len_bars = 4
+from_hz = 30.0
+to_hz = 600.0
+
+# ── the beat: one continuous take from the main groove, drums+bass+other ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+start_sec = 20.0
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+saturate_db = 2.0
+start_sec = 20.0
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -1.0
+start_sec = 20.0
+len_sec = 64.0
+
+# ── hyped-stab source (one-shot, no stretch) ──
+[[source]]
+name = "org"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+
+# wave A — quiet intro motif
+[[phrase]]
+track = "org"
+start_sec = 151.20
+end_sec = 152.24
+at_beat = 8.0
+loops = 3
+gain_db = 2.0
+
+# wave B — first escalation
+[[phrase]]
+track = "org"
+start_sec = 151.20
+end_sec = 152.24
+at_beat = 32.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 4.0
+
+# wave C — echo joins
+[[phrase]]
+track = "org"
+start_sec = 151.20
+end_sec = 152.24
+at_beat = 64.0
+loops = 6
+loop_gain_step_db = 1.0
+throw = true
+gain_db = 5.5
+
+# wave D — machine-gun stab finale, most echo
+[[phrase]]
+track = "org"
+start_sec = 151.20
+end_sec = 152.24
+at_beat = 104.0
+loops = 8
+loop_gain_step_db = 1.0
+throw = true
+gain_db = 6.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

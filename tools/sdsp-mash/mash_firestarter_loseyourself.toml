@@ -1,0 +1,260 @@
+# Mashup — Firestarter × Eminem "Lose Yourself" (lead + hook-bridge).
+#
+#   sdsp-mash tools/sdsp-mash/mash_firestarter_loseyourself.toml out.wav
+#
+# Grid 171.62 = Lose Yourself's double-time reading (85.81 × 2) — the Eminem
+# lead is COMPLETELY unstretched (ratio 1.0). Firestarter's beat is pulled up
+# 141.46 → 171.62 (ratio 0.82426, +21% — DnB-ified breakbeat, half-time rap
+# on top). Stem tempo measured by 64/128-beat comb correlation (141.42/141.50;
+# the full-track 142.11 reading was biased by vocals).
+# Em lattice: first downbeat 5.317 s, src beat 0.699225 s = 2 grid beats.
+# Firestarter drum groove enters at 13.58 s (RMS attack) = beat-stem origin.
+#
+# Timeline (grid beat = 0.3496 s, bar = 1.3984 s):
+#   beats   0- 56  intro sweep + spoken "Look, if you had one shot…" (full)
+#   beats  56-176  verse — "Yo. His palms are sweaty … hope it don't"
+#   beats 176-192  BREAKDOWN — drums+bass out, "You better lose yourself"
+#                  pre-chorus pickup rides near-acapella into the drop
+#   beats 192-252  chorus ×2 — "You better lose yourself in the music …"
+#   beats 252-288  outro — "I'm a firestarter, twisted firestarter" ×3 escal.
+#   beat  288      tape_stop + closing sweep + hook echo sails out
+#                                                            total ≈ 102 s
+
+bpm = 171.62
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+# Rap-vocal fix (2026-07-16): masking diagnosis — Em vocal came through the
+# chain 4.7 dB lower than Zack's in the RATM reference (proj gain −6.3 vs
+# −1.6 dB), and a rap timbre carries only ~30% of its energy in 1-3 kHz vs
+# 42% for the RATM scream. Fixes: vocal gain −3 → +1, presence +3 dB @ 3 kHz,
+# duck ratio 2.5 → 3.5, risers over continuous vocal 0.65/0.6 → 0.45.
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 110.0
+
+# ── the beat — Firestarter, 141.46 → 171.62 ──
+# Native src beat 0.424149 s; grid↔source beats map 1:1. Drums+bass split
+# around the pre-chorus breakdown (grid 176-192). Their second half re-uses
+# the STRONG groove from src beat 80 (47.51 s) — the track's own quiet
+# bridge (src 98-108 s) would otherwise land exactly on the chorus slam.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.82426
+start_sec = 13.58
+len_sec = 74.65
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.82426
+offset_beats = 192.0
+start_sec = 47.51
+len_sec = 42.41
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.82426
+saturate_db = 4.0
+start_sec = 13.58
+len_sec = 74.65
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.82426
+saturate_db = 4.0
+offset_beats = 192.0
+start_sec = 47.51
+len_sec = 42.41
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.82426
+start_sec = 13.58
+len_sec = 123.85
+
+# ── spoken intro: "Look, if you had one shot… would you capture it, or just
+# let it slip." 34.80 → 52.80, UNSTRETCHED. Src-lattice grid-equiv of 34.80 is
+# beat 84.33 → offset 4.33 keeps its downbeats on grid downbeats; it hands
+# off seamlessly into the verse track (src 52.86 @ grid 56).
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Lose Yourself/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 4.33
+start_sec = 34.80
+len_sec = 18.00
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── the lead: verse 1 + double chorus, CONTINUOUS 52.86 → 121.28 (68.42 s).
+# start 52.86 = src beat 68 (downbeat, includes the "Yo." pickup);
+# end 121.28 = the −42 dB dip after "…once in a lifetime" before verse 2.
+# Chorus downbeat (src beat 136 @ 100.41) lands exactly on grid 192 = drop.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Lose Yourself/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 56.0
+start_sec = 52.86
+len_sec = 68.42
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── Firestarter hook source (unstretched one-shots) ──
+[[source]]
+name = "keith"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/vocals.wav"
+
+# "I'm a firestarter, twisted firestarter" + its echo answer (3.95 s ≈ 11.3
+# grid beats) — three escalating hits, attacks on downbeats, 12-beat spacing.
+[[phrase]]
+track = "keith"
+start_sec = 60.70
+end_sec = 64.65
+at_beat = 252.0
+gain_db = -3.0
+
+[[phrase]]
+track = "keith"
+start_sec = 60.70
+end_sec = 64.65
+at_beat = 264.0
+throw = true
+gain_db = -2.0
+
+[[phrase]]
+track = "keith"
+start_sec = 60.70
+end_sec = 64.65
+at_beat = 276.0
+throw = true
+gain_db = -1.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 56.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# verse tail build: riser + stutter + lowpass shut → breakdown boom.
+# (peak 0.65 → 0.45 — the verse still raps through beat 176.)
+[[fx]]
+kind = "riser"
+at_beat = 168.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 172.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 174.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 176.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.8
+
+# acapella pre-chorus riser into THE drop at 192 (trimmed under the
+# "You better lose yourself" pickup riding near-acapella).
+[[fx]]
+kind = "riser"
+at_beat = 184.0
+len_beats = 8
+from_hz = 200.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 192.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 252.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.7
+
+# last hook chest-hit.
+[[fx]]
+kind = "sub_drop"
+at_beat = 276.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.8
+
+# Finale: tape stop + closing lowpass + hook echo over the stopped tape.
+[[fx]]
+kind = "tape_stop"
+at_beat = 288.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 288.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 288.0
+len_beats = 8
+feedback = 0.65
+delay_ms = 524.4
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+# Post-meter-fix calibration: input 2.5 / ceiling −2.8 → real ≈ −10.5 LUFS,
+# mp3 true peak ≤ −1.0 dBTP (codec adds ~+0.6-0.8 dB overshoot).
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.5, "1" = -2.8 }

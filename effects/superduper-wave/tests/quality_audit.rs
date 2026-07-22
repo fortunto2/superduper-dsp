@@ -52,6 +52,10 @@ impl HostHandlers for TH {
 
 /// Render a sustained note. Returns the (mono-summed) buffer.
 fn render_note(key: u8, antialias: bool, cutoff_hz: f32, drive: f32, seconds: f32) -> Vec<f32> {
+    // Boot on the factory Init (Sine) wavetable, not whatever the user last
+    // drew into ~/.superduper-dsp/wave/last.json — otherwise these DSP-quality
+    // assertions measure a machine-local custom wavetable, not a clean sine.
+    std::env::set_var("SUPERDUPER_WAVE_FACTORY", "1");
     let entry = PluginEntry::load_from_clack::<SinglePluginEntry<SuperDuperWave>>(
         c"/in/process/test/superduper-wave-quality",
     ).expect("entry");

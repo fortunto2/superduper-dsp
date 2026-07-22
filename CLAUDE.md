@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 23 plugins (17 effects + 6 instruments)
+## Current state — 27 plugins (21 effects + 6 instruments)
 
 **Effects (audio-in, audio-out):**
 
@@ -78,6 +78,107 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   default model. Supports gating_mode (gated/blended) + secondary
   activation + head1x1. FiLM / grouped conv rejected with typed
   errors (no community models use them).
+- **superduper-vocoder** *(new)* — classic channel vocoder for robot voice
+  (Daft Punk / Kraftwerk / talkbox). Mel-spaced constant-Q analysis bank
+  (two cascaded RBJ BPFs per band) tracks the modulator's per-band envelope;
+  a matching **stereo** synthesis bank shapes the carrier. **Band Count
+  switchable 11 / 16 / 20** (11 = tinny Talker robot, 20 = intelligible
+  R.A.M.) — banks stack-allocated at 20, rebuilt off the per-sample path.
+  Carrier is either internal band-limited oscillators (Saw / Square / Pulse /
+  Saw+Sub, PolyBLEP, **two detuned voices panned L/R for width**, pitch-tracked
+  off the voice via the shared `synth_core::pitch::YinPitchTracker` so no
+  keyboard is needed) or the stereo **Carrier** sidechain input (port 1,
+  mono-summed). Formant Shift re-tunes synthesis bands only; **Unvoiced feeds
+  band-filtered white noise (xorshift, two streams) into the upper bands,
+  gated by the band envelopes** — VSM201-style natural sibilants, cleaner than
+  high-passing the dry voice; Drive (`tanh_drive`) adds grit. Wet path stereo.
+  **Live-ready:** declares **note-ports** (CLAP+MIDI) — play chords on a MIDI
+  keyboard to pitch a **6-voice polyphonic** carrier (Herbie Hancock / Daft
+  Punk vocoder chords). `Pitch Source` {Auto / MIDI / Voice}: Auto uses keys
+  when held else YIN; MIDI = keys only (silent without keys, gated click-free
+  via ~5 ms voice ramps); Voice = YIN only. **Zero added latency** (IIR, no
+  lookahead), **denormal-safe** (FTZ `denormals::Guard`). Presets: Daft Punk
+  Robot, Kraftwerk Choir (20-band), Talkbox (11-band), Sidechain Synth, Live
+  Keys, Subtle Doubler.
+- **superduper-pitch** *(new)* — pitch + independent formant shifter, **dual
+  engine** via a `Mode` param:
+  - **Voice** (TD-PSOLA) — best on a solo monophonic voice with **independent
+    formant** ("manual auto-tune"). A YIN tracker
+    (`synth_core::pitch::YinPitchTracker`) estimates the period; synthesis grains
+    are re-spaced by `α = 2^(Pitch/12)` while the formant is shifted separately
+    by reading each grain at a `β = 2^(Formant/12)`-scaled step — Pitch and
+    Formant decoupled. **Grains are 2·T0 Hann, epoch-synchronous** (snapped to
+    the energy peak / glottal pulse within ±T0/2) so edges land at low-energy
+    points → **no clicks** (the earlier 1-period grains clicked on downshift),
+    weighted OLA.
+  - **Track** (phase vocoder, `pvoc.rs`) — transposes **polyphony**: whole
+    mixes, chords, drums, a full song (change the key of a track). STFT
+    smbPitchShift-style (realfft, N=2048/H=512), true-freq per bin → move bins to
+    `k·α`, phase re-accumulate, iFFT+OLA. **Correct OLA normalisation** (raw
+    `|X|`, ÷Hann²-COLA 1.5 → identity ≈ unity peak, was a 2.67× overshoot that
+    clipped drums) + **spectral-flux transient detection → phase reset** (sharp
+    attacks, less phasiness). Optional envelope-shift formant. RT-safe.
+  - **Key detection** (`keydetect.rs`) — own STFT → 12-bin **chromagram** →
+    correlate the **24 Krumhansl-Schmuckler profiles** → detected key (e.g.
+    "A minor"), published lock-free; the GUI shows it live. A **`Target Key`**
+    selector + **Match** button set `Pitch` to the nearest-octave interval that
+    moves this track into the target key (read a vocal's key on one instance,
+    type it as the target on the music → Match).
+  - Both engines report the **same** latency (~2048 ≈ 43 ms, `max(4·T0_max,
+    N−H)`) via CLAP `latency` ext, so switching Mode never re-triggers host PDC.
+    6 params (Pitch / Formant / Mix / Output / Mode / Target). Presets: Chipmunk,
+    Masyanya, Bass, Demon, Gender Flip, Deeper (Voice) + Key ±2 / ±5 (Track).
+    Verified: Voice +12 → ×2, −12 → ×0.5, Formant +7 raises centroid with f0
+    fixed, no clicks (max Δsample < 0.02); Track transposes a C-E-G triad +2 st
+    (all tones move, originals gone), identity peak 1.0×; key detection on
+    I-IV-V-I progressions; Match interval correct. **TODO (item 5, deferred):**
+    Laroche-Dolson phase-locking + cepstral formant-preservation for Track.
+- **superduper-tune** *(new)* — autotune / pitch correction. Reuses the **shared
+  TD-PSOLA engine** (`synth_core::psola::PitchShifter`, extracted from Pitch so
+  both plugins — and iOS — share one copy) + the shared YIN tracker. Measures the
+  singer's pitch and drives the shifter with a semitone **correction** toward a
+  **target**, selectable via `Target`: **Scale** (snap to nearest note in Key +
+  Scale — 9 scales incl. major/minor/modes/pentatonic; `scale.rs` degree masks),
+  **MIDI** (pull to a note played on the note-input — monophonic last-note
+  priority, `held` stack), or **Sidechain** (follow the pitch of the stereo
+  `Reference` input port 1 via a second YIN). `Retune` sets the effect: **0 ms =
+  hard tune / T-Pain** (the shifter's built-in ~5 ms pitch smoothing gives the
+  snap, not a click), higher = natural glide. `Amount` blends correction depth;
+  `Formant` shifts timbre independently (no chipmunking); Mix/Output. Unvoiced /
+  silent input **freezes** the correction (no snapping breath). Latency = PSOLA
+  look-behind, reported via CLAP `latency`. GUI shows live detected-Hz +
+  correction-cents. 9 presets (Hard Tune / Natural / Subtle / Minor Hard / Robot
+  / Pentatonic / MIDI Graph / Sidechain Follow / Bright Doll). **Verified:** in
+  460 Hz → −0.77 st → A4 440; sing 300 Hz + MIDI C4 → 261.6 Hz; in-key 220 Hz →
+  no correction; clap_e2e green. **TODO:** Melodyne-lite (offline mono note
+  editor) is the planned follow-on (M4).
+- **superduper-harmonic** *(new)* — pitch-locked harmonic comb denoiser for a
+  **piezo / electric kubyz** (jaw-harp): keep the harmonics AND the plucks,
+  reject the between-harmonic contact rustle/hiss. **Time-domain, zero-latency
+  (NOT FFT)** — a **period-synchronous comb**: YIN tracks f0 on the mono sum
+  (`synth_core::pitch::YinPitchTracker`), then per channel it averages the input
+  with delay-line taps at `T, 2T, …, (K-1)T` (`T = sr/f0`) — periodic content
+  adds coherently, uncorrelated noise averages down ÷√K. **Combine by MEDIAN
+  (default) or Mean** (`Mode` param): the mean re-injects each pluck one period
+  later as a tap → an inharmonic echo at `T, 2T…` that *adds* between-harmonic
+  noise on transient-heavy contact-pickup material (verified on real kubyz +
+  clicks: mean +4.7 dB). The **median discards that single-tap outlier** (a pluck
+  sits in one tap; the periodic content is the median across taps) → no echo,
+  still cleans stationary hiss. `out = x − eff·(x−comb)` subtracts the
+  between-harmonic residual. **Onset-gated depth**: a fast/slow envelope onset
+  detector drops the comb depth on attacks (`eff = Amount·(1 − Transient·onset)`)
+  so plucks pass through razor-sharp; bypasses on silence/unvoiced (level gate).
+  7 params: Amount (rejection depth), Bandwidth (keep-width → tap count `K` 2..8,
+  narrow=aggressive), Transient (attack preservation), Mix, Output, Range (lowest
+  f0 to lock — guards octave-down errors), Mode (Median/Mean). GUI: live f0
+  readout + reduction meter + output spectrum strip. Presets: Kubyz Clean,
+  Gentle/Transparent, Aggressive, Transient Max. **Measured** (synthetic kubyz):
+  stationary between-harmonic noise −7.4 dB (median) at Amount 0.9 / Bandwidth
+  0.3, harmonic energy Δ −0.1 dB (untouched), pluck peak preserved 100 % at
+  Transient 1 vs 31 % at Transient 0, and a single-pluck echo is −19.3 dB lower
+  under median than mean. Median needs ≥3 taps so K is floored at 3 in Median
+  mode. Delay lines pre-allocated at `activate()`; median via alloc-free
+  `sort_unstable_by(total_cmp)` on a stack slice; RT-safe process().
 
 **Instruments (MIDI-in or generator, audio-out):**
 
@@ -294,6 +395,10 @@ superduper-dsp/
     superduper-midside/      L/R ↔ M/S encode/decode + per-channel gain
     superduper-soothe/       24-band dynamic resonance suppressor
     superduper-nam/          NAM WaveNet/LSTM/Linear inference + library UI
+    superduper-vocoder/      channel vocoder 11/16/20-band (robot voice, noise-unvoiced, stereo carrier)
+    superduper-pitch/        pitch + formant shifter, dual engine (Voice=PSOLA / Track=phase vocoder for polyphony)
+    superduper-tune/         autotune — pitch correction to Scale / MIDI / Sidechain, formant-preserving (shared PSOLA engine)
+    superduper-harmonic/     pitch-locked harmonic comb denoiser (piezo-kubyz cleanup; keep harmonics+plucks, reject between-harmonic noise)
     superduper-ambient/      autonomous chord-drone generator
     superduper-pad/          polyphonic MIDI pad synth
     superduper-wave/         wavetable bass/lead synth (curve editor + mip-AA)
@@ -712,6 +817,22 @@ and the CFBundleIdentifier. The script also installs to
     For re-using a fully-idle slot, you can also keep the filter state —
     its `lp_z*` are already ≈ 0 from the release floor.
 
+17b. **Voice retrigger + steal clicks — `gate_on` zeroes, hard-swap steps.**
+    Lesson 17 stops the filter-zeroing click but two more remain, both audible
+    as *faint clicks when playing fast over a held drone*. (a) **Retrigger:**
+    `AdsrEnvelope::gate_on()` routes through PreDelay which sets `level = 0`, so
+    replaying a still-held key drops the voice to silence for a sample. Use the
+    `retrigger()` method (legato re-attack from the current level) for same-key
+    retrigger; `gate_on` stays correct only for notes that start from silence.
+    (b) **Steal:** overwriting a busy voice's pitch in place steps the waveform
+    (mip level + phase increment) at full amplitude. Use a **deferred steal** —
+    choke-fade the old note to zero, park the new note (`pending_*`), start it
+    from silence when the fade ends; and exclude `choke_remaining > 0` voices
+    from steal victims so a mid-fade voice isn't re-choked. Fixed in Wave /
+    Kubyz / Pad; one-shot synths (Drum, Sampler) and the ramp-based Vocoder are
+    intentionally exempt. Full playbook + `click_audit` test in the
+    **`click-free-voices`** skill.
+
 18. **Drag-knob "vanishing audio" is usually a too-fast slew.** With a 5 ms
     SmoothedParam time constant, dragging Cutoff from 16 kHz to 80 Hz
     spans 12-orders-of-magnitude on a log scale at one constant linear
@@ -818,6 +939,9 @@ and the CFBundleIdentifier. The script also installs to
 ./scripts/build_vocal_bundle.sh
 ./scripts/build_ambient_bundle.sh
 ./scripts/build_pad_bundle.sh
+./scripts/build_vocoder_bundle.sh
+./scripts/build_pitch_bundle.sh
+./scripts/build_harmonic_bundle.sh
 # new effects: copy one of the above and change two strings (package name +
 # CFBundleIdentifier). Or call ./scripts/build_bundle.sh <name> directly.
 ```

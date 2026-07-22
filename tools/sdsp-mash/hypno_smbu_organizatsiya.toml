@@ -1,0 +1,258 @@
+# Hypno-loop draft A — SMBU (136.22, A#) × Oxxxymiron «Организация» (фразы-лупы).
+# Кубыз-сет: бит A#, юзер играет кубыз живьём поверх — вокал = короткие
+# зацикленные фразы (смысл от повтора), не куплеты. Zero stretch.
+# SMBU зоны (из скилла): билд 22-46, дроп 48.10, groove A 48-88, B 88.63-134.
+# Фразы (word-timestamps из wx_*/vocals.json):
+#   тизер «Каждый из нас обречён замечать изъян мироздания» 28.45-32.0
+#   луп ×4 «…мы — запрещённая организация» 33.08-38.365 (12-бит юнит)
+#   breakdown «производство, где плавится осовь / мы как дома внутри
+#   снежного шара…» 142.21-148.57
+#   дроп-чоп ×8 «Ух, нас не догнать» 158.70-160.462 (4-бит юнит)
+#   стаб после стопа «организация» 34.06-36.9
+
+bpm = 136.22
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.0
+release_ms = 100.0
+
+# ── intro: SMBU build zone (naturally sparse), beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = -3.0
+start_sec = 22.02
+len_sec = 14.095
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -5.0
+start_sec = 22.02
+len_sec = 14.095
+
+# ── groove A (drop kick 48.10), beats 32-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = -3.0
+offset_beats = 32.0
+start_sec = 48.10
+len_sec = 28.190
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = -1.0
+saturate_db = 3.0
+offset_beats = 32.0
+start_sec = 48.10
+len_sec = 28.190
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -5.0
+offset_beats = 32.0
+start_sec = 48.10
+len_sec = 28.190
+
+# ── breakdown bed: build zone quiet, beats 96-128 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -7.0
+offset_beats = 96.0
+start_sec = 22.02
+len_sec = 14.095
+
+# ── DROP: groove B, beats 128-200 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+offset_beats = 128.0
+start_sec = 88.63
+len_sec = 31.714
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 3.5
+saturate_db = 3.5
+offset_beats = 128.0
+start_sec = 88.63
+len_sec = 31.714
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -2.0
+offset_beats = 128.0
+start_sec = 88.63
+len_sec = 31.714
+
+# ── фразы ──
+[[source]]
+name = "oxxxy"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+
+# тизер: «Каждый из нас обречён замечать изъян мироздания»
+[[phrase]]
+track = "oxxxy"
+start_sec = 28.40
+end_sec = 32.00
+at_beat = 8.0
+throw = true
+gain_db = 6.0
+
+# гипно-луп ×4: «…мы — запрещённая организация» (12-бит юнит, 3 такта)
+[[phrase]]
+track = "oxxxy"
+start_sec = 33.08
+end_sec = 38.365
+at_beat = 48.0
+loops = 4
+loop_gain_step_db = 0.7
+gain_db = 5.5
+
+# breakdown: «производство, где плавится осовь / мы как дома внутри снежного
+# шара, тряхнуло — слегка, моментально заносит» почти акапельно
+[[phrase]]
+track = "oxxxy"
+start_sec = 142.16
+end_sec = 148.60
+at_beat = 96.0
+throw = true
+gain_db = 6.5
+
+# дроп-чоп ×8: «Ух, нас не догнать» (4-бит юнит), эскалация
+[[phrase]]
+track = "oxxxy"
+start_sec = 158.70
+end_sec = 160.462
+at_beat = 128.0
+loops = 8
+loop_gain_step_db = 0.8
+gain_db = 5.0
+
+# вторая волна чопа ближе к финалу, горячее
+[[phrase]]
+track = "oxxxy"
+start_sec = 158.70
+end_sec = 160.462
+at_beat = 168.0
+loops = 6
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# стаб после стопа: «организация»
+[[phrase]]
+track = "oxxxy"
+start_sec = 34.02
+end_sec = 36.90
+at_beat = 200.6
+throw = true
+gain_db = 5.5
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 124.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 126.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 128.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "tape_stop"
+at_beat = 196.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 196.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 198.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 660.7
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

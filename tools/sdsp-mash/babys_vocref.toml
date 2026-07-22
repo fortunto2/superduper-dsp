@@ -1,0 +1,31 @@
+# Vocal-only reference render for masking verification of
+# mash_babys_withoutme.toml (same placements/FX chain, no beat/fx/master) —
+# gives the exact WSOLA-stretched positioned vocal to correlate against the
+# full mix. Not a mashup; a measurement fixture.
+
+bpm = 110.0
+balance_sections = false
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Without Me/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+tempo_ratio = 1.0207
+offset_beats = 16.0
+start_sec = 46.58
+len_sec = 44.22
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Eminem - Without Me/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+tempo_ratio = 1.0207
+offset_beats = 114.75
+start_sec = 90.80
+len_sec = 16.75
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }

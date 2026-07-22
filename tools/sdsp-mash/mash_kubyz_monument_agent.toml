@@ -1,0 +1,116 @@
+# Kubyz-loop draft 3 — Tale Of Us "Monument" (Barnt Remix) (125.11, main
+# groove) × Oxxxymiron "Агент" chopped into a ~1s hyped stab. Moodier/more
+# melodic techno than drafts 1-2 — gentler pump/breath, slower escalation.
+# Backing loop for live kubyz, tempo_ratio=1.0 everywhere.
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/mash_kubyz_monument_agent.toml out.wav
+#
+# Phrase cut by RMS breath-dip scan of the vocals stem: onset ~61.20 s
+# (recovers from a -46 dB dip), cutoff ~62.24 s (right before the next
+# -51 dB dip) = 1.04 s from the chorus (61-84s, energy 1.00). "Агент"
+# reads at 161.18 BPM raw (3:2 octave ambiguity with the ~110 rap family,
+# same as Организация/Detsl) — irrelevant here, clip is a one-shot stab.
+
+bpm = 125.11
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -26.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 3.5
+release_ms = 110.0
+
+[breath]
+every_bars = 8
+len_bars = 4
+from_hz = 30.0
+to_hz = 500.0
+
+# ── the beat: one continuous take from the main groove, drums+bass+other ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+start_sec = 120.8
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+saturate_db = 2.0
+start_sec = 120.8
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Tale Of Us - Monument (Barnt Remix)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+start_sec = 120.8
+len_sec = 64.0
+
+# ── hyped-stab source (one-shot, no stretch) ──
+[[source]]
+name = "agent"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Агент/vocals.wav"
+
+# wave A — quiet intro motif
+[[phrase]]
+track = "agent"
+start_sec = 61.20
+end_sec = 62.24
+at_beat = 8.0
+loops = 3
+gain_db = 2.0
+
+# wave B — first escalation
+[[phrase]]
+track = "agent"
+start_sec = 61.20
+end_sec = 62.24
+at_beat = 32.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 4.0
+
+# wave C — echo joins
+[[phrase]]
+track = "agent"
+start_sec = 61.20
+end_sec = 62.24
+at_beat = 64.0
+loops = 6
+loop_gain_step_db = 1.0
+throw = true
+gain_db = 5.0
+
+# wave D — peak layer
+[[phrase]]
+track = "agent"
+start_sec = 61.20
+end_sec = 62.24
+at_beat = 96.0
+loops = 7
+loop_gain_step_db = 1.0
+throw = true
+gain_db = 6.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

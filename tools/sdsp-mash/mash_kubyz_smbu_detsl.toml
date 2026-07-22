@@ -1,0 +1,117 @@
+# Kubyz-loop draft 1 — Prodigy "Smack My Bitch Up" (136.19, chorus zone)
+# × Detsl aka Le Truk "Кто там у руля" hook, chopped as a repeating stab —
+# NOT a full-verse mashup: this is a hypnotic LOOP-with-development backing
+# track for the user to play live kubyz over. One continuous 64s groove
+# take, the same short vocal loop-unit retriggers on the grid and gets
+# louder/echoier each wave (no WSOLA stretch anywhere — everything is
+# tempo_ratio=1.0, chop+retrigger only).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/mash_kubyz_smbu_detsl.toml out.wav
+#
+# Detsl hook loop-unit REUSED from lead_bridge_babys.toml (already validated
+# onset-to-onset, seamless, |dx|=0.06 at the seam): start 140.44 / end 144.83
+# (4.38 s = one full hook repeat). Beat = 0.4406 s → ~9.9 beats per rep.
+
+bpm = 136.19
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -26.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 130.0
+
+[pump]
+depth_db = 4.0
+release_ms = 110.0
+
+[breath]
+every_bars = 8
+len_bars = 4
+from_hz = 30.0
+to_hz = 600.0
+
+# ── the beat: one continuous chorus-zone take, drums+bass+other ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+start_sec = 253.1
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+saturate_db = 2.0
+start_sec = 253.1
+len_sec = 64.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -1.0
+start_sec = 253.1
+len_sec = 64.0
+
+# ── hook stab source (no stretch — 109.84 native, one-shot use) ──
+[[source]]
+name = "detsl"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+
+# wave A — quiet intro motif
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.83
+at_beat = 8.0
+loops = 2
+gain_db = 3.0
+
+# wave B — first escalation
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.83
+at_beat = 40.0
+loops = 2
+loop_gain_step_db = 1.0
+gain_db = 5.0
+
+# wave C — echo joins
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.83
+at_beat = 68.0
+loops = 3
+loop_gain_step_db = 1.0
+throw = true
+gain_db = 6.5
+
+# wave D — peak layer, most echo, tail rings into the loop-out
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.83
+at_beat = 104.0
+loops = 3
+loop_gain_step_db = 1.3
+throw = true
+gain_db = 7.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

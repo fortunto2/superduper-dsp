@@ -350,14 +350,17 @@ impl<'a> PluginAudioProcessor<'a> {
         self.next_age = self.next_age.wrapping_add(1);
         let stamp = self.next_age;
         let sr = self.sample_rate;
-        // 1. Retrigger
+        // 1. Retrigger — legato re-attack from the current level. `retrigger`
+        // (not `gate_on`) avoids the PreDelay level=0 drop, and we deliberately
+        // DON'T call `on_note_on` here: it rescatters the 16 oscillator phases
+        // and restarts the note fade, both of which step a still-sounding voice
+        // when the same key is replayed over a sustained drone → a click.
         for v in self.voices.iter_mut() {
             if v.key == key && v.note_id == note_id {
-                v.env.gate_on();
+                v.env.retrigger();
                 v.velocity = velocity;
                 v.age_stamp = stamp;
                 v.choke_remaining = 0;
-                v.on_note_on(sr);
                 return;
             }
         }
@@ -373,11 +376,16 @@ impl<'a> PluginAudioProcessor<'a> {
             v.on_note_on(sr);
             return;
         }
-        // 3. Steal — quietest releasing, else oldest.
+        // 3. Steal — quietest releasing, else oldest. Skip voices already in a
+        // deferred-steal fade (`choke_remaining > 0`): re-choking one resets its
+        // ramp (a click) and clobbers the note parked on it. It frees in ~4 ms.
         let mut steal_idx = 0usize;
         let mut steal_score = f32::INFINITY;
         let mut found_release = false;
         for (i, v) in self.voices.iter().enumerate() {
+            if v.choke_remaining > 0 {
+                continue;
+            }
             if v.env.is_releasing() {
                 let lvl = v.env.level();
                 if lvl < steal_score {
@@ -389,21 +397,40 @@ impl<'a> PluginAudioProcessor<'a> {
         }
         if !found_release {
             let mut oldest = u64::MAX;
+            let mut found = false;
             for (i, v) in self.voices.iter().enumerate() {
+                if v.choke_remaining > 0 {
+                    continue;
+                }
                 if v.age_stamp < oldest {
                     oldest = v.age_stamp;
                     steal_idx = i;
+                    found = true;
+                }
+            }
+            if !found {
+                let mut oldest = u64::MAX;
+                for (i, v) in self.voices.iter().enumerate() {
+                    if v.age_stamp < oldest {
+                        oldest = v.age_stamp;
+                        steal_idx = i;
+                    }
                 }
             }
         }
+        // Deferred steal — choke-fade the OLD note to silence over ~4 ms (it
+        // keeps sounding at its old pitch during the fade) and park the new one.
+        // The render loop starts the parked note from silence when the fade
+        // ends → the join is 0→0, click-free.
+        let fade_samples = ((sr * 0.004) as u32).max(1);
         let v = &mut self.voices[steal_idx];
-        v.key = key;
-        v.note_id = note_id;
-        v.velocity = velocity;
+        v.choke_level = v.env.level();
+        v.choke_total = fade_samples;
+        v.choke_remaining = fade_samples;
+        v.pending_key = key;
+        v.pending_note_id = note_id;
+        v.pending_velocity = velocity;
         v.age_stamp = stamp;
-        v.choke_remaining = 0;
-        v.env.gate_on();
-        v.on_note_on(sr);
     }
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
@@ -619,8 +646,20 @@ impl<'a> PluginAudioProcessor<'a> {
                     mix_r += r * amp;
                     v.choke_remaining -= 1;
                     if v.choke_remaining == 0 {
-                        v.env = AdsrEnvelope::default();
-                        v.key = NOTE_FREE;
+                        if v.pending_key != NOTE_FREE {
+                            // Deferred steal fade done — start the parked note
+                            // from silence (env attacks from 0 + note fade).
+                            v.key = v.pending_key;
+                            v.note_id = v.pending_note_id;
+                            v.velocity = v.pending_velocity;
+                            v.pending_key = NOTE_FREE;
+                            v.env = AdsrEnvelope::default();
+                            v.env.gate_on();
+                            v.on_note_on(sr);
+                        } else {
+                            v.env = AdsrEnvelope::default();
+                            v.key = NOTE_FREE;
+                        }
                     }
                     continue;
                 }

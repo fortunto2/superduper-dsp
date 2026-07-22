@@ -1,0 +1,58 @@
+# Yukimatsu-style set — Part 04: atmospheric pause-bridge (Bowie "Space
+# Oddity", own stems, the song's own beatless "Ground Control to Major
+# Tom" intro passage 8.4-55.7s). No drums at all — this IS the "vdoh"
+# breakless passage the technique calls for once or twice per set.
+# Stacked echo_out + a 47-beat-long filter_sweep open give it space
+# without a real reverb plugin (sdsp-mash's [[master]] chain has no
+# reverb stage — echo_out/filter_sweep are the only spatial tools).
+# Deliberately mixed much quieter than the surrounding body parts.
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/yuki_04_space_oddity_bridge.toml out.wav
+#
+# bpm=60 is a neutral 1-beat=1-second clock for FX placement, not a
+# musical tempo — there is no beat grid to sync here.
+
+bpm = 60.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Space Oddity (2009 Remaster)/vocals.wav"
+role = "vocal"
+gain_db = 3.0
+start_sec = 8.4
+len_sec = 47.3
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Space Oddity (2009 Remaster)/other.wav"
+role = "beat-other"
+gain_db = -2.0
+start_sec = 8.4
+len_sec = 47.3
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 0.0
+len_beats = 47.0
+from_hz = 800.0
+to_hz = 12000.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 5.0
+len_beats = 20.0
+feedback = 0.5
+delay_ms = 550.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 30.0
+len_beats = 10.0
+feedback = 0.4
+delay_ms = 280.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 0.5, "5" = 8000.0, "6" = 1.5 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 1.0, "1" = -6.0 }

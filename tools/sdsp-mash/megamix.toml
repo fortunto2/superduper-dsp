@@ -1,0 +1,210 @@
+# Prodigy Megamix (AI v1) — a cypher built from the user's "Prodigy Mix" CSV
+# dramaturgy. Each section is its own tempo island (vocal never stretched, beat
+# stretched to the vocal's grid), joined by varied transitions + performance FX.
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/megamix.toml out_megamix.wav
+#
+# Sections (start_sec / bpm / transition):
+#   S1  0 s   130  —          Breathe  × Кино «Хочу перемен» (singalong)
+#   S2  52 s  161  drop       Voodoo People × Oxxxymiron «Агент» (high-energy rap)
+#   S3  104 s 111  breakdown  Baby's Got A Temper × Detsl «Кто там у руля»
+#   S4  156 s 142  cut        Firestarter instrumental finale → tape_stop
+#
+# FX: riser (auto, before the S2 drop) · beat_repeat (before the S3 switch) ·
+#     echo_out (S3 breakdown tail) · tape_stop (finale).
+
+bpm = 130   # global default; each section overrides with its own bpm + start_sec
+
+# Opener sweep on the beat bus.
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+# Sidechain: only the melodic `other` bus ducks under the vocal.
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+# ─────────────────────────── S1 · Breathe × Хочу перемен ───────────────────
+[[section]]
+name = "Breathe × Хочу перемен"
+start_beat = 0
+start_sec = 0.0
+bpm = 130.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/other.wav"
+role = "beat-other"
+gain_db = -1.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/025. Кино - Хочу перемен/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 16
+start_sec = 43.0
+len_sec = 44.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────────────────────── S2 · Voodoo People × Агент (drop) ─────────────────
+[[section]]
+name = "Voodoo × Агент"
+start_beat = 0
+start_sec = 52.0
+bpm = 161.0
+transition = "drop"
+xfade_beats = 8
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+len_sec = 58.0
+tempo_ratio = 0.9255
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+len_sec = 58.0
+tempo_ratio = 0.9255
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/06. Voodoo People/other.wav"
+role = "beat-other"
+gain_db = -1.5
+len_sec = 58.0
+tempo_ratio = 0.9255
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Агент/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 8
+start_sec = 10.4
+len_sec = 42.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ───────────────── S3 · Baby's Got A Temper × Detsl (breakdown) ────────────
+[[section]]
+name = "Baby's Got A Temper × Detsl"
+start_beat = 0
+start_sec = 104.0
+bpm = 111.0
+transition = "breakdown"
+xfade_beats = 4
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+len_sec = 58.0
+tempo_ratio = 0.9541
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+len_sec = 58.0
+tempo_ratio = 0.9541
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+len_sec = 58.0
+tempo_ratio = 0.9541
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля-!/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 8
+start_sec = 6.2
+len_sec = 42.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────────────────── S4 · Firestarter instrumental finale (cut) ────────────
+[[section]]
+name = "Firestarter finale"
+start_beat = 0
+start_sec = 156.0
+bpm = 142.0
+transition = "cut"
+xfade_beats = 2
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+len_sec = 30.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+len_sec = 30.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/03. Firestarter/other.wav"
+role = "beat-other"
+gain_db = -1.0
+len_sec = 30.0
+
+# ───────────────────────────── performance FX ─────────────────────────────
+# beat_repeat stutter right before the S3 beat change.
+[[fx]]
+kind = "beat_repeat"
+at_sec = 102.0
+len_beats = 4
+
+# echo tail as the breakdown hands over to Detsl.
+[[fx]]
+kind = "echo_out"
+at_sec = 104.0
+delay_ms = 175.0
+feedback = 0.6
+len_beats = 6
+
+# tape-stop power-down to end the finale.
+[[fx]]
+kind = "tape_stop"
+at_sec = 181.0
+len_beats = 4
+
+# ──────────────────────────────── master ──────────────────────────────────
+[[master]]
+plugin = "eq"
+# 7 HP Hz · 1 Low Gain · 5 High Freq · 6 High Gain — club low-end + air.
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+# 0 Input dB (push for club loudness) · 1 Ceiling dBTP.
+params = { "0" = 8.0, "1" = -1.0 }

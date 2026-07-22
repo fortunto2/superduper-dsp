@@ -1,0 +1,89 @@
+# Auto-pingpong cypher — Jump Around × Detsl × Oxxxymiron.
+#   sdsp-mash tools/sdsp-mash/pingpong_jump.toml out.wav
+# Grid 110. House of Pain "Jump Around" 106.86 → 110 = +2.9% (breakbeat, in
+# budget). Detsl 109.84 / Организация 110.06 counter-stretch ≈ 0.
+
+bpm = 110.0
+preset = "wild"
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 135.0
+
+[breath]
+every_bars = 16
+len_bars = 4
+from_hz = 30.0
+to_hz = 600.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.9715
+start_sec = 4.0
+len_sec = 118.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.9715
+saturate_db = 4.0
+start_sec = 4.0
+len_sec = 118.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.9715
+start_sec = 4.0
+len_sec = 118.0
+
+[[source]]
+name = "detsl"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+tempo_ratio = 0.9985
+start_sec = 24.0
+len_sec = 48.0
+
+[[source]]
+name = "oxxxy"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+tempo_ratio = 1.0006
+start_sec = 96.0
+len_sec = 48.0
+
+[pingpong]
+vocals = ["detsl", "oxxxy"]
+phrase_beats = 4
+loop_prob = 0.15
+pitch_prob = 0.0
+seed = 11
+start_beat = 16
+end_beat = 204   # beat ends at 114.6s = beat 210 — no a-cappella tail
+gain_db = -3.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

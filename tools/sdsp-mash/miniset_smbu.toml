@@ -1,0 +1,193 @@
+# Mini-set #1 — Smack My Bitch Up × Сигма Бой (v3, no jingle).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/miniset_smbu.toml out.wav
+#
+# Counter-stretch on a common 130 grid: SMBU beat 136→130 (−4.4%, groove intact)
+# meets «Сигма Бой» vocal 125.17→130 (+3.9%, within the ±5% pop-vocal tolerance).
+# Сигма Бой стаёт lead. The old «Утиные истории» Disney jingle is gone —
+# replaced by a straight breakdown→drop between the two verses.
+#
+# Censored SMBU hook (EDL [[phrase]] throws, onset-cut from the vocal stem):
+#   predominantly the answer phrase "change my pitch up" (77.5 s) on the intro,
+#   the build, and just after the drop; the explicit "smack my bitch up"
+#   (251.3 s) exactly ONCE, quiet (−9 dB) and dub-thrown, buried in the sub-drop
+#   on the downbeat.
+#
+# Sections (start_sec / bpm / transition):
+#   S1  0 s    130  —      SMBU × Сигма Бой (verse 1)
+#   S2  48 s   130  drop   riser build → SMBU × Сигма Бой (verse 2) → tape_stop
+
+bpm = 130.0
+preset = "wild"
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+# v2.2 «жизнь» — breathing pump on the whole mix + periodic filter breathing.
+[pump]
+depth_db = 6.0
+release_ms = 120.0
+
+[breath]
+every_bars = 8
+len_bars = 4
+from_hz = 30.0
+to_hz = 600.0
+
+# ───────────────────────── S1 · SMBU × Сигма Бой (v1) ──────────────────────
+[[section]]
+name = "SMBU × Сигма Бой v1"
+start_sec = 0.0
+bpm = 130.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0476
+start_sec = 8.0
+len_sec = 52.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 1.0476
+saturate_db = 4.0
+start_sec = 8.0
+len_sec = 52.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.0476
+start_sec = 8.0
+len_sec = 52.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Betsy, Мария Янковская - Сигма Бой/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+tempo_ratio = 0.9628
+offset_beats = 8
+start_sec = 0.4
+len_sec = 42.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ───────────────────── S2 · SMBU × Сигма Бой v2 (breakdown→drop) → tape_stop ─
+[[section]]
+name = "SMBU × Сигма Бой v2"
+start_sec = 48.0
+bpm = 130.0
+transition = "drop"
+xfade_beats = 8
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0476
+start_sec = 30.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 1.0476
+saturate_db = 4.0
+start_sec = 30.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.0476
+start_sec = 30.0
+len_sec = 58.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Betsy, Мария Янковская - Сигма Бой/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+tempo_ratio = 0.9628
+offset_beats = 8
+start_sec = 15.7
+len_sec = 44.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ──────────────── censored SMBU hook — EDL throws from the vocal stem ────────
+# One source (the SMBU vocal stem, un-stretched — the stabs are one-shots, not a
+# groove); phrases cut the couplet halves by onset and place them on the grid.
+[[source]]
+name = "smbuhook"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/vocals.wav"
+
+# "change my pitch up" (non-explicit) — intro identity, before Сигма Бой enters.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 2
+throw = true
+gain_db = -3.0
+
+# "change my pitch up" — in the build toward the drop.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 96
+throw = true
+gain_db = -4.0
+
+# "smack my bitch up" (explicit) — ONCE, quiet + dub-thrown, on the drop downbeat.
+[[phrase]]
+track = "smbuhook"
+start_sec = 251.3
+end_sec = 253.9
+at_beat = 104
+throw = true
+gain_db = -9.0
+
+# "change my pitch up" — reasserts the answer phrase just after the drop.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 112
+throw = true
+gain_db = -5.0
+
+# ── tape-stop power-down at the very end of verse 2 ──
+[[fx]]
+kind = "tape_stop"
+at_sec = 100.0
+len_beats = 4
+
+# ──────────────────────────────── master ──────────────────────────────────
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -18.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 3.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

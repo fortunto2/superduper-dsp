@@ -1,0 +1,225 @@
+# Lead + looped bridge — Организация (lead) × Detsl (hook bridge) on
+# Baby's Got A Temper. NOT a pingpong: Oxxxymiron carries the text in two
+# CONTINUOUS uncut verses, Detsl's «Не важно, кто там у руля» hook enters as
+# a looped bridge between them (feat-artist hook, not line-by-line dialogue).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/lead_bridge_babys.toml out.wav
+#
+# Grid 110 = Организация's native tempo (110.06 measured) — the lead vocal is
+# NOT stretched at all; the beat is pulled to it (105.71 → 110 = +4.1%).
+# Detsl hook native 109.84 — also unstretched (drift < 50 ms over 4 loops).
+#
+# Timeline (beat = 0.5455 s, bar = 2.182 s):
+#   beats   0- 16  intro (4 bars, sweep)
+#   beats  16- 72  verse 1 — Организация 113.80-144.28 (segs «городской…осовь.»)
+#   beats  72- 96  bridge 1 — Detsl hook ×3 (8-beat loop, throw tail)
+#   beats  96-136  verse 2 — Организация 144.28-166.40 («Мы, как дома…организация.»)
+#   beats 136-168  bridge 2 — Detsl hook ×4 escalating +1 dB/loop (outro)
+#   beat  168      tape_stop + closing sweep finale; hook echo sails out
+#                  (beat stems END with the tape stop — no dry beat after)
+#                                                            total ≈ 96 s
+
+bpm = 110.0
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 135.0
+
+# ── the beat (continuous) — Baby's Got A Temper, 105.71 → 110 grid ──
+# start_sec 22.02 = the analyze downbeat where the groove actually starts
+# (0-22 s of the drums stem is -57..-40 dB dead air).
+# len_sec 97.6 × 0.9610 = 93.8 s output = beat 172 = exactly where the
+# tape_stop finale ends. The old len_sec 103 left ~5 s of naked beat
+# playing on after the "finale" — a dead anticlimax.
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.9610
+start_sec = 22.02
+len_sec = 97.6
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.9610
+saturate_db = 4.0
+start_sec = 22.02
+len_sec = 97.6
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.9610
+start_sec = 22.02
+len_sec = 97.6
+
+# ── verse 1: Организация, CONTINUOUS 113.80 → 144.28 (30.48 s ≈ 56 beats) ──
+# Cut snapped to real pauses: -43 dB dip at 113.78-113.82 before «городской»,
+# -36 dB inter-phrase dip at 144.27-144.28 before «Мы».
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 16
+start_sec = 113.80
+len_sec = 30.48
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── verse 2: Организация, CONTINUOUS 144.28 → 166.40 (22.12 s ≈ 40.5 beats) ──
+# Ends after the long «…запрещённая организация.» tail (below -40 dB by 166.3).
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 96
+start_sec = 144.28
+len_sec = 22.12
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── Detsl hook source (no stretch — 109.84 native vs grid 110) ──
+[[source]]
+name = "detsl"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+
+# One clean outro repeat «Не важно, кто там у руля и не важно, кто там у руля.»
+# cut onset-to-onset (RMS onset of «Не» at 140.44, next repeat's «Не» at
+# 144.83) = 4.38 s ≈ exactly 8 beats @110 → seamless loop by construction.
+# bridge 1: bursts in over the verse-1 handoff, 3 loops, echo tail.
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.82
+at_beat = 72.0
+loops = 3
+throw = true
+gain_db = -2.0
+
+# bridge 2: outro moment, 4 loops ESCALATING +1 dB each (0/+1/+2/+3) so the
+# outro builds to a peak instead of treading water; echo tail rings into the
+# tape stop.
+[[phrase]]
+track = "detsl"
+start_sec = 140.44
+end_sec = 144.82
+at_beat = 136.0
+loops = 4
+loop_gain_step_db = 1.0
+throw = true
+gain_db = -2.0
+
+# ── transitions: stutter + sub-drop impacts on every entry ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 16.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# verse 1 → bridge 1: a full build, not just a stutter. Two-bar noise riser
+# over the verse tail, the last bar stuttered, the last two beats lowpassed
+# shut (closed→open contrast), then a deep sub hit ON the bridge downbeat.
+[[fx]]
+kind = "riser"
+at_beat = 64.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.65
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 68.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 70.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 72.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 136.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# Last hook repeat (loop 4 of bridge 2, +3 dB) gets its own chest-hit — the
+# outro's peak moment right before the finale.
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.8
+
+# Finale: tape stop + a simultaneous closing lowpass (tempo AND timbre die
+# together) + an echo throw that picks up the already-slowing tape (starts
+# 2 beats in, so the pitch drop itself stays unmasked) and keeps pulsing
+# after the stop — the track sails out instead of cutting off.
+[[fx]]
+kind = "tape_stop"
+at_beat = 168.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 168.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 170.0
+len_beats = 8
+feedback = 0.5
+delay_ms = 818.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

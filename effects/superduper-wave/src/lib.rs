@@ -419,10 +419,14 @@ impl<'a> PluginAudioProcessor<'a> {
         let unison = self.shared.params[P_UNISON].load(Ordering::Relaxed) as u32;
         let detune = self.shared.params[P_DETUNE].load(Ordering::Relaxed);
 
-        // 1. Retrigger same key — single voice per held note.
+        // 1. Retrigger same key — single voice per held note. Use `retrigger`
+        // (legato re-attack from the current level), NOT `gate_on`: gate_on
+        // routes through PreDelay which zeroes the level, dropping a still-
+        // sounding held voice to silence for a sample → a click when the same
+        // key is played again over a sustained drone.
         for v in self.voices.iter_mut() {
             if v.key == key && v.note_id == note_id {
-                v.env.gate_on();
+                v.env.retrigger();
                 v.velocity = velocity;
                 v.age_stamp = stamp;
                 v.choke_remaining = 0;
@@ -446,11 +450,17 @@ impl<'a> PluginAudioProcessor<'a> {
             v.scatter_phases();
             return;
         }
-        // 3. Steal — quietest releasing, else oldest.
+        // 3. Steal — quietest releasing, else oldest. Skip voices already in a
+        // deferred-steal fade (`choke_remaining > 0`): re-choking a mid-fade
+        // voice would reset its ramp to full level (a click) and clobber the
+        // note already parked on it. A choking voice frees itself in ~4 ms.
         let mut steal_idx = 0usize;
         let mut steal_score = f32::INFINITY;
         let mut found_release = false;
         for (i, v) in self.voices.iter().enumerate() {
+            if v.choke_remaining > 0 {
+                continue;
+            }
             if v.env.is_releasing() {
                 let lvl = v.env.level();
                 if lvl < steal_score {
@@ -462,24 +472,47 @@ impl<'a> PluginAudioProcessor<'a> {
         }
         if !found_release {
             let mut oldest = u64::MAX;
+            let mut found = false;
             for (i, v) in self.voices.iter().enumerate() {
+                if v.choke_remaining > 0 {
+                    continue;
+                }
                 if v.age_stamp < oldest {
                     oldest = v.age_stamp;
                     steal_idx = i;
+                    found = true;
+                }
+            }
+            if !found {
+                // Every voice is mid deferred-fade (extreme — 8 steals inside
+                // 4 ms). Fall back to the oldest overall; a rare re-choke here
+                // is preferable to dropping the note.
+                let mut oldest = u64::MAX;
+                for (i, v) in self.voices.iter().enumerate() {
+                    if v.age_stamp < oldest {
+                        oldest = v.age_stamp;
+                        steal_idx = i;
+                    }
                 }
             }
         }
+        // Deferred steal — the old note is at full amplitude, so a hard swap
+        // (new pitch/mip at the preserved phase) steps the waveform and clicks.
+        // Instead: choke-fade the OLD note to silence over ~4 ms (it keeps
+        // rendering at its old pitch during the fade) and park the new note.
+        // The render loop starts the parked note from silence the instant the
+        // fade hits zero → the join is 0→0, click-free.
+        let fade_samples = ((self.sample_rate * 0.004) as u32).max(1);
         let v = &mut self.voices[steal_idx];
-        v.key = key;
-        v.note_id = note_id;
-        v.velocity = velocity;
+        v.choke_level = v.env.level();
+        v.choke_total = fade_samples;
+        v.choke_remaining = fade_samples;
+        v.pending_key = key;
+        v.pending_note_id = note_id;
+        v.pending_velocity = velocity;
+        // Stamp as newest so a further steal this block picks a different victim
+        // rather than clobbering this parked note.
         v.age_stamp = stamp;
-        v.choke_remaining = 0;
-        v.env.gate_on();
-        v.filter_env = AdsrEnvelope::default();
-        v.filter_env.gate_on();
-        v.lfo_phase = 0.0;
-        v.configure_unison(unison, detune);
     }
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
@@ -738,8 +771,24 @@ impl<'a> PluginAudioProcessor<'a> {
                     mix_r += r * amp;
                     v.choke_remaining -= 1;
                     if v.choke_remaining == 0 {
-                        v.env = AdsrEnvelope::default();
-                        v.key = NOTE_FREE;
+                        if v.pending_key != NOTE_FREE {
+                            // Deferred steal fade done — start the parked note
+                            // from silence (env attacks from 0 → no click).
+                            v.key = v.pending_key;
+                            v.note_id = v.pending_note_id;
+                            v.velocity = v.pending_velocity;
+                            v.pending_key = NOTE_FREE;
+                            v.env = AdsrEnvelope::default();
+                            v.env.gate_on();
+                            v.filter_env = AdsrEnvelope::default();
+                            v.filter_env.gate_on();
+                            v.lfo_phase = 0.0;
+                            v.configure_unison(unison, detune);
+                            v.scatter_phases();
+                        } else {
+                            v.env = AdsrEnvelope::default();
+                            v.key = NOTE_FREE;
+                        }
                     }
                     continue;
                 }
@@ -1308,7 +1357,15 @@ impl DefaultPluginFactory for SuperDuperWave {
         // Try the auto-saved "last edited" snapshot — becomes the default
         // for a fresh plugin instance. PluginStateImpl::load runs AFTER
         // new_shared so any project state will override these values.
-        if let Some(preset) = user_extra::repo().load_last(PARAMS.len()) {
+        //
+        // `SUPERDUPER_WAVE_FACTORY=1` skips this so the plugin boots on the
+        // factory Init (Sine) wavetable regardless of what the user last drew.
+        // Tests set it so DSP-quality assertions don't depend on ~/.superduper-dsp.
+        let factory_only = std::env::var_os("SUPERDUPER_WAVE_FACTORY").is_some();
+        if let Some(preset) = (!factory_only)
+            .then(|| user_extra::repo().load_last(PARAMS.len()))
+            .flatten()
+        {
             use std::sync::atomic::Ordering;
             for (i, v) in preset.params.iter().enumerate() {
                 if let Some(slot) = shared.params.get(i) {

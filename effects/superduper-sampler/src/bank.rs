@@ -96,100 +96,34 @@ pub fn empty_sample() -> Arc<SampleData> {
     })
 }
 
-/// Detect the fundamental frequency of a sample using a simplified
-/// YIN-style autocorrelation. Runs once at load time on the GUI
-/// thread; not RT-safe (allocates two scratch buffers). Returns
-/// None for noise / silence / inharmonic content.
+/// Detect the fundamental frequency of an interleaved sample using the
+/// shared YIN detector in `synth_core::pitch`. Runs once at load time on
+/// the GUI thread (not RT-safe — it allocates a mono scratch buffer).
+/// Returns None for noise / silence / inharmonic content.
 ///
-/// The detector picks the loudest non-silent slice of the sample
-/// (so 808s with long silent tails don't drown out the kick body)
-/// and looks for periods between 30 Hz and 4 kHz, which covers
-/// everything from sub-bass to vocal formants.
+/// Thin wrapper: sum the interleaved channels down to a mono buffer, then
+/// hand off to `synth_core::pitch::detect_pitch_hz`, which picks the
+/// loudest non-silent slice (so 808s with long silent tails don't drown
+/// out the kick body) and searches periods from 30 Hz to 4 kHz — the same
+/// algorithm the vocoder's carrier tracker uses, kept in one place.
 pub fn detect_pitch_hz(samples: &[f32], channels: u16, sample_rate: u32) -> Option<f32> {
     let ch = channels.max(1) as usize;
     let frame_count = samples.len() / ch;
-    if frame_count < 2048 { return None; }
-    let window_len = frame_count.min(4096);
-
-    // Scan in coarse hops for the slice with the highest peak — gives
-    // pitch detection a fighting chance on samples that start with
-    // silence or a transient before the tonal body.
-    let mut max_amp = 0.0f32;
-    let mut start = 0usize;
-    let hop = (frame_count / 32).max(128);
-    let probe = 512.min(frame_count);
-    let mut p = 0;
-    while p + probe <= frame_count {
-        let mut peak = 0.0f32;
-        for i in p..p + probe {
-            let v = samples[i * ch].abs();
-            if v > peak { peak = v; }
-        }
-        if peak > max_amp { max_amp = peak; start = p; }
-        p += hop;
+    if frame_count < 2048 {
+        return None;
     }
-    if max_amp < 0.005 { return None; }
-    start = start.min(frame_count - window_len);
-
-    // Build a mono float window.
-    let mut x = vec![0.0f32; window_len];
-    for i in 0..window_len {
-        let base = (start + i) * ch;
-        x[i] = if ch == 1 { samples[base] }
-        else { 0.5 * (samples[base] + samples[base + 1]) };
-    }
-
-    let min_period = ((sample_rate as f32 / 4000.0) as usize).max(2);
-    let max_period = ((sample_rate as f32 / 30.0) as usize).min(window_len / 2 - 1);
-    if max_period <= min_period { return None; }
-
-    // Cumulative-mean-normalised difference function (YIN steps 1+2).
-    let n = max_period + 1;
-    let mut cnd = vec![1.0f32; n];
-    let mut acc = 0.0f64;
-    let mut prev_below = false;
-    let mut best_tau = 0usize;
-    let mut best_val = f32::INFINITY;
-    let threshold = 0.15f32;
-    for tau in 1..n {
-        // d[tau] — sum of squared differences over the window.
-        let mut s = 0.0f64;
-        let len = window_len - tau;
-        for i in 0..len {
-            let diff = x[i] - x[i + tau];
-            s += (diff * diff) as f64;
-        }
-        acc += s;
-        let val = if acc > 0.0 { (s * tau as f64 / acc) as f32 } else { 1.0 };
-        cnd[tau] = val;
-        if tau >= min_period {
-            // Track global minimum as fallback.
-            if val < best_val { best_val = val; best_tau = tau; }
-            // YIN: first valley below threshold whose next sample
-            // turns upward — that's our pitch candidate.
-            if val < threshold { prev_below = true; }
-            if prev_below && tau > 1 && cnd[tau - 1] < cnd[tau]
-                && cnd[tau - 1] < threshold {
-                best_tau = tau - 1;
-                break;
-            }
-        }
-    }
-    if best_tau < min_period || cnd[best_tau] > 0.5 { return None; }
-
-    // Parabolic interpolation around the chosen tau for sub-sample
-    // resolution — keeps detected pitch within a few cents of truth.
-    let refined = if best_tau > 0 && best_tau + 1 < n {
-        let a = cnd[best_tau - 1];
-        let b = cnd[best_tau];
-        let c = cnd[best_tau + 1];
-        let denom = 2.0 * (a - 2.0 * b + c);
-        if denom.abs() > 1e-9 {
-            best_tau as f32 + (a - c) / denom
-        } else { best_tau as f32 }
-    } else { best_tau as f32 };
-    let hz = sample_rate as f32 / refined;
-    if hz.is_finite() && hz > 20.0 && hz < 6000.0 { Some(hz) } else { None }
+    let mono: Vec<f32> = if ch == 1 {
+        samples.to_vec()
+    } else {
+        (0..frame_count)
+            .map(|f| {
+                let base = f * ch;
+                let sum: f32 = (0..ch).map(|c| samples[base + c]).sum();
+                sum / ch as f32
+            })
+            .collect()
+    };
+    superduper_synth_core::pitch::detect_pitch_hz(&mono, sample_rate)
 }
 
 /// Pre-compute a coarse peak envelope for the GUI waveform display.

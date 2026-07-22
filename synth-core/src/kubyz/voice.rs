@@ -30,6 +30,14 @@ pub struct KubyzVoice {
     pub choke_remaining: u32,
     pub choke_total: u32,
     pub choke_level: f32,
+    /// Deferred-steal parking. A busy voice that gets stolen is choke-faded to
+    /// silence (old note keeps sounding during the fade) and the new note is
+    /// parked here; the render loop starts it from silence when the fade ends,
+    /// so the new note never steps the waveform at full amplitude.
+    /// `pending_key == NOTE_FREE` means nothing parked.
+    pub pending_key: u8,
+    pub pending_note_id: i32,
+    pub pending_velocity: f32,
     /// Sample-counter for the on-note amplitude fade. Counts down from
     /// `note_fade_total` to 0; while > 0 the voice output is multiplied
     /// by `(total - remaining) / total` so the first ~2 ms of every
@@ -55,6 +63,9 @@ impl Default for KubyzVoice {
             choke_remaining: 0,
             choke_total: 0,
             choke_level: 0.0,
+            pending_key: NOTE_FREE,
+            pending_note_id: -1,
+            pending_velocity: 0.0,
             note_fade_remaining: 0,
             note_fade_total: 0,
         }

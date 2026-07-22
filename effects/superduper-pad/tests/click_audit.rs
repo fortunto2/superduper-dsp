@@ -1,17 +1,19 @@
-//! click_audit.rs — drive the Pad through a realistic MIDI sequence,
-//! record the output to /tmp/pad_click_audit.wav, and assert against
-//! sample-to-sample discontinuities. Always prints a discontinuity
-//! histogram and an ASCII spectrum of the release tail so the WAV can be
-//! audited even when the test passes.
+//! click_audit.rs — drive Pad through a voice-steal + same-key-retrigger
+//! sequence and measure sample-to-sample discontinuities (clicks).
 //!
-//! Run with:
-//!   cargo test --release -p superduper-pad --test click_audit -- --nocapture
+//! Same class of bug fixed in Wave/Kubyz: over a sustained pad, fast notes
+//! steal busy voices and retrigger held keys. The old code routed both through
+//! `gate_on` (PreDelay zeroes the level → a drop-to-zero click) and hard-swapped
+//! stolen voices at full amplitude. This asserts those are gone. Writes
+//! /tmp/pad_click_audit.wav for listening.
 //!
-//! Then audition the WAV:
-//!   afplay /tmp/pad_click_audit.wav   (macOS)
+//! Run: cargo test --release -p superduper-pad --test click_audit -- --nocapture
+//! Listen: afplay /tmp/pad_click_audit.wav
 
+use clack_common::events::Pckn;
+use clack_common::events::event_types::ParamValueEvent;
+use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::log::{HostLog, HostLogImpl, LogSeverity};
-use clack_host::events::Pckn;
 use clack_host::events::event_types::{NoteOffEvent, NoteOnEvent};
 use clack_host::events::io::{EventBuffer, InputEvents, OutputEvents};
 use clack_host::prelude::*;
@@ -19,341 +21,251 @@ use clack_host::process::audio_buffers::{AudioPortBuffer, AudioPortBufferType, A
 use clack_plugin::entry::SinglePluginEntry;
 use std::io::Write;
 use superduper_pad::SuperDuperPad;
-use superduper_synth_core::analysis::{AsciiSpectrumOpts, ascii_spectrum, spectrum_with_freq};
-
-// ---------------------------------------------------------------------------
-// CLAP host plumbing — minimal, copied from clap_midi.rs.
-// ---------------------------------------------------------------------------
-
-struct TestHostShared;
-impl SharedHandler<'_> for TestHostShared {
-    fn request_restart(&self) {}
-    fn request_process(&self) {}
-    fn request_callback(&self) {}
-}
-impl HostLogImpl for TestHostShared {
-    fn log(&self, severity: LogSeverity, message: &str) {
-        eprintln!("[plugin {severity}] {message}");
-    }
-}
-
-struct TestHost;
-impl HostHandlers for TestHost {
-    type Shared<'a> = TestHostShared;
-    type MainThread<'a> = ();
-    type AudioProcessor<'a> = ();
-    fn declare_extensions(builder: &mut HostExtensions<Self>, _: &Self::Shared<'_>) {
-        builder.register::<HostLog>();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test config + MIDI sequence.
-// ---------------------------------------------------------------------------
 
 const SR: f32 = 48_000.0;
-const BLOCK: u32 = 256; // small blocks → more event-seam stress
-const TOTAL_SECONDS: f32 = 6.0;
+const BLOCK: u32 = 256;
+const TOTAL_SECONDS: f32 = 5.0;
 
-#[derive(Clone, Copy, Debug)]
+const P_ATTACK: u32 = 5;
+const P_SUSTAIN: u32 = 7;
+const P_RELEASE: u32 = 8;
+
+#[derive(Clone, Copy)]
 enum MidiAt {
     On(u8, f32),
     Off(u8),
 }
 
 fn build_sequence() -> Vec<(usize, MidiAt)> {
-    // Three phases: held chord (4 voices), staggered release, then voice-steal
-    // stress (12 staccato notes — exceeds the 8-voice pool).
     let t = |s: f32| (s * SR) as usize;
-    let mut seq = vec![
-        // Phase 1 — build a C-major chord one note at a time.
-        (t(0.10), MidiAt::On(60, 0.90)),
-        (t(0.35), MidiAt::On(64, 0.85)),
-        (t(0.60), MidiAt::On(67, 0.80)),
-        (t(0.85), MidiAt::On(72, 0.75)),
-        // Phase 2 — staggered release; tests overlap of new attack while
-        // older notes are still releasing.
-        (t(1.50), MidiAt::Off(60)),
-        (t(1.75), MidiAt::Off(64)),
-        (t(2.00), MidiAt::Off(67)),
-        (t(2.25), MidiAt::Off(72)),
-    ];
-    // Phase 3 — voice steal stress.
-    let stab_start = 2.7;
-    let stab_keys: [u8; 12] = [48, 50, 52, 53, 55, 57, 59, 60, 62, 64, 65, 67];
-    for (i, k) in stab_keys.iter().enumerate() {
-        seq.push((t(stab_start + i as f32 * 0.05), MidiAt::On(*k, 0.85)));
+    let mut seq = Vec::new();
+    let drone: [u8; 8] = [36, 40, 43, 48, 52, 55, 60, 64];
+    for (i, k) in drone.iter().enumerate() {
+        seq.push((t(0.10 + i as f32 * 0.08), MidiAt::On(*k, 0.85)));
     }
-    // All-notes-off at the end.
-    let off_t = stab_start + stab_keys.len() as f32 * 0.05 + 0.2;
-    for k in stab_keys.iter() {
-        seq.push((t(off_t), MidiAt::Off(*k)));
+    let stab_start = 2.0;
+    let stab_keys: [u8; 16] = [
+        67, 69, 72, 74, 76, 77, 79, 81, 72, 71, 69, 67, 65, 64, 62, 60,
+    ];
+    for (i, k) in stab_keys.iter().enumerate() {
+        let on = stab_start + i as f32 * 0.06;
+        seq.push((t(on), MidiAt::On(*k, 0.9)));
+        seq.push((t(on + 0.045), MidiAt::Off(*k)));
+    }
+    for k in drone.iter() {
+        seq.push((t(4.2), MidiAt::Off(*k)));
     }
     seq.sort_by_key(|(p, _)| *p);
     seq
 }
 
-// ---------------------------------------------------------------------------
-// Minimal 16-bit PCM WAV writer — avoids pulling `hound` as a dev-dep just
-// for one test. Inline because we never need it elsewhere.
-// ---------------------------------------------------------------------------
-
-fn write_wav_i16_stereo(path: &str, sr: u32, l: &[f32], r: &[f32]) -> std::io::Result<()> {
-    assert_eq!(l.len(), r.len());
-    let n = l.len();
-    let bytes_per_sample = 2u16;
-    let channels = 2u16;
-    let data_size = (n as u32) * (channels as u32) * (bytes_per_sample as u32);
-    let file_size = 36 + data_size;
-    let mut f = std::fs::File::create(path)?;
-    f.write_all(b"RIFF")?;
-    f.write_all(&file_size.to_le_bytes())?;
-    f.write_all(b"WAVE")?;
-    f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?; // PCM chunk size
-    f.write_all(&1u16.to_le_bytes())?; // format = PCM
-    f.write_all(&channels.to_le_bytes())?;
-    f.write_all(&sr.to_le_bytes())?;
-    f.write_all(&(sr * channels as u32 * bytes_per_sample as u32).to_le_bytes())?;
-    f.write_all(&(channels * bytes_per_sample).to_le_bytes())?;
-    f.write_all(&16u16.to_le_bytes())?;
-    f.write_all(b"data")?;
-    f.write_all(&data_size.to_le_bytes())?;
-    // Interleaved L/R.
-    for i in 0..n {
-        let l_i = (l[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-        let r_i = (r[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-        f.write_all(&l_i.to_le_bytes())?;
-        f.write_all(&r_i.to_le_bytes())?;
-    }
-    Ok(())
+struct TS;
+impl SharedHandler<'_> for TS {
+    fn request_restart(&self) {}
+    fn request_process(&self) {}
+    fn request_callback(&self) {}
 }
-
-// ---------------------------------------------------------------------------
-// Discontinuity analysis.
-//
-// "Click" heuristic: a single-sample jump |x[n]-x[n-1]| that's larger than
-// the local short-term peak amplitude would predict.  For a bandlimited
-// pad signal at moderate volume, the per-sample slew is bounded by the
-// highest frequency × period × peak; an abrupt step (filter reset, voice
-// hard-cut) shows up as a sample-diff outlier.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct DiscontinuityStats {
-    max_jump: f32,
-    max_jump_at_sample: usize,
-    suspects_above_threshold: usize,
-    histogram: [u32; 11],
+impl HostLogImpl for TS {
+    fn log(&self, _: LogSeverity, _: &str) {}
 }
-
-fn analyse_channel(signal: &[f32], threshold: f32) -> DiscontinuityStats {
-    let mut max_jump = 0.0_f32;
-    let mut max_jump_at = 0usize;
-    let mut suspects = 0usize;
-    let mut histogram = [0u32; 11];
-    for i in 1..signal.len() {
-        let d = (signal[i] - signal[i - 1]).abs();
-        if d > max_jump {
-            max_jump = d;
-            max_jump_at = i;
-        }
-        if d > threshold {
-            suspects += 1;
-        }
-        let bin = ((d * 10.0) as usize).min(10);
-        histogram[bin] += 1;
-    }
-    DiscontinuityStats {
-        max_jump,
-        max_jump_at_sample: max_jump_at,
-        suspects_above_threshold: suspects,
-        histogram,
+struct TH;
+impl HostHandlers for TH {
+    type Shared<'a> = TS;
+    type MainThread<'a> = ();
+    type AudioProcessor<'a> = ();
+    fn declare_extensions(b: &mut HostExtensions<Self>, _: &Self::Shared<'_>) {
+        b.register::<HostLog>();
     }
 }
 
-// ---------------------------------------------------------------------------
-// The test itself.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pad_click_audit() {
+fn render(params: &[(u32, f64)]) -> (Vec<f32>, Vec<f32>) {
     let entry = PluginEntry::load_from_clack::<SinglePluginEntry<SuperDuperPad>>(
-        c"/in/process/test/superduper-pad-click-audit",
+        c"/in/process/test/superduper-pad-click",
     )
-    .expect("plugin entry should load");
-
-    let host_info = HostInfo::new("SDSP Test", "SuperDuperAI", "https://superduperai.co", "0")
-        .unwrap();
-    let mut plugin = PluginInstance::<TestHost>::new(
-        |_| TestHostShared,
-        |_| (),
-        &entry,
-        c"co.superduperai.pad",
-        &host_info,
-    )
-    .expect("plugin should instantiate");
-
-    const BLOCK_USIZE: usize = BLOCK as usize;
-    let total_frames: usize = (SR as usize) * TOTAL_SECONDS as usize;
-    let n_blocks = total_frames / BLOCK_USIZE;
-    let cfg = PluginAudioConfiguration {
-        sample_rate: SR as f64,
-        min_frames_count: BLOCK,
-        max_frames_count: BLOCK,
-    };
-    let stopped = plugin.activate(|_, _| (), cfg).expect("activate");
+    .expect("entry");
+    let host_info = HostInfo::new("t", "t", "t", "0").unwrap();
+    let mut plugin =
+        PluginInstance::<TH>::new(|_| TS, |_| (), &entry, c"co.superduperai.pad", &host_info)
+            .expect("instantiate");
+    let total_frames = (SR * TOTAL_SECONDS) as usize;
+    let block_us = BLOCK as usize;
+    let n_blocks = total_frames / block_us;
+    let stopped = plugin
+        .activate(
+            |_, _| (),
+            PluginAudioConfiguration {
+                sample_rate: SR as f64,
+                min_frames_count: BLOCK,
+                max_frames_count: BLOCK,
+            },
+        )
+        .expect("activate");
 
     let sequence = build_sequence();
-
     let mut all_l = vec![0.0_f32; total_frames];
     let mut all_r = vec![0.0_f32; total_frames];
-
     let l_ref = &mut all_l;
     let r_ref = &mut all_r;
 
     let stopped_back = std::thread::scope(|s| {
         s.spawn(move || {
-            let mut audio_proc = stopped.start_processing().expect("start_processing");
-
-            let mut input_ports = AudioPorts::with_capacity(0, 0);
-            let mut output_ports = AudioPorts::with_capacity(2, 1);
+            let mut proc = stopped.start_processing().expect("start");
+            let mut in_ports = AudioPorts::with_capacity(0, 0);
+            let mut out_ports = AudioPorts::with_capacity(2, 1);
 
             for block in 0..n_blocks {
-                let start = block * BLOCK_USIZE;
-                let end = start + BLOCK_USIZE;
+                let start = block * block_us;
+                let end = start + block_us;
 
-                // Collect MIDI events that fall into [start, end).
-                let mut input_buf = EventBuffer::new();
+                let mut in_buf = EventBuffer::new();
+                if block == 0 {
+                    for &(id, v) in params {
+                        in_buf.push(&ParamValueEvent::new(
+                            0,
+                            ClapId::new(id),
+                            Pckn::new(0u16, 0u16, 0u16, 0u32),
+                            v,
+                            Cookie::empty(),
+                        ));
+                    }
+                }
                 for (pos, ev) in &sequence {
                     if *pos >= start && *pos < end {
                         let local = (*pos - start) as u32;
                         match *ev {
                             MidiAt::On(key, vel) => {
-                                let pckn = Pckn::new(0u16, 0u16, key as u16, 0u32);
-                                let e = NoteOnEvent::new(local, pckn, vel as f64);
-                                input_buf.push(&e);
+                                in_buf.push(&NoteOnEvent::new(
+                                    local,
+                                    Pckn::new(0u16, 0u16, key as u16, 0u32),
+                                    vel as f64,
+                                ));
                             }
                             MidiAt::Off(key) => {
-                                let pckn = Pckn::new(0u16, 0u16, key as u16, 0u32);
-                                let e = NoteOffEvent::new(local, pckn, 1.0);
-                                input_buf.push(&e);
+                                in_buf.push(&NoteOffEvent::new(
+                                    local,
+                                    Pckn::new(0u16, 0u16, key as u16, 0u32),
+                                    1.0,
+                                ));
                             }
                         }
                     }
                 }
-                let input_events = InputEvents::from_buffer(&input_buf);
+                let inputs = InputEvents::from_buffer(&in_buf);
                 let mut out_evs = EventBuffer::new();
-                let mut output_events = OutputEvents::from_buffer(&mut out_evs);
+                let mut outputs = OutputEvents::from_buffer(&mut out_evs);
 
-                let mut out_l_chunk = vec![0.0_f32; BLOCK_USIZE];
-                let mut out_r_chunk = vec![0.0_f32; BLOCK_USIZE];
+                let mut out_l = vec![0.0_f32; block_us];
+                let mut out_r = vec![0.0_f32; block_us];
 
-                let input_audio = input_ports.with_input_buffers(std::iter::empty::<
+                let input_audio = in_ports.with_input_buffers(std::iter::empty::<
                     AudioPortBuffer<
                         std::iter::Empty<clack_host::process::audio_buffers::InputChannel<f32>>,
                         std::iter::Empty<clack_host::process::audio_buffers::InputChannel<f64>>,
                     >,
                 >());
-
-                let mut out_chans: [&mut [f32]; 2] =
-                    [out_l_chunk.as_mut_slice(), out_r_chunk.as_mut_slice()];
-                let mut output_audio = output_ports.with_output_buffers([AudioPortBuffer {
+                let mut out_chans: [&mut [f32]; 2] = [out_l.as_mut_slice(), out_r.as_mut_slice()];
+                let mut output_audio = out_ports.with_output_buffers([AudioPortBuffer {
                     latency: 0,
                     channels: AudioPortBufferType::f32_output_only(
                         out_chans.iter_mut().map(|b| &mut **b),
                     ),
                 }]);
 
-                audio_proc
-                    .process(
-                        &input_audio,
-                        &mut output_audio,
-                        &input_events,
-                        &mut output_events,
-                        None,
-                        None,
-                    )
-                    .expect("process should succeed");
+                proc.process(&input_audio, &mut output_audio, &inputs, &mut outputs, None, None)
+                    .expect("process");
 
-                l_ref[start..end].copy_from_slice(&out_l_chunk);
-                r_ref[start..end].copy_from_slice(&out_r_chunk);
+                l_ref[start..end].copy_from_slice(&out_l);
+                r_ref[start..end].copy_from_slice(&out_r);
             }
-
-            audio_proc.stop_processing()
+            proc.stop_processing()
         })
         .join()
         .expect("audio thread")
     });
     plugin.deactivate(stopped_back);
+    (all_l, all_r)
+}
 
-    // Save WAV for human listening.
-    let wav_path = "/tmp/pad_click_audit.wav";
-    write_wav_i16_stereo(wav_path, SR as u32, &all_l, &all_r).expect("WAV write");
-    eprintln!("Wrote {wav_path} — `afplay {wav_path}` (macOS) to audition.");
-
-    // Per-channel stats.
-    let threshold = 0.15_f32;
-    let l_stats = analyse_channel(&all_l, threshold);
-    let r_stats = analyse_channel(&all_r, threshold);
-    eprintln!(
-        "[L] max |Δx| = {:.4} at sample {} (t={:.3}s); jumps > {threshold:.2}: {}",
-        l_stats.max_jump,
-        l_stats.max_jump_at_sample,
-        l_stats.max_jump_at_sample as f32 / SR,
-        l_stats.suspects_above_threshold,
-    );
-    eprintln!(
-        "[R] max |Δx| = {:.4} at sample {} (t={:.3}s); jumps > {threshold:.2}: {}",
-        r_stats.max_jump,
-        r_stats.max_jump_at_sample,
-        r_stats.max_jump_at_sample as f32 / SR,
-        r_stats.suspects_above_threshold,
-    );
-    eprintln!(
-        "[L] |Δ| histogram (bins 0..0.1, 0.1..0.2, …, ≥1.0): {:?}",
-        l_stats.histogram
-    );
-
-    // Print the top 10 worst jumps and their time so we know where to look.
-    let mut indexed: Vec<(usize, f32)> = (1..all_l.len())
-        .map(|i| (i, (all_l[i] - all_l[i - 1]).abs().max((all_r[i] - all_r[i - 1]).abs())))
-        .collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    eprintln!("Top 10 |Δ| spikes (with timing):");
-    for &(i, d) in indexed.iter().take(10) {
-        eprintln!("  sample {i:6} t={:.4}s  Δ={:.4}", i as f32 / SR, d);
+fn write_wav(path: &str, l: &[f32], r: &[f32]) {
+    let n = l.len();
+    let data_size = (n as u32) * 2 * 2;
+    let file_size = 36 + data_size;
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(b"RIFF").unwrap();
+    f.write_all(&file_size.to_le_bytes()).unwrap();
+    f.write_all(b"WAVE").unwrap();
+    f.write_all(b"fmt ").unwrap();
+    f.write_all(&16u32.to_le_bytes()).unwrap();
+    f.write_all(&1u16.to_le_bytes()).unwrap();
+    f.write_all(&2u16.to_le_bytes()).unwrap();
+    f.write_all(&(SR as u32).to_le_bytes()).unwrap();
+    f.write_all(&((SR as u32) * 4).to_le_bytes()).unwrap();
+    f.write_all(&4u16.to_le_bytes()).unwrap();
+    f.write_all(&16u16.to_le_bytes()).unwrap();
+    f.write_all(b"data").unwrap();
+    f.write_all(&data_size.to_le_bytes()).unwrap();
+    for i in 0..n {
+        let li = (l[i].clamp(-1.0, 1.0) * 32767.0) as i16;
+        let ri = (r[i].clamp(-1.0, 1.0) * 32767.0) as i16;
+        f.write_all(&li.to_le_bytes()).unwrap();
+        f.write_all(&ri.to_le_bytes()).unwrap();
     }
+}
 
-    // ASCII spectrum of the release tail (last 0.7 s — well past all NoteOff).
-    let tail_n = (SR as usize) * 7 / 10;
-    let tail_start = all_l.len().saturating_sub(tail_n);
-    let tail_mono: Vec<f32> = (tail_start..all_l.len())
-        .map(|i| 0.5 * (all_l[i] + all_r[i]))
-        .collect();
-    let fft_len = 8192.min(tail_mono.len().next_power_of_two() / 2);
-    if fft_len >= 4096 {
-        let slice = &tail_mono[tail_mono.len() - fft_len..];
-        let spec = spectrum_with_freq(slice, SR);
-        let opts = AsciiSpectrumOpts {
-            rows: 14,
-            cols: 100,
-            min_db: -100.0,
-            max_db: -10.0,
-            ..Default::default()
-        };
-        eprintln!("\nRelease-tail spectrum (last {fft_len} samples):");
-        eprint!("{}", ascii_spectrum(&spec, &opts));
+fn analyse(sig: &[f32]) -> (f32, usize, Vec<(f32, usize)>) {
+    let n = sig.len();
+    let d: Vec<f32> = (1..n).map(|i| (sig[i] - sig[i - 1]).abs()).collect();
+    const W: usize = 512;
+    let max_jump = d.iter().cloned().fold(0.0f32, f32::max);
+    let at = d.iter().position(|&x| x == max_jump).map(|i| i + 1).unwrap_or(0);
+    let mut anomalies: Vec<(f32, usize)> = Vec::new();
+    for i in 0..d.len() {
+        if d[i] < 0.02 {
+            continue;
+        }
+        let lo = i.saturating_sub(W);
+        let hi = (i + W).min(d.len());
+        let mut win: Vec<f32> = d[lo..hi].to_vec();
+        let mid = win.len() / 2;
+        win.select_nth_unstable_by(mid, f32::total_cmp);
+        let local = win[mid].max(1e-6);
+        let ratio = d[i] / local;
+        if ratio > 6.0 {
+            anomalies.push((ratio, i + 1));
+        }
     }
+    anomalies.sort_by(|a, b| b.0.total_cmp(&a.0));
+    anomalies.truncate(6);
+    (max_jump, at, anomalies)
+}
 
-    // Hard assertion — at 48 kHz, a clean pad voice with our highest
-    // partial near a few kHz should never produce a sample-to-sample
-    // jump above ~0.4. Anything past that is an audible click.
+#[test]
+fn pad_click_audit_steal_retrigger() {
+    let (l, r) = render(&[(P_ATTACK, 0.02), (P_SUSTAIN, 0.85), (P_RELEASE, 1.5)]);
+    write_wav("/tmp/pad_click_audit.wav", &l, &r);
+    // Only whole blocks are rendered; the trailing partial block stays zero.
+    // Pad's 1.5 s release is still sounding at that boundary, so analyse only
+    // the rendered region — otherwise the step into the zero pad reads as a
+    // (spurious) click.
+    let rendered = (l.len() / BLOCK as usize) * BLOCK as usize;
+    let (mj, at, anom) = analyse(&l[..rendered]);
+    eprintln!(
+        "[pad] max raw jump = {:.4} at t={:.3}s  → /tmp/pad_click_audit.wav",
+        mj,
+        at as f32 / SR
+    );
+    for (ratio, idx) in &anom {
+        eprintln!(
+            "    ratio {:5.1}×  at t={:.3}s  |Δ|={:.4}",
+            ratio,
+            *idx as f32 / SR,
+            (l[*idx] - l[*idx - 1]).abs()
+        );
+    }
+    let worst = anom.first().map(|(r, _)| *r).unwrap_or(0.0);
+    eprintln!("worst anomaly ratio: {worst:.1}×");
     assert!(
-        l_stats.max_jump < 0.4 && r_stats.max_jump < 0.4,
-        "Audible click suspected — max |Δx|: L={:.3} R={:.3} (threshold 0.4). \
-         Audit /tmp/pad_click_audit.wav for confirmation.",
-        l_stats.max_jump,
-        r_stats.max_jump
+        worst < 12.0,
+        "pad voice click regressed (hard swap / gate_on retrigger?): {worst:.1}× (want < 12)"
     );
 }

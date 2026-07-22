@@ -1,0 +1,90 @@
+# Yukimatsu-technique replica — Coachella 2026 WK2, first 4 tracks (~10-11 min)
+# Focused pass: match source-track loudness/character before assembly, not just
+# stitch and hope the master limiter fixes it.
+bpm = 60.0  # 1 beat == 1 second: xfade_beats/lead_out_beats read as plain seconds
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.1, "1" = -2.8 }
+
+[[section]]
+name = "00"
+start_sec = 0.00
+transition = "cut"
+xfade_beats = 1.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Aerosmith - Eat the Rich.mp3"
+role = "beat-other"
+tempo_ratio = 0.9434
+start_sec = 17.5
+len_sec = 235.32
+# FIXED: was block/speed (209.43, inverted) -> output ran ~12s short, leaving
+# dead silence before the next section's start_sec. Correct is block*speed
+# (OUTPUT = len_sec * tempo_ratio must equal the measured block duration).
+# anchor track (I -9.8 LUFS raw) — no correction, others matched to it
+# chroma-matched against the real mix: he cues in ~17.5s into the source
+
+[[section]]
+name = "01"
+start_sec = 222.00
+lead_out_beats = 5.0
+transition = "breakdown"
+xfade_beats = 5.0
+# was 24s — юзер: "не слышал таких больших пауз, всегда есть какой-то фон".
+# fade_out тает до чистого нуля (sqrt envelope, без пола) — на 24 сек это
+# читается как настоящая тишина. Короче = меньше ощущается как провал.
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Chemotex - Schrade Knives.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+start_sec = 72.4
+len_sec = 138.60
+gain_db = -2.5
+# raw I -6.4 LUFS, ~3.4 dB hotter than anchor -> trim down
+# chroma-matched offset ~72.4s (his cue point, not track start)
+
+[[section]]
+name = "02"
+start_sec = 354.00
+transition = "cut"
+xfade_beats = 1.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Bon Jovi - It's My Life.mp3"
+role = "beat-other"
+tempo_ratio = 0.9434
+start_sec = 57.5
+len_sec = 171.72
+gain_db = -1.5
+# raw I -7.1 LUFS, ~2.7 dB hotter than anchor -> trim down
+# chroma-matched offset ~57.5s
+
+[[section]]
+name = "03"
+start_sec = 516.00
+transition = "cut"
+xfade_beats = 4.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Daft Punk - Aerodynamic.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+start_sec = 43.0
+len_sec = 168.00
+# chroma-matched offset ~45.0s (nudged to 43.0 for headroom against the
+# corrected len_sec — source is 212.5s total, need 168s from the offset)
+gain_db = 16.0
+comp = { threshold_db = -20.0, ratio = 3.0, attack_ms = 8.0, release_ms = 120.0 }
+# raw I -26.0 LUFS, ~16 dB QUIETER than anchor (dynamic 2001-era master vs the
+# other three's loudness-war masters) -> big makeup gain + light comp to tame
+# the now-hot transients before they hit the master limiter

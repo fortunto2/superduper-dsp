@@ -1,0 +1,293 @@
+# Mashup — Smack My Bitch Up × DMX "X Gon' Give It To Ya" (A-B-A beat switch).
+#
+#   sdsp-mash tools/sdsp-mash/mash_smbu_dmx.toml out.wav
+#
+# 136 vs 95 BPM has NO common grid inside the stretch tolerances (1:1 → beat
+# −30%; 2:1 → beat +40%; 3:2/4:3 → polyrhythmic rap = mush), so this is a
+# VERSUS structure on per-section tempi:
+#   S1 @130 — SMBU beat statement + censored "change my pitch up" hooks
+#   S2 @95.01 — DMX takes over COMPLETELY (his own instrumental as the beat,
+#              both stems ratio 1.0 = bulletproof sync), SMBU hook stabs ride
+#              the 95-grid as one-shots (unstretched, tempo-agnostic)
+#   S3 @130 — SMBU beat slams back; the explicit hook EXACTLY ONCE, quiet
+#              (−9 dB) and dub-thrown under the drop; tape-stop finale.
+# SMBU beat cuts + censored-hook EDL timings reused from miniset_smbu.toml
+# (native 136.19 → 130, ratio 1.0476; hook onsets 77.5 / 251.3).
+# DMX lattice: first downbeat 0.488 s, beat 0.63151 s; S2 source starts at
+# bar 25.75 s (beat 40) — chorus 1 → verse 1 → chorus 2, vocal cut ends
+# before verse 2 ("He ain't…" @ 87.16).
+#
+# Global grid 130 (spb 0.461538): S2 @ beat 64 (29.54 s), S3 @ beat 200
+# (92.31 s), tape stop @ beat 256 (118.15 s). Total ≈ 2:02.
+
+bpm = 130.0
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 120.0
+
+# ───────────────────────── S1 · SMBU statement @130 ────────────────────────
+[[section]]
+name = "SMBU intro"
+start_sec = 0.0
+bpm = 130.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0476
+start_sec = 48.10
+len_sec = 34.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 1.0476
+saturate_db = 4.0
+start_sec = 48.10
+len_sec = 34.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.0476
+start_sec = 48.10
+len_sec = 34.0
+
+# ───────────────── S2 · DMX takes over @95.01 (drop switch) ─────────────────
+[[section]]
+name = "DMX X Gon' Give It To Ya"
+start_sec = 29.54
+bpm = 95.01
+transition = "drop"
+xfade_beats = 8
+
+# His own instrumental IS the beat — role beat-drums so it never ducks
+# under his own vocal (the original mix balance already sits right).
+# Split around an 8-beat BREAKDOWN before chorus 2 (internal beats 64-72,
+# src 65.86-71.22): DMX raps the verse climax near-acapella, the beat slams
+# back two beats ahead of the "X gon' give it to ya" chorus round.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/DMX - X Gon' Give It To Ya/no_vocals.wav"
+role = "beat-drums"
+gain_db = 0.0
+start_sec = 25.75
+len_sec = 40.42
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/DMX - X Gon' Give It To Ya/no_vocals.wav"
+role = "beat-drums"
+gain_db = 0.0
+offset_beats = 72.0
+start_sec = 71.22
+len_sec = 25.0
+
+# Vocal cut ends at 87.05 — before verse 2 — while the beat runs on into
+# the S3 crossfade.
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/DMX - X Gon' Give It To Ya/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+start_sec = 25.75
+len_sec = 61.30
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────────────── S3 · SMBU slams back @130 (drop switch) ───────────────────
+[[section]]
+name = "SMBU reprise"
+start_sec = 92.31
+bpm = 130.0
+transition = "drop"
+xfade_beats = 8
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0476
+start_sec = 88.63
+len_sec = 32.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 1.0476
+saturate_db = 4.0
+start_sec = 88.63
+len_sec = 32.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.0476
+start_sec = 88.63
+len_sec = 32.0
+
+# ──────────── censored SMBU hook — EDL throws (miniset timings) ────────────
+[[source]]
+name = "smbuhook"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04. Smack My Bitch Up/vocals.wav"
+
+# S1: "change my pitch up" — intro identity ×3.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 2.0
+throw = true
+gain_db = -3.0
+
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 32.0
+throw = true
+gain_db = -4.0
+
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 56.0
+throw = true
+gain_db = -5.0
+
+# S2: stabs on DMX bar downbeats (global beat = sec × 2.16667):
+# 29.54 + 8 bars × 2.52603 = 49.75 s; + 16 bars = 69.96 s.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 107.79
+throw = true
+gain_db = -5.0
+
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 151.58
+throw = true
+gain_db = -5.0
+
+# S3 drop: the explicit "smack my bitch up" — EXACTLY ONCE, quiet, dub-thrown,
+# buried under the drop's sub impact.
+[[phrase]]
+track = "smbuhook"
+start_sec = 251.3
+end_sec = 253.9
+at_beat = 200.0
+throw = true
+gain_db = -9.0
+
+# S3: the answer phrase reasserts, escalating into the finale.
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 216.0
+throw = true
+gain_db = -4.0
+
+[[phrase]]
+track = "smbuhook"
+start_sec = 77.5
+end_sec = 78.88
+at_beat = 248.0
+throw = true
+gain_db = -3.0
+
+# ── S2 breakdown transitions: boom into it, riser + sub back out ──
+# breakdown start = 69.96 s = global beat 151.58 (the hook stab lands there);
+# re-entry = 75.01 s = global beat 162.53.
+[[fx]]
+kind = "sub_drop"
+at_beat = 151.58
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.8
+
+[[fx]]
+kind = "riser"
+at_beat = 158.2
+len_beats = 4
+from_hz = 200.0
+to_hz = 16000.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 162.53
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# ── extra hits (the drop transitions auto-add riser + sub_drop) ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 216.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 248.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# Finale.
+[[fx]]
+kind = "tape_stop"
+at_beat = 256.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 256.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 256.0
+len_beats = 8
+feedback = 0.65
+delay_ms = 692.3
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+# Post-meter-fix calibration (real ≈ −10.5 LUFS, mp3 TP ≤ −1.0 dBTP).
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.5, "1" = -2.8 }

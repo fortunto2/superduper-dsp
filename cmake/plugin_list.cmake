@@ -40,4 +40,8 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-lineq|SuperDuperLineq|co.superduperai.lineq|co.superduperai.wrappers.lineq|aufx|sdLe"
     "superduper-soothe|SuperDuperSoothe|co.superduperai.soothe|co.superduperai.wrappers.soothe|aufx|sdSo"
     "superduper-nam|SuperDuperNam|co.superduperai.nam|co.superduperai.wrappers.nam|aufx|sdNm"
+    "superduper-vocoder|SuperDuperVocoder|co.superduperai.vocoder|co.superduperai.wrappers.vocoder|aufx|sdVo"
+    "superduper-pitch|SuperDuperPitch|co.superduperai.pitch|co.superduperai.wrappers.pitch|aufx|sdPi"
+    "superduper-tune|SuperDuperTune|co.superduperai.tune|co.superduperai.wrappers.tune|aufx|sdTu"
+    "superduper-harmonic|SuperDuperHarmonic|co.superduperai.harmonic|co.superduperai.wrappers.harmonic|aufx|sdHm"
 )

@@ -1,0 +1,223 @@
+# Yukimatsu-technique replica — Coachella 2026 WK2, built through sdsp-mash's
+# real section-transition engine (cut/breakdown/filter_sweep), not raw ffmpeg fades.
+bpm = 60.0  # 1 beat == 1 second: lets xfade_beats/lead_out_beats read as plain seconds
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.1, "1" = -2.8 }
+
+[[section]]
+name = "00"
+start_sec = 0.00
+transition = "cut"
+xfade_beats = 1.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Aerosmith - Eat the Rich.mp3"
+role = "beat-other"
+tempo_ratio = 0.9434
+len_sec = 209.43
+
+[[section]]
+name = "01"
+start_sec = 222.00
+lead_out_beats = 24.0
+transition = "breakdown"
+xfade_beats = 24.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Chemotex - Schrade Knives.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+len_sec = 125.71
+
+[[section]]
+name = "02"
+start_sec = 354.00
+transition = "cut"
+xfade_beats = 1.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Bon Jovi - It's My Life.mp3"
+role = "beat-other"
+tempo_ratio = 0.9434
+len_sec = 152.83
+
+[[section]]
+name = "03"
+start_sec = 516.00
+transition = "cut"
+xfade_beats = 4.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Daft Punk - Aerodynamic.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+len_sec = 152.38
+
+[[section]]
+name = "04"
+start_sec = 676.00
+lead_out_beats = 64.0
+transition = "breakdown"
+xfade_beats = 64.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Fred again.. & The Blessed Madonna - Marea (We've Lost Dancing).mp3"
+role = "beat-other"
+tempo_ratio = 0.9709
+len_sec = 209.71
+
+[[section]]
+name = "05"
+start_sec = 892.00
+transition = "filter_sweep"
+xfade_beats = 4.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/The Chemical Brothers - Free Yourself.mp3"
+role = "beat-other"
+tempo_ratio = 1.0
+len_sec = 214.00
+
+[[section]]
+name = "06"
+start_sec = 1102.00
+transition = "filter_sweep"
+xfade_beats = 2.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Jamie xx - The Rest Is Noise.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+len_sec = 215.24
+
+[[section]]
+name = "07"
+start_sec = 1326.00
+transition = "filter_sweep"
+xfade_beats = 4.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/SOPHIE - OOH.mp3"
+role = "beat-other"
+tempo_ratio = 0.9615
+len_sec = 113.46
+
+[[section]]
+name = "08"
+start_sec = 1440.00
+transition = "cut"
+xfade_beats = 6.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/MGMT - Kids (Soulwax Mix).mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+len_sec = 241.90
+gain_db = -3.5
+
+[[section]]
+name = "09"
+start_sec = 1694.00
+transition = "cut"
+xfade_beats = 1.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Nine Inch Nails - The Hand That Feeds.mp3"
+role = "beat-other"
+tempo_ratio = 0.9524
+len_sec = 179.05
+
+[[section]]
+name = "10"
+start_sec = 1882.00
+transition = "filter_sweep"
+xfade_beats = 38.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Jamie xx - Treat Each Other Right.mp3"
+role = "beat-other"
+tempo_ratio = 0.9346
+len_sec = 115.89
+
+[[section]]
+name = "11"
+start_sec = 1968.00
+transition = "filter_sweep"
+xfade_beats = 50.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/The Prodigy - Firestarter (Empirion Mix).mp3"
+role = "beat-other"
+tempo_ratio = 0.9804
+len_sec = 311.76
+
+[[section]]
+name = "12"
+start_sec = 2236.00
+transition = "cut"
+xfade_beats = 4.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Locked Club - Kuliki.mp3"
+role = "beat-other"
+tempo_ratio = 0.9615
+len_sec = 176.92
+
+[[section]]
+name = "13"
+start_sec = 2420.00
+transition = "filter_sweep"
+xfade_beats = 54.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Joy Orbison - flight fm.mp3"
+role = "beat-other"
+tempo_ratio = 0.9901
+len_sec = 102.97
+
+[[section]]
+name = "14"
+start_sec = 2470.00
+lead_out_beats = 10.0
+transition = "breakdown"
+xfade_beats = 10.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Skrillex & ISOxo - fuze.mp3"
+role = "beat-other"
+tempo_ratio = 0.9709
+len_sec = 126.21
+
+[[section]]
+name = "15"
+start_sec = 2600.00
+lead_out_beats = 10.0
+transition = "breakdown"
+xfade_beats = 10.0
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Suicide - Dream Baby Dream.mp3"
+role = "beat-other"
+tempo_ratio = 0.9901
+len_sec = 168.32
+
+[[section]]
+name = "16"
+start_sec = 2770.00
+
+[[section.track]]
+path = "/Users/rustam/Music/DJ/Sets/DJ Mixes/Yukimatsu - Coachella 2026 (треки)/Bruce Springsteen - Born to Run.mp3"
+role = "beat-other"
+tempo_ratio = 0.9804
+len_sec = 272.55
+

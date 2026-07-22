@@ -1,0 +1,587 @@
+# Mashup — Baby's Got A Temper × Marilyn Manson "Sweet Dreams".
+#
+#   sdsp-mash tools/sdsp-mash/mash_babys_sweetdreams.toml out.wav
+#
+# Grid 92.18 = Manson's native tempo (drums local zones 91.5 / 93.96 / 92.29,
+# live band drifting) — the vocal stays at ratio 1.0 (screams 1.0165 to kill
+# a 1.6% zone drift), the Baby's beat slows 105.71 → 92.18 (ratio 1.146778,
+# −12.8%). The counter-stretch option (grid 96) was REJECTED by measurement:
+# WSOLA transient sharpness on this stompy beat is identical at −8.8% and
+# −12.8% (top-rise 8.8 vs 9.2 dB/5ms, native 10.1), and Manson at 1.0 >>
+# Manson +4.7% chipmunk. Doom-slowed Baby's suits the cover's sludge.
+# Baby's lattice: 22.02 + k*0.56758 (verified in mash_babys_withoutme).
+# Manson quirks: verse 1 rides a drum-less riff (rubato) → placed per-line
+# over a thin no-drums bed (original arrangement trick, drift invisible);
+# whisper hallucinated an outro line at 290 (stem is silent there) and mapped
+# the 155-170 screams as garbage — real scream zone found by RMS (peak −8.8 dB
+# at 164-169, the hottest vocal in the song). Attacks by RMS slope; hook line 1
+# cut at the 70 ms breath dip 33.05.
+#
+# Timeline (spb 0.650900, bar 2.603602), total ≈ 124 s:
+#   beats   0- 16  intro — riff+bass bed, sweep, "Sweet dreams…" tease
+#   beats  16- 48  verse 1 — whispered "Sweet dreams…" 4 lines, drums sneak @32
+#   beats  48- 80  HOOK — "Some of them want to use you…" chant, full beat slams
+#   beats  80- 96  verse 2 — verse-3 take (hot doubles), beat held down
+#   beats  96-112  BREAKDOWN — "I wanna use you and abuse you" growl acapella
+#   beats 112-144  THE DROP — "Hold your head up!" screams over the hottest zone
+#   beats 144-176  culmination — final chant doubles, sub hits
+#   beats 176-184  return — bed thins out, "Sweet dreams…" tease over it
+#   beat  184      tape_stop + closing sweep + echo; final scream AFTER the stop
+#
+# Vocal balance = fixed Eminem recipe (verses +presence 3, screams presence 1.5,
+# duck 3.5); whispered verse-1 source is ~10 dB quieter → per-block gain boost.
+
+bpm = 92.18
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 120.0
+
+# ── intro bed: riff + sub, no drums, beats 0-16 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -12.5
+tempo_ratio = 1.146778
+start_sec = 22.02
+len_sec = 9.081
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = -9.5
+saturate_db = 4.0
+tempo_ratio = 1.146778
+start_sec = 22.02
+len_sec = 9.081
+
+# ── verse 1 bed: still drum-less, drums sneak in halfway, beats 16-48 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -8.0
+tempo_ratio = 1.146778
+offset_beats = 16.0
+start_sec = 31.101
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = -5.0
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 16.0
+start_sec = 31.101
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = -7.0
+tempo_ratio = 1.146778
+offset_beats = 32.0
+start_sec = 40.183
+len_sec = 9.081
+
+# ── HOOK: full beat slams, beats 48-80 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = -3.5
+tempo_ratio = 1.146778
+offset_beats = 48.0
+start_sec = 49.264
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = -1.0
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 48.0
+start_sec = 49.264
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -6.5
+tempo_ratio = 1.146778
+offset_beats = 48.0
+start_sec = 49.264
+len_sec = 18.163
+
+# ── verse 2: held down, beats 80-96 (drums stop dead at 96 → breakdown) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = -4.5
+tempo_ratio = 1.146778
+offset_beats = 80.0
+start_sec = 67.426
+len_sec = 9.081
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = -2.0
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 80.0
+start_sec = 67.426
+len_sec = 9.081
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -7.5
+tempo_ratio = 1.146778
+offset_beats = 80.0
+start_sec = 67.426
+len_sec = 9.081
+
+# ── breakdown bed: Baby's own mini-break zone (dip 200-208), beats 96-112 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -11.0
+tempo_ratio = 1.146778
+offset_beats = 96.0
+start_sec = 200.807
+len_sec = 9.081
+
+# ── drums sneak back for the last bar of the build ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = -9.0
+tempo_ratio = 1.146778
+offset_beats = 108.0
+start_sec = 40.183
+len_sec = 2.270
+
+# ── THE DROP: hottest zone (src 72-90), beats 112-144 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+tempo_ratio = 1.146778
+offset_beats = 112.0
+start_sec = 71.967
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 4.0
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 112.0
+start_sec = 71.967
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -2.5
+tempo_ratio = 1.146778
+offset_beats = 112.0
+start_sec = 71.967
+len_sec = 18.163
+
+# ── culmination: source continues seamlessly, beats 144-176 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.146778
+offset_beats = 144.0
+start_sec = 90.130
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = 2.5
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 144.0
+start_sec = 90.130
+len_sec = 18.163
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -3.5
+tempo_ratio = 1.146778
+offset_beats = 144.0
+start_sec = 90.130
+len_sec = 18.163
+
+# ── return bed: thin again, beats 176-188 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/other.wav"
+role = "beat-other"
+gain_db = -11.0
+tempo_ratio = 1.146778
+offset_beats = 176.0
+start_sec = 22.02
+len_sec = 6.811
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/16. Baby's Got A Temper (Instrumental Mix)/bass.wav"
+role = "beat-bass"
+gain_db = -8.0
+saturate_db = 4.0
+tempo_ratio = 1.146778
+offset_beats = 176.0
+start_sec = 22.02
+len_sec = 6.811
+
+# ── verse 1 (whispered, rubato): per-line blocks over the drum-less bed ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 4.5
+offset_beats = 14.0
+start_sec = 12.50
+len_sec = 5.26
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 4.5
+offset_beats = 22.0
+start_sec = 17.76
+len_sec = 4.38
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 3.5
+offset_beats = 30.0
+start_sec = 22.14
+len_sec = 6.50
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 4.5
+offset_beats = 38.0
+start_sec = 28.64
+len_sec = 4.41
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── HOOK chant: per-line, cut at the 33.05 breath dip; swelling attacks land
+#    on the slot downbeats (Manson's laid-back drag preserved per line) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 1.5
+offset_beats = 47.92
+start_sec = 33.05
+len_sec = 4.55
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 1.5
+offset_beats = 53.99
+start_sec = 37.60
+len_sec = 6.50
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 1.5
+offset_beats = 61.99
+start_sec = 44.10
+len_sec = 4.85
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 1.5
+offset_beats = 69.99
+start_sec = 48.95
+len_sec = 7.55
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── verse 2 = verse-3 take (hot doubles), 2 lines ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 78.0
+start_sec = 189.15
+len_sec = 4.68
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 86.0
+start_sec = 193.83
+len_sec = 6.00
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── BREAKDOWN: "I wanna use you and abuse you…" growl near-acapella ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 94.0
+start_sec = 137.80
+len_sec = 10.80
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── THE DROP: "Hold your head up!" screams (drifting zone counter-stretched
+#    1.65% so 16 s stay glued to the grid) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+tempo_ratio = 1.0165
+offset_beats = 110.0
+start_sec = 152.91
+len_sec = 18.00
+highpass_hz = 120.0
+presence_db = 1.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── culmination: final chant doubles, 2×2 lines ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 0.5
+offset_beats = 142.0
+start_sec = 208.05
+len_sec = 11.96
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+role = "vocal"
+gain_db = 0.5
+offset_beats = 158.0
+start_sec = 220.01
+len_sec = 10.49
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── one-shots ──
+[[source]]
+name = "manson"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Marilyn Manson - Sweet Dreams/vocals.wav"
+
+# intro tease: whispered "Sweet dreams are made of this…"
+[[phrase]]
+track = "manson"
+start_sec = 12.50
+end_sec = 18.50
+at_beat = 6.0
+throw = true
+gain_db = 8.0
+
+# return of the intro motif over the thinned bed
+[[phrase]]
+track = "manson"
+start_sec = 12.50
+end_sec = 18.50
+at_beat = 176.5
+throw = true
+gain_db = 7.0
+
+# final scream — AFTER the tape-stop end, over the dying echo
+[[phrase]]
+track = "manson"
+start_sec = 166.90
+end_sec = 170.90
+at_beat = 188.5
+throw = true
+gain_db = -1.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 16.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+# verse tail → hook: riser + stutter + shut + slam
+[[fx]]
+kind = "riser"
+at_beat = 40.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.4
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 44.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 46.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 48.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 80.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# shut into the breakdown
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+# build out of the breakdown into THE DROP
+[[fx]]
+kind = "riser"
+at_beat = 104.0
+len_beats = 8
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 108.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 110.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 112.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# culmination hits
+[[fx]]
+kind = "sub_drop"
+at_beat = 144.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# shut into the return
+[[fx]]
+kind = "filter_sweep"
+at_beat = 174.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+# Finale: tape stop + closing lowpass together, echo reads the dying tape.
+[[fx]]
+kind = "tape_stop"
+at_beat = 184.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 184.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 186.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 651.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

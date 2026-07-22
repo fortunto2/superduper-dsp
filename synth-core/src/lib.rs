@@ -15,6 +15,8 @@ pub mod linphase;
 pub mod loudness;
 pub mod nam;
 pub mod pitch;
+pub mod psola; // TD-PSOLA pitch/formant shifter (extracted from superduper-pitch; shared with superduper-tune + iOS)
+pub mod spectral;
 pub mod supermass;
 pub mod user_preset;
 pub mod wav;

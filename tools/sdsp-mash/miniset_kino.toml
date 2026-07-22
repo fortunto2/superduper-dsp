@@ -1,0 +1,165 @@
+# Mini-set #3 — Breathe × Кино (a melodic singalong on a Prodigy beat).
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/miniset_kino.toml out.wav
+#
+# One Prodigy beat (Breathe, 130) carries two Кино anthems that sit on their own
+# tempi (beat re-stretched per section):
+#   «Хочу перемен» (129.6, ratio ~1.00) → «Звезда по имени Солнце» (117.6, ratio ~1.10).
+# A breakdown hands the first anthem to the second; tape-stop closes it.
+#
+# Sections (start_sec / bpm / transition):
+#   S1  0 s    129.6  —          Breathe × «Хочу перемен»
+#   S2  50 s   117.6  breakdown  Breathe × «Звезда по имени Солнце»
+#   S3  100 s  117.6  cut        Breathe instrumental → tape_stop
+
+bpm = 129.6
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+# ────────────────────── S1 · Breathe × «Хочу перемен» ──────────────────────
+[[section]]
+name = "Breathe × Хочу перемен"
+start_beat = 0
+start_sec = 0.0
+bpm = 129.6
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.002
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+tempo_ratio = 1.002
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.002
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/025. Кино - Хочу перемен/vocals.wav"
+role = "vocal"
+gain_db = -2.5
+offset_beats = 8
+start_sec = 33.8
+len_sec = 44.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ─────────────── S2 · Breathe × «Звезда по имени Солнце» (breakdown) ────────
+[[section]]
+name = "Breathe × Звезда по имени Солнце"
+start_beat = 0
+start_sec = 50.0
+bpm = 117.6
+transition = "breakdown"
+xfade_beats = 4
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.104
+start_sec = 30.0
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+tempo_ratio = 1.104
+start_sec = 30.0
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.104
+start_sec = 30.0
+len_sec = 56.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/017. Кино - Звезда по имени Солнце/vocals.wav"
+role = "vocal"
+gain_db = -2.5
+offset_beats = 8
+start_sec = 18.0
+len_sec = 46.0
+auto_align = true
+highpass_hz = 120.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ───────────────────────── S3 · Breathe finale (cut) ───────────────────────
+[[section]]
+name = "Breathe finale"
+start_beat = 0
+start_sec = 100.0
+bpm = 117.6
+transition = "cut"
+xfade_beats = 2
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.104
+start_sec = 90.0
+len_sec = 26.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+tempo_ratio = 1.104
+start_sec = 90.0
+len_sec = 26.0
+
+[[section.track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/02. Breathe/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 1.104
+start_sec = 90.0
+len_sec = 26.0
+
+# ── FX ──
+[[fx]]
+kind = "beat_repeat"
+at_sec = 48.0
+len_beats = 4
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 120.0
+len_beats = 4
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

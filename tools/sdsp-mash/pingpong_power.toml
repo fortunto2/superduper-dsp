@@ -1,0 +1,96 @@
+# Auto-pingpong cypher — The Power × Detsl × Oxxxymiron (one beat, two rappers
+# in call-and-response). The [pingpong] engine auto-segments both a-cappellas
+# into onset-gap phrases and alternates them A/B/A/B on the grid, with seeded
+# stutter-loops + chipmunk answers (wild).
+#
+#   sdsp-mash tools/sdsp-mash/pingpong_power.toml out.wav
+#
+# Grid 110. Both rappers already sit at ~110 (Detsl 109.84, Организация 110.06 —
+# measured, near-zero counter-stretch). The Power beat 108.90 → 110 = +1.0%.
+
+bpm = 110.0
+preset = "wild"
+
+[intro_sweep]
+bars = 8
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 2.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 135.0
+
+[breath]
+every_bars = 16
+len_bars = 4
+from_hz = 30.0
+to_hz = 600.0
+
+# ── the beat (continuous) — Snap! "The Power", 108.90 → 110 grid ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/01. The Power/drums.wav"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 0.9900
+start_sec = 8.0
+len_sec = 122.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/01. The Power/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+tempo_ratio = 0.9900
+saturate_db = 4.0
+start_sec = 8.0
+len_sec = 122.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/01. The Power/other.wav"
+role = "beat-other"
+gain_db = -1.0
+tempo_ratio = 0.9900
+start_sec = 8.0
+len_sec = 122.0
+
+# ── vocal sources for the pingpong (counter-stretched to grid 110) ──
+[[source]]
+name = "detsl"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Detsl aka Le Truk - Кто там у руля/vocals.wav"
+tempo_ratio = 0.9985
+start_sec = 24.0
+len_sec = 48.0
+
+[[source]]
+name = "oxxxy"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Организация/vocals.wav"
+tempo_ratio = 1.0006
+start_sec = 96.0
+len_sec = 48.0
+
+[pingpong]
+vocals = ["detsl", "oxxxy"]
+phrase_beats = 4
+loop_prob = 0.15
+pitch_prob = 0.0
+seed = 7
+start_beat = 16
+end_beat = 216   # beat ends at 120.8s = beat 221 — no a-cappella tail
+gain_db = -3.0
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

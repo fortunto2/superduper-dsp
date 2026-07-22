@@ -3495,6 +3495,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdsp-mash"
+version = "0.1.0"
+dependencies = [
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "realfft",
+ "serde",
+ "superduper-compressor",
+ "superduper-dsp-sdk",
+ "superduper-eq",
+ "superduper-filter",
+ "superduper-limiter",
+ "superduper-lineq",
+ "superduper-midside",
+ "superduper-saturator",
+ "superduper-synth-core",
+ "toml",
+]
+
+[[package]]
 name = "sdsp-runner"
 version = "0.1.0"
 dependencies = [
@@ -3956,6 +3978,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-harmonic"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-kubyz"
 version = "0.1.0"
 dependencies = [
@@ -4084,6 +4125,26 @@ dependencies = [
  "egui-baseview",
  "parking_lot",
  "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
+name = "superduper-pitch"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "realfft",
  "superduper-dsp-sdk",
  "superduper-dsp-sdk-build",
  "superduper-synth-core",
@@ -4222,6 +4283,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-tune"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-vocal"
 version = "0.1.0"
 dependencies = [
@@ -4235,6 +4315,26 @@ dependencies = [
  "egui-baseview",
  "parking_lot",
  "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
+name = "superduper-vocoder"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "realfft",
  "superduper-dsp-sdk",
  "superduper-dsp-sdk-build",
  "superduper-synth-core",

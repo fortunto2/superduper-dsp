@@ -346,6 +346,15 @@ pub struct WaveVoice {
     pub choke_remaining: u32,
     pub choke_total: u32,
     pub choke_level: f32,
+    /// Deferred-steal state. When a busy voice is stolen we don't hard-swap it
+    /// (that clicks — the waveform jumps pitch/mip at full amplitude). Instead
+    /// the old note is choke-faded to zero and the new note parked here; the
+    /// render loop applies it the instant the fade completes, so the new note
+    /// attacks from silence with no discontinuity. `pending_key == NOTE_FREE`
+    /// means no parked note.
+    pub pending_key: u8,
+    pub pending_note_id: i32,
+    pub pending_velocity: f32,
     /// Phantom master phase used by Hard Sync — when this crosses 1.0
     /// the main unison-osc phases are reset to 0, producing the
     /// classic "sync sweep" sound.
@@ -376,6 +385,9 @@ impl Default for WaveVoice {
             choke_remaining: 0,
             choke_total: 0,
             choke_level: 0.0,
+            pending_key: NOTE_FREE,
+            pending_note_id: -1,
+            pending_velocity: 0.0,
             sync_phase: 0.0,
             fm_phase: 0.0,
         }

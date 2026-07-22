@@ -1,0 +1,300 @@
+# Kubyz trial 1 — Amelie Lens "Higher" (136.0, A#m) × башкирский кубыз (A#2 118.5 Hz).
+# Tonic match: kubyz fundamental = the track's minor tonic. Zero stretch.
+# Lattice 0.209 + k*0.441176; grooves: A 16-110, own ambient break 128-160, B 176-260.
+# Arc: intro (break-zone bed + drone) → groove + licks → BREAKDOWN kubyz solo
+# over the track's own ambient break → drop + escalating licks → tape stop + stab.
+
+bpm = 136.0
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.0
+release_ms = 100.0
+
+# ── intro bed: the track's own ambient break, beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -5.0
+start_sec = 128.150
+len_sec = 14.118
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = -6.0
+start_sec = 128.150
+len_sec = 14.118
+
+# ── groove A, beats 32-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = -1.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/bass.wav"
+role = "beat-bass"
+gain_db = 1.0
+saturate_db = 3.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -3.0
+offset_beats = 32.0
+start_sec = 16.091
+len_sec = 28.235
+
+# ── BREAKDOWN: own ambient break + kubyz solo, beats 96-128 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -5.0
+offset_beats = 96.0
+start_sec = 128.150
+len_sec = 14.118
+
+# ── DROP: groove B, beats 128-200 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/bass.wav"
+role = "beat-bass"
+gain_db = 3.5
+saturate_db = 3.0
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Amelie Lens - Higher/other.wav"
+role = "beat-other"
+gain_db = -1.5
+offset_beats = 128.0
+start_sec = 176.238
+len_sec = 31.765
+
+# ── kubyz ──
+[[source]]
+name = "kub035"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-035.wav"
+
+[[source]]
+name = "kub015"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-015.wav"
+
+[[source]]
+name = "kub037"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-037.wav"
+
+[[source]]
+name = "kub012"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-012.wav"
+
+[[source]]
+name = "kub022"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-022.wav"
+
+[[source]]
+name = "kub032"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-032.wav"
+
+[[source]]
+name = "kub009"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-009.wav"
+
+# intro drone (32 beats of sustained kubyz over the ambient bed)
+[[phrase]]
+track = "kub035"
+start_sec = 0.5
+end_sec = 14.62
+at_beat = 8.0
+throw = true
+gain_db = 7.0
+
+# groove licks, escalating
+[[phrase]]
+track = "kub012"
+start_sec = 0.0
+end_sec = 0.89
+at_beat = 48.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.0
+
+[[phrase]]
+track = "kub022"
+start_sec = 0.0
+end_sec = 0.94
+at_beat = 64.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.5
+
+[[phrase]]
+track = "kub032"
+start_sec = 0.3
+end_sec = 3.83
+at_beat = 80.0
+loops = 2
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# BREAKDOWN solo — the long phrase rides the ambient break almost alone
+[[phrase]]
+track = "kub015"
+start_sec = 0.0
+end_sec = 12.94
+at_beat = 96.0
+throw = true
+gain_db = 9.0
+
+# drop answers
+[[phrase]]
+track = "kub037"
+start_sec = 0.0
+end_sec = 6.13
+at_beat = 136.0
+throw = true
+gain_db = 6.0
+
+[[phrase]]
+track = "kub037"
+start_sec = 0.0
+end_sec = 6.13
+at_beat = 152.0
+throw = true
+gain_db = 7.0
+
+# machine-gun escalation into the finale
+[[phrase]]
+track = "kub012"
+start_sec = 0.0
+end_sec = 0.89
+at_beat = 168.0
+loops = 8
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# final twang AFTER the tape stop
+[[phrase]]
+track = "kub009"
+start_sec = 0.0
+end_sec = 0.49
+at_beat = 200.6
+throw = true
+gain_db = 7.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 124.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 126.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 128.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "tape_stop"
+at_beat = 196.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 196.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 198.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 661.8
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

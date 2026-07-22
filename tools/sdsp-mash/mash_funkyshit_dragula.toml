@@ -1,0 +1,447 @@
+# Mashup — Funky Shit × Rob Zombie "Dragula".
+#
+#   sdsp-mash tools/sdsp-mash/mash_funkyshit_dragula.toml out.wav
+#
+# The zero-stretch pair: Funky Shit drums comb-corr 124.99 (corr 0.9 machine
+# grid, lattice 1.474 + k*0.480038), Dragula vocal zones 124.8-125.0.
+# Grid = 124.99, EVERY track ratio 1.0. Vocal blocks re-anchored per block
+# (0.16% native drift never accumulates past ~40 ms).
+# Dragula quirk: chorus 1 rounds are exactly 16.04 beats apart, but later
+# chorus pairs (3-4, final) are 17 beats apart — the final double chorus is
+# placed as ONE continuous block so its internal 17-beat push stays intact.
+# Vocal attacks measured by RMS slope on the stem (whisper-start lies by up
+# to +0.4 s on distorted vocals): verses 30.89 / 46.26 / 77.03 / 92.35,
+# breakdown 153.89, chorus kicks (drums stem) 53.96 / 191.41.
+# Funky Shit groove map (drums RMS): A 48.5-107 (-14 dB), dip 108-119,
+# B 132-178 (hottest, lattice bar 68 = 132.037), sparse riff 180-224,
+# C 240-270. Bass dead at 32-44 and 184-207.
+#
+# Timeline (spb 0.4800384, bar 1.9201536), total ≈ 109 s:
+#   beats   0- 16  intro sweep + spoken "Superstition, fear and jealousy"
+#   beats  16- 61  verse 1 — "Dead I am the one…" + "Dead I am the sky…"
+#   beats  64- 96  CHORUS 1 ×2 (riser + stutter + sub drop into it)
+#   beats  96-144  verse 2 — "Dead I am the pool…" + "Dead I am the rat…"
+#   beats 144-160  BREAKDOWN — "Dead I am the dog, hound of hell…" acapella
+#   beats 160-176  build — long riser, "Superstition" tease, drums sneak in
+#   beats 176-210  THE DROP — final double chorus on groove B
+#   beats 210-218  intro-motif return over the beat
+#   beat  218      tape_stop + closing sweep + echo; "Dragula!" scream lands
+#                  AFTER the stop end over the dying echo
+#
+# Vocal balance = fixed Eminem recipe: growled rap-ish verses gain +1 /
+# presence +3 dB @3 kHz, shouted choruses 0 / +2, duck ratio 3.5.
+
+bpm = 124.99
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 110.0
+
+# ── intro teaser: LIGHT beat (32-44 build zone, no bass), beats 0-16 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = -6.5
+start_sec = 32.196
+len_sec = 7.68
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = -9.5
+start_sec = 32.196
+len_sec = 7.68
+
+# ── verse 1: groove A held below the drop, beats 16-64 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = -6.5
+offset_beats = 16.0
+start_sec = 48.516
+len_sec = 23.04
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/bass.wav"
+role = "beat-bass"
+gain_db = -3.0
+saturate_db = 4.0
+offset_beats = 16.0
+start_sec = 48.516
+len_sec = 23.04
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = -9.0
+offset_beats = 16.0
+start_sec = 48.516
+len_sec = 23.04
+
+# ── chorus 1: groove A continues +1.5 dB hotter, beats 64-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = -5.0
+offset_beats = 64.0
+start_sec = 71.556
+len_sec = 15.36
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/bass.wav"
+role = "beat-bass"
+gain_db = -2.5
+saturate_db = 4.0
+offset_beats = 64.0
+start_sec = 71.556
+len_sec = 15.36
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = -7.0
+offset_beats = 64.0
+start_sec = 71.556
+len_sec = 15.36
+
+# ── verse 2: back down, beats 96-144 (drums stop dead at 144 → breakdown) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = -6.5
+offset_beats = 96.0
+start_sec = 48.516
+len_sec = 23.04
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/bass.wav"
+role = "beat-bass"
+gain_db = -3.0
+saturate_db = 4.0
+offset_beats = 96.0
+start_sec = 48.516
+len_sec = 23.04
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = -9.0
+offset_beats = 96.0
+start_sec = 48.516
+len_sec = 23.04
+
+# ── breakdown bed: quiet riff from the sparse zone (bar 95), beats 144-176 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = -12.0
+offset_beats = 152.0
+start_sec = 187.729
+len_sec = 11.52
+
+# ── drums sneak back for the last 2 bars of the build (light 32-44 zone) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = -10.0
+offset_beats = 172.0
+start_sec = 32.196
+len_sec = 1.92
+
+# ── THE DROP: groove B (lattice bar 68), beats 176-222; len ends exactly
+#    at the tape-stop end (beat 222 = 106.57 s) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = 2.5
+offset_beats = 176.0
+start_sec = 132.037
+len_sec = 16.561
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/drums.wav"
+role = "beat-drums"
+gain_db = 2.5
+offset_beats = 212.0
+start_sec = 149.318
+len_sec = 4.799
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/bass.wav"
+role = "beat-bass"
+gain_db = 5.5
+saturate_db = 4.0
+offset_beats = 176.0
+start_sec = 132.037
+len_sec = 16.561
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/bass.wav"
+role = "beat-bass"
+gain_db = 5.5
+saturate_db = 4.0
+offset_beats = 212.0
+start_sec = 149.318
+len_sec = 4.799
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = 0.5
+offset_beats = 176.0
+start_sec = 132.037
+len_sec = 16.561
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/04 - Funky Shit/other.wav"
+role = "beat-other"
+gain_db = 0.5
+offset_beats = 212.0
+start_sec = 149.318
+len_sec = 4.799
+
+# ── verse 1: "Dead I am the one…" + "Dead I am the sky…" continuous,
+#    attack 30.89 @ grid 16, v1b attack rides in at 48 by native spacing ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = -2.0
+offset_beats = 14.0
+start_sec = 29.93
+len_sec = 22.47
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── chorus 1 ×2: "Dig through the ditches…" — cut in the 51.9-52.7 gap,
+#    "conquering the worm" pickup rides in, kick 53.96 @ grid 64 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 60.75
+start_sec = 52.40
+len_sec = 16.6
+highpass_hz = 120.0
+presence_db = 2.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── verse 2: "Dead I am the pool…" + "Dead I am the rat…" continuous,
+#    attack 77.03 @ grid 96, v2b rides in at ~128 (source is a touch quieter
+#    than verse 1 → +1.5) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = -1.5
+offset_beats = 94.0
+start_sec = 76.07
+len_sec = 23.98
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── breakdown: "Dead I am the dog, hound of hell you cry…" near-acapella,
+#    attack 153.89 @ grid 144 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = -3.0
+offset_beats = 142.0
+start_sec = 152.93
+len_sec = 8.20
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── build: chorus round near-acapella over the bed (kick 162.10 @ grid 160,
+#    native 17-beat push after the breakdown verse re-anchored on the bar) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = -3.5
+offset_beats = 158.0
+start_sec = 161.14
+len_sec = 8.16
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── THE DROP vocal: final double chorus as ONE continuous block (native
+#    17-beat push between rounds preserved), kick 191.41 @ grid 176 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 174.0
+start_sec = 190.45
+len_sec = 17.2
+highpass_hz = 120.0
+presence_db = 2.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── one-shots (spoken intro motif + final scream) ──
+[[source]]
+name = "zombie"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Rob Zombie - Dragula/vocals.wav"
+
+# intro tease: "Superstition, fear and jealousy" (spoken, creepy)
+[[phrase]]
+track = "zombie"
+start_sec = 4.55
+end_sec = 7.90
+at_beat = 8.5
+throw = true
+gain_db = 8.0
+
+# closing return over the naked beat, ends before the tape stop
+[[phrase]]
+track = "zombie"
+start_sec = 4.55
+end_sec = 7.90
+at_beat = 210.5
+throw = true
+gain_db = 13.0
+
+# "Dragula!" scream — AFTER the tape-stop end, over the dying echo
+[[phrase]]
+track = "zombie"
+start_sec = 205.90
+end_sec = 208.50
+at_beat = 222.5
+throw = true
+gain_db = -2.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 16.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# verse 1 tail → chorus 1: riser + stutter + lowpass shut + sub hit
+[[fx]]
+kind = "riser"
+at_beat = 56.0
+len_beats = 8
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 60.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 62.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 64.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# shut the beat into the breakdown
+[[fx]]
+kind = "filter_sweep"
+at_beat = 142.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+# long build out of the breakdown into THE DROP
+[[fx]]
+kind = "riser"
+at_beat = 168.0
+len_beats = 8
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 172.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 174.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 176.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# chest hit on the beat's stop-time return
+[[fx]]
+kind = "sub_drop"
+at_beat = 212.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# Finale: tape stop + closing lowpass together, echo reads the dying tape.
+[[fx]]
+kind = "tape_stop"
+at_beat = 218.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 218.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 220.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 720.1
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.8, "1" = -2.8 }

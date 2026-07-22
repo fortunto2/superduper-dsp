@@ -1,0 +1,436 @@
+# Mashup — Serial Thrilla × Disturbed "Down With The Sickness".
+#
+#   sdsp-mash tools/sdsp-mash/mash_serialthrilla_sickness.toml out.wav
+#
+# Grid 181.34 = Disturbed's vocal double-time (drums local zones BOTH exactly
+# 90.67, studio-tight IQR — the one non-drifting band of this batch), vocal
+# ratio 1.0 everywhere. Serial Thrilla comb-corr 157.34 (machine) speeds up
+# +15.3% (ratio 0.867648) — the Firestarter×Lose Yourself precedent: fast
+# Prodigy break as DnB-feel under half-time metal vocal. Speed-up = safe side.
+# ST lattice: kick 8.58 + k*0.381342; grooves A 8.6-88, B 200.8-240,
+# break zone 248-260, C 264-296.
+# Disturbed map (isolated-slice whisper — full-stem run missed the real first
+# chorus): "Can you feel that?" 8.5, screams 19.2 / 28.7 (hot), verse 1
+# "Drowning deep…" attack 53.16, verse 2 "Looking at my own reflection…"
+# 74.35 (= V1 + exactly 32 native beats → ONE continuous verse block, zero
+# re-anchor), CHORUS 1 "Get up!" 90.70 dead on its kick 90.72, bridge
+# "It seems you're having some trouble…" 144.53 → "…woken up the demon,
+# THE ENEMY!" ends 164.5 straight into the BIG chorus 166.21 (pickup before
+# kick 166.40) ×4 rounds ending "…gift that has been given to me" 187.6.
+# The 190-245 "mommy" spoken bridge is deliberately skipped. Final iconic
+# "OOH WAH AH AH AH!" scream 275.22 (hottest moment, −9.8 dB) lands AFTER
+# the tape stop — the KITN MOTHERF*CKER move.
+#
+# Timeline (spb 0.330876, bar 1.323504), total ≈ 120 s:
+#   beats   0- 32  intro — thin drums + "Can you feel that?" + SCREAM tease
+#                  riding the riser, full beat slams at 32
+#   beats  32-144  verse 1+2 — one continuous block, V2 rides in at 96
+#   beats 144-208  CHORUS 1 — "Get up! Come on get down with the sickness"
+#   beats 208-240  BREAKDOWN — "It seems you're having some trouble…" acapella
+#   beats 240-272  build — "…woken up the demon, THE ENEMY!" over the riser
+#   beats 272-336  THE DROP — big chorus ×4 on groove C, "…gift given to me"
+#                  lands exactly on the return downbeat
+#   beats 336-344  return — "Can you feel that?" over thin drums
+#   beat  344      tape_stop + closing sweep + echo; final scream AFTER stop
+#
+# Vocal balance = fixed Eminem recipe (verses +1/presence 3, screams/chorus
+# lower presence, duck 3.5).
+
+bpm = 181.34
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.5
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.5
+release_ms = 100.0
+
+# ── intro: thin drums (ST dip zone), beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = -6.0
+tempo_ratio = 0.867648
+start_sec = 87.90
+len_sec = 12.203
+
+# ── verse 1+2: groove A, beats 32-144 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = -5.0
+tempo_ratio = 0.867648
+offset_beats = 32.0
+start_sec = 8.58
+len_sec = 42.71
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/bass.wav"
+role = "beat-bass"
+gain_db = -1.5
+saturate_db = 4.0
+tempo_ratio = 0.867648
+offset_beats = 32.0
+start_sec = 8.58
+len_sec = 42.71
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/other.wav"
+role = "beat-other"
+gain_db = -7.0
+tempo_ratio = 0.867648
+offset_beats = 32.0
+start_sec = 8.58
+len_sec = 42.71
+
+# ── CHORUS 1: groove B, beats 144-208 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = -3.0
+tempo_ratio = 0.867648
+offset_beats = 144.0
+start_sec = 200.77
+len_sec = 24.406
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/bass.wav"
+role = "beat-bass"
+gain_db = 0.0
+saturate_db = 4.0
+tempo_ratio = 0.867648
+offset_beats = 144.0
+start_sec = 200.77
+len_sec = 24.406
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/other.wav"
+role = "beat-other"
+gain_db = -5.5
+tempo_ratio = 0.867648
+offset_beats = 144.0
+start_sec = 200.77
+len_sec = 24.406
+
+# ── breakdown bed: ST's own break zone, other only, beats 208-240 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/other.wav"
+role = "beat-other"
+gain_db = -12.5
+tempo_ratio = 0.867648
+offset_beats = 208.0
+start_sec = 248.83
+len_sec = 12.203
+
+# ── drums sneak back under the build's last bars ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = -8.0
+tempo_ratio = 0.867648
+offset_beats = 260.0
+start_sec = 87.90
+len_sec = 4.576
+
+# ── THE DROP: groove C, beats 272-336 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+tempo_ratio = 0.867648
+offset_beats = 272.0
+start_sec = 264.71
+len_sec = 24.406
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/bass.wav"
+role = "beat-bass"
+gain_db = 4.0
+saturate_db = 4.0
+tempo_ratio = 0.867648
+offset_beats = 272.0
+start_sec = 264.71
+len_sec = 24.406
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/other.wav"
+role = "beat-other"
+gain_db = -3.0
+tempo_ratio = 0.867648
+offset_beats = 272.0
+start_sec = 264.71
+len_sec = 24.406
+
+# ── return: thin drums, beats 336-348 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/05 - Serial Thrilla/drums.wav"
+role = "beat-drums"
+gain_db = -9.0
+tempo_ratio = 0.867648
+offset_beats = 336.0
+start_sec = 87.90
+len_sec = 4.576
+
+# ── verse 1+2 vocal: ONE continuous block, attack 53.16 @ 32, V2 at 96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+role = "vocal"
+gain_db = 1.0
+offset_beats = 30.0
+start_sec = 52.50
+len_sec = 37.40
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── CHORUS 1: "Get up!" on its native kick 90.72 @ grid 144 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 141.98
+start_sec = 90.05
+len_sec = 22.75
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── BREAKDOWN: "It seems you're having some trouble…" near-acapella ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+role = "vocal"
+gain_db = 0.0
+offset_beats = 206.0
+start_sec = 143.87
+len_sec = 9.60
+highpass_hz = 120.0
+presence_db = 3.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── build: "Now the world is a scary place… woken up the demon, THE ENEMY!" ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+role = "vocal"
+gain_db = 0.5
+offset_beats = 239.85
+start_sec = 153.47
+len_sec = 11.03
+highpass_hz = 120.0
+presence_db = 2.5
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── THE DROP: big chorus ×4, "Get" pickup 0.57 beat before its kick @ 272 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+role = "vocal"
+gain_db = -0.5
+offset_beats = 269.43
+start_sec = 165.55
+len_sec = 22.05
+highpass_hz = 120.0
+presence_db = 2.0
+comp = { threshold_db = -18.0, ratio = 3.0, attack_ms = 5.0, release_ms = 90.0, makeup_db = 2.0 }
+
+# ── one-shots ──
+[[source]]
+name = "draiman"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Disturbed - Down With The Sickness/vocals.wav"
+
+# intro: "Can you feel that?" (spoken, quiet source)
+[[phrase]]
+track = "draiman"
+start_sec = 8.00
+end_sec = 10.90
+at_beat = 6.0
+throw = true
+gain_db = 6.0
+
+# THE iconic scream tease — rides the riser straight into the first beat slam
+[[phrase]]
+track = "draiman"
+start_sec = 28.30
+end_sec = 32.80
+at_beat = 20.0
+throw = true
+gain_db = 5.0
+
+# return of the intro motif over thin drums
+[[phrase]]
+track = "draiman"
+start_sec = 8.00
+end_sec = 10.90
+at_beat = 337.0
+throw = true
+gain_db = 5.0
+
+# final "OOH WAH AH AH AH!" — AFTER the tape-stop end, over the dying echo
+[[phrase]]
+track = "draiman"
+start_sec = 274.90
+end_sec = 279.50
+at_beat = 349.0
+throw = true
+gain_db = 0.0
+
+# ── transitions ──
+# riser under the intro scream into the first slam
+[[fx]]
+kind = "riser"
+at_beat = 16.0
+len_beats = 16
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 28.0
+len_beats = 4
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 4
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# V2 arrival accent
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+# verse tail → chorus 1
+[[fx]]
+kind = "riser"
+at_beat = 128.0
+len_beats = 16
+from_hz = 150.0
+to_hz = 16000.0
+peak = 0.45
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 140.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 142.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 144.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+# shut into the breakdown
+[[fx]]
+kind = "filter_sweep"
+at_beat = 206.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+# build out of the breakdown into THE DROP
+[[fx]]
+kind = "riser"
+at_beat = 256.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.55
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 268.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 270.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 272.0
+len_beats = 4
+from_hz = 58.0
+to_hz = 38.0
+peak = 0.95
+
+# mid-drop chest hit
+[[fx]]
+kind = "sub_drop"
+at_beat = 304.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+# shut into the return
+[[fx]]
+kind = "filter_sweep"
+at_beat = 334.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 336.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+# Finale: tape stop + closing lowpass together, echo reads the dying tape.
+[[fx]]
+kind = "tape_stop"
+at_beat = 344.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 344.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 346.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 496.3
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

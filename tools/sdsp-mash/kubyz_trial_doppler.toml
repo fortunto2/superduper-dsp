@@ -1,0 +1,319 @@
+# Kubyz trial 3 — Charlotte de Witte "Doppler" (135.28, A#) × кубыз ×
+# AY YOLA "Kil Kotom" vocal accents (101.2, A# — SAME key, 3:4 tempo bridge).
+# The ethno chant rides unstretched as one-shot phrases (its 101-BPM internal
+# pulse = quarter-note triplets over the 135.3 grid — floating, not fighting).
+# Phrases cut at the breath dips of verse 2 (104.9 / 109.6 / 114.4).
+# Doppler lattice 8.673 + k*0.443459; grooves 8.7-80 / 112.4-190 / 256-430,
+# own break 208-250. Zero stretch on everything.
+
+bpm = 135.28
+
+[intro_sweep]
+bars = 2
+from_hz = 300.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -28.0
+ratio = 3.0
+attack_ms = 8.0
+release_ms = 140.0
+
+[pump]
+depth_db = 4.0
+release_ms = 100.0
+
+# ── intro: the track's own break zone, beats 0-32 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/other.wav"
+role = "beat-other"
+gain_db = -4.0
+start_sec = 208.229
+len_sec = 14.191
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/drums.wav"
+role = "beat-drums"
+gain_db = -6.0
+start_sec = 208.229
+len_sec = 14.191
+
+# ── groove, beats 32-96 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/drums.wav"
+role = "beat-drums"
+gain_db = -1.0
+offset_beats = 32.0
+start_sec = 112.442
+len_sec = 28.381
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/bass.wav"
+role = "beat-bass"
+gain_db = 0.5
+saturate_db = 3.0
+offset_beats = 32.0
+start_sec = 112.442
+len_sec = 28.381
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/other.wav"
+role = "beat-other"
+gain_db = -3.0
+offset_beats = 32.0
+start_sec = 112.442
+len_sec = 28.381
+
+# ── BREAKDOWN: own break bed; AY YOLA chant + kubyz answer, beats 96-128 ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/other.wav"
+role = "beat-other"
+gain_db = -4.0
+offset_beats = 96.0
+start_sec = 224.194
+len_sec = 14.191
+
+# ── DROP, beats 128-200 (ends exactly at the stop end) ──
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/drums.wav"
+role = "beat-drums"
+gain_db = 1.5
+offset_beats = 128.0
+start_sec = 256.123
+len_sec = 31.929
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/bass.wav"
+role = "beat-bass"
+gain_db = 3.5
+saturate_db = 3.0
+offset_beats = 128.0
+start_sec = 256.123
+len_sec = 31.929
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Charlotte de Witte - Doppler/other.wav"
+role = "beat-other"
+gain_db = -1.5
+offset_beats = 128.0
+start_sec = 256.123
+len_sec = 31.929
+
+# ── sources ──
+[[source]]
+name = "kub035"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-035.wav"
+
+[[source]]
+name = "kub037"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-037.wav"
+
+[[source]]
+name = "kub012"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-012.wav"
+
+[[source]]
+name = "kub004"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-004.wav"
+
+[[source]]
+name = "kub022"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-022.wav"
+
+[[source]]
+name = "kub013"
+path = "/Users/rustam/Music/SuperDuper Samples/kubiz-bash/kubiz-bashkir-013.wav"
+
+[[source]]
+name = "ayyola"
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/AY YOLA - Kil Kotom/vocals.wav"
+
+# intro drone
+[[phrase]]
+track = "kub035"
+start_sec = 8.0
+end_sec = 15.10
+at_beat = 16.0
+throw = true
+gain_db = 7.0
+
+# groove licks
+[[phrase]]
+track = "kub012"
+start_sec = 0.0
+end_sec = 0.89
+at_beat = 48.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.0
+
+[[phrase]]
+track = "kub004"
+start_sec = 0.0
+end_sec = 0.87
+at_beat = 64.0
+loops = 4
+loop_gain_step_db = 0.8
+gain_db = 5.5
+
+[[phrase]]
+track = "kub022"
+start_sec = 0.0
+end_sec = 0.94
+at_beat = 80.0
+loops = 4
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# BREAKDOWN — ethno call-and-response: chant phrase A, chant phrase B,
+# kubyz answers
+[[phrase]]
+track = "ayyola"
+start_sec = 104.90
+end_sec = 109.60
+at_beat = 96.0
+throw = true
+gain_db = 2.0
+
+[[phrase]]
+track = "ayyola"
+start_sec = 109.60
+end_sec = 113.70
+at_beat = 108.0
+throw = true
+gain_db = 2.0
+
+[[phrase]]
+track = "kub037"
+start_sec = 0.0
+end_sec = 6.13
+at_beat = 118.0
+throw = true
+gain_db = 6.5
+
+# DROP — the long melisma floats over peak techno (triplet feel by 3:4)
+[[phrase]]
+track = "ayyola"
+start_sec = 114.40
+end_sec = 118.85
+at_beat = 136.0
+throw = true
+gain_db = 2.5
+
+[[phrase]]
+track = "ayyola"
+start_sec = 104.90
+end_sec = 109.60
+at_beat = 160.0
+throw = true
+gain_db = 2.5
+
+# kubyz escalation into the finale
+[[phrase]]
+track = "kub012"
+start_sec = 0.0
+end_sec = 0.89
+at_beat = 176.0
+loops = 8
+loop_gain_step_db = 1.0
+gain_db = 6.0
+
+# final twang AFTER the tape stop
+[[phrase]]
+track = "kub013"
+start_sec = 0.0
+end_sec = 0.22
+at_beat = 200.6
+throw = true
+gain_db = 8.0
+
+# ── transitions ──
+[[fx]]
+kind = "sub_drop"
+at_beat = 32.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.6
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 94.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 96.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 45.0
+peak = 0.5
+
+[[fx]]
+kind = "riser"
+at_beat = 112.0
+len_beats = 16
+from_hz = 120.0
+to_hz = 16000.0
+peak = 0.5
+
+[[fx]]
+kind = "beat_repeat"
+at_beat = 124.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 126.0
+len_beats = 2
+from_hz = 16000.0
+to_hz = 350.0
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 128.0
+len_beats = 3
+from_hz = 58.0
+to_hz = 40.0
+peak = 0.9
+
+[[fx]]
+kind = "sub_drop"
+at_beat = 160.0
+len_beats = 2
+from_hz = 55.0
+to_hz = 42.0
+peak = 0.7
+
+[[fx]]
+kind = "tape_stop"
+at_beat = 196.0
+len_beats = 4
+
+[[fx]]
+kind = "filter_sweep"
+at_beat = 196.0
+len_beats = 4
+from_hz = 16000.0
+to_hz = 250.0
+
+[[fx]]
+kind = "echo_out"
+at_beat = 198.0
+len_beats = 3
+feedback = 0.5
+delay_ms = 665.2
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 3.2, "1" = -2.8 }

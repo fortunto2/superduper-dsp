@@ -63,13 +63,49 @@ pub fn detect_pitch_hz(mono: &[f32], sample_rate: u32) -> Option<f32> {
         return None;
     }
 
+    // Delegate the actual YIN math to the shared alloc-free kernel so the
+    // block detector and the streaming tracker never drift apart.
     let n = max_period + 1;
-    let mut cnd = vec![1.0f32; n];
+    let mut cmnd = vec![1.0f32; n];
+    let hz = yin_pitch_window(window, sample_rate as f32, min_period, max_period, 0.15, &mut cmnd)?;
+    if hz.is_finite() && hz > 20.0 && hz < 6000.0 {
+        Some(hz)
+    } else {
+        None
+    }
+}
+
+/// Core YIN estimate over a single mono window. **Alloc-free** — `cmnd`
+/// scratch must be at least `max_period + 1` samples long, so this is
+/// safe to call from an audio thread. Returns the parabolically refined
+/// fundamental in Hz, or `None` for unvoiced / inharmonic / silent content
+/// (no cumulative-mean-difference valley drops below `threshold`).
+///
+/// Steps 1+2 of de Cheveigné & Kawahara's YIN: the cumulative-mean-
+/// normalised difference function, then the first valley under `threshold`
+/// (falling back to the global minimum), refined by parabolic interpolation.
+///
+/// `min_period` / `max_period` bound the lag search (samples); pick them
+/// from the desired Hz range as `sr / max_hz` .. `sr / min_hz`. The window
+/// must be longer than `max_period` (in practice ≥ `2 * max_period`).
+pub fn yin_pitch_window(
+    window: &[f32],
+    sample_rate: f32,
+    min_period: usize,
+    max_period: usize,
+    threshold: f32,
+    cmnd: &mut [f32],
+) -> Option<f32> {
+    let window_len = window.len();
+    let n = max_period + 1;
+    if n < 2 || window_len <= max_period || min_period >= max_period || cmnd.len() < n {
+        return None;
+    }
+    cmnd[0] = 1.0;
     let mut acc = 0.0f64;
     let mut prev_below = false;
     let mut best_tau = 0usize;
     let mut best_val = f32::INFINITY;
-    let threshold = 0.15f32;
     for tau in 1..n {
         let mut s = 0.0f64;
         let len = window_len - tau;
@@ -79,7 +115,7 @@ pub fn detect_pitch_hz(mono: &[f32], sample_rate: u32) -> Option<f32> {
         }
         acc += s;
         let val = if acc > 0.0 { (s * tau as f64 / acc) as f32 } else { 1.0 };
-        cnd[tau] = val;
+        cmnd[tau] = val;
         if tau >= min_period {
             if val < best_val {
                 best_val = val;
@@ -88,19 +124,19 @@ pub fn detect_pitch_hz(mono: &[f32], sample_rate: u32) -> Option<f32> {
             if val < threshold {
                 prev_below = true;
             }
-            if prev_below && tau > 1 && cnd[tau - 1] < cnd[tau] && cnd[tau - 1] < threshold {
+            if prev_below && tau > 1 && cmnd[tau - 1] < cmnd[tau] && cmnd[tau - 1] < threshold {
                 best_tau = tau - 1;
                 break;
             }
         }
     }
-    if best_tau < min_period || cnd[best_tau] > 0.5 {
+    if best_tau < min_period || cmnd[best_tau] > 0.5 {
         return None;
     }
     let refined = if best_tau > 0 && best_tau + 1 < n {
-        let a = cnd[best_tau - 1];
-        let b = cnd[best_tau];
-        let c = cnd[best_tau + 1];
+        let a = cmnd[best_tau - 1];
+        let b = cmnd[best_tau];
+        let c = cmnd[best_tau + 1];
         let denom = 2.0 * (a - 2.0 * b + c);
         if denom.abs() > 1e-9 {
             best_tau as f32 + (a - c) / denom
@@ -110,11 +146,140 @@ pub fn detect_pitch_hz(mono: &[f32], sample_rate: u32) -> Option<f32> {
     } else {
         best_tau as f32
     };
-    let hz = sample_rate as f32 / refined;
-    if hz.is_finite() && hz > 20.0 && hz < 6000.0 {
+    let hz = sample_rate / refined;
+    if hz.is_finite() && hz > 0.0 {
         Some(hz)
     } else {
         None
+    }
+}
+
+/// Real-time streaming fundamental-pitch tracker built on
+/// [`yin_pitch_window`]. Feed it one sample at a time via [`push`]; every
+/// `hop` samples it re-runs YIN over the trailing window and updates its
+/// held estimate. All scratch is pre-allocated in [`new`], so `push` never
+/// touches the allocator — safe to drive from an audio `process()` loop.
+///
+/// On unvoiced / silent input the tracker **holds** its last confident
+/// pitch (a vocoder should keep humming through consonants, not glitch to
+/// silence), and starts from `default_hz` before it has ever locked.
+///
+/// [`push`]: YinPitchTracker::push
+/// [`new`]: YinPitchTracker::new
+pub struct YinPitchTracker {
+    ring: Box<[f32]>,
+    scratch: Box<[f32]>,
+    cmnd: Box<[f32]>,
+    write: usize,
+    filled: usize,
+    hop_counter: usize,
+    hop: usize,
+    min_period: usize,
+    max_period: usize,
+    threshold: f32,
+    sample_rate: f32,
+    last_hz: f32,
+    default_hz: f32,
+}
+
+impl YinPitchTracker {
+    /// Build a tracker for the `min_hz`..`max_hz` fundamental range.
+    /// `window_len` is the analysis window (samples); it is bumped up if
+    /// it can't cover two periods of `min_hz`. `hop` is how often (samples)
+    /// a fresh estimate is computed — smaller = snappier + more CPU.
+    /// `default_hz` is the pitch reported before the first confident lock.
+    pub fn new(
+        sample_rate: f32,
+        min_hz: f32,
+        max_hz: f32,
+        window_len: usize,
+        hop: usize,
+        default_hz: f32,
+    ) -> Self {
+        let sr = sample_rate.max(1.0);
+        let min_period = (sr / max_hz.max(1.0)).floor().max(2.0) as usize;
+        let mut max_period = (sr / min_hz.max(1.0)).ceil() as usize;
+        // The window must comfortably contain two periods of the lowest note.
+        let window_len = window_len.max(2 * max_period + 2);
+        max_period = max_period.min(window_len / 2 - 1);
+        Self {
+            ring: vec![0.0; window_len].into_boxed_slice(),
+            scratch: vec![0.0; window_len].into_boxed_slice(),
+            cmnd: vec![1.0; max_period + 1].into_boxed_slice(),
+            write: 0,
+            filled: 0,
+            hop_counter: 0,
+            hop: hop.max(1),
+            min_period,
+            max_period,
+            threshold: 0.15,
+            sample_rate: sr,
+            last_hz: default_hz,
+            default_hz,
+        }
+    }
+
+    /// Push one input sample. Returns `true` on the samples where a fresh
+    /// YIN estimate was computed (useful for tests / metering).
+    #[inline]
+    pub fn push(&mut self, x: f32) -> bool {
+        let n = self.ring.len();
+        self.ring[self.write] = x;
+        self.write += 1;
+        if self.write >= n {
+            self.write = 0;
+        }
+        if self.filled < n {
+            self.filled += 1;
+        }
+        self.hop_counter += 1;
+        if self.hop_counter >= self.hop && self.filled >= n {
+            self.hop_counter = 0;
+            self.analyze();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn analyze(&mut self) {
+        let n = self.ring.len();
+        // Unwrap the ring buffer oldest→newest into the contiguous scratch.
+        let start = self.write; // oldest sample sits at the write cursor
+        for i in 0..n {
+            let idx = start + i;
+            let idx = if idx >= n { idx - n } else { idx };
+            self.scratch[i] = self.ring[idx];
+        }
+        if let Some(hz) = yin_pitch_window(
+            &self.scratch,
+            self.sample_rate,
+            self.min_period,
+            self.max_period,
+            self.threshold,
+            &mut self.cmnd,
+        ) {
+            self.last_hz = hz;
+        }
+        // else: hold last_hz — unvoiced consonant / brief silence.
+    }
+
+    /// Current held fundamental in Hz (last confident estimate, or
+    /// `default_hz` before the first lock).
+    #[inline]
+    pub fn current_hz(&self) -> f32 {
+        self.last_hz
+    }
+
+    /// Clear the analysis window and reset the held pitch to the default.
+    pub fn reset(&mut self) {
+        for s in self.ring.iter_mut() {
+            *s = 0.0;
+        }
+        self.write = 0;
+        self.filled = 0;
+        self.hop_counter = 0;
+        self.last_hz = self.default_hz;
     }
 }
 
@@ -559,6 +724,41 @@ mod tests {
             // run-to-run — which is good enough for "not really pitched".
             assert!(hz > 30.0 && hz < 6000.0);
         }
+    }
+
+    #[test]
+    fn tracker_locks_onto_steady_tone() {
+        let sr = 48_000.0;
+        let mut tracker = YinPitchTracker::new(sr, 75.0, 1000.0, 1536, 512, 110.0);
+        // Two seconds of a steady 150 Hz tone.
+        let f = 150.0f32;
+        let n = (sr * 2.0) as usize;
+        for i in 0..n {
+            let x = (i as f32 / sr * std::f32::consts::TAU * f).sin() * 0.4;
+            tracker.push(x);
+        }
+        let hz = tracker.current_hz();
+        assert!((hz - f).abs() < 3.0, "tracker locked to {hz}, expected ~{f}");
+    }
+
+    #[test]
+    fn tracker_holds_pitch_through_silence() {
+        let sr = 48_000.0;
+        let mut tracker = YinPitchTracker::new(sr, 75.0, 1000.0, 1536, 512, 110.0);
+        let f = 220.0f32;
+        for i in 0..(sr as usize) {
+            let x = (i as f32 / sr * std::f32::consts::TAU * f).sin() * 0.4;
+            tracker.push(x);
+        }
+        let locked = tracker.current_hz();
+        assert!((locked - f).abs() < 3.0, "tracker locked to {locked}");
+        // Now feed silence — the held pitch must NOT collapse to junk / NaN.
+        for _ in 0..(sr as usize) {
+            tracker.push(0.0);
+        }
+        let held = tracker.current_hz();
+        assert!(held.is_finite(), "held pitch went non-finite");
+        assert!((held - f).abs() < 3.0, "silence should hold last pitch, got {held}");
     }
 
     #[test]

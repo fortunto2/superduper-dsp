@@ -1,6 +1,6 @@
 # SuperDuper DSP
 
-Open-source CLAP plugin suite — 23 focused effects and synths written in
+Open-source CLAP plugin suite — 26 focused effects and synths written in
 Rust. Full vocal chain (de-esser + plosive + hum + de-click + Sub-Mode
 for 2-band setups), four original synths (wavetable bass, jaw-harp
 physical model, drum machine, polyphonic sampler), Mobius-style live
@@ -45,6 +45,9 @@ click the name to read.
 | [**MidSide**](effects/superduper-midside/README.md) | stereo width | L/R ↔ M/S encode/decode + per-channel Mid/Side gain + Width. Three modes: in-place Width, Encode →, ← Decode for inserting M/S processors. |
 | [**Soothe**](effects/superduper-soothe/README.md) | resonance suppressor | 24-band dynamic resonance suppressor. Tames rolled-r, harsh `s`/`sh`, mud peaks via baseline-relative peaking-EQ cuts. Soft/Sharp/Hard modes. |
 | [**NAM**](effects/superduper-nam/README.md) | neural amp modeler | Pure-Rust port of Steven Atkinson's [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore) inference. Loads community `.nam` files (WaveNet / LSTM / Linear) with in-plugin library browser: drag-and-drop, URL download, filter, delete, in-app links to [ToneHunt](https://tonehunt.org) / [Tone3000](https://tone3000.com) / [NAM Hub](https://nam.parametric.audio). |
+| [**Vocoder**](effects/superduper-vocoder/README.md) | robot voice | Classic channel vocoder (Daft Punk / Kraftwerk / talkbox), switchable 11/16/20 bands. Mel-spaced constant-Q analysis + stereo synthesis banks. Carrier is internal band-limited oscillators (Saw / Square / Pulse / Saw+Sub, detuned + stereo-wide) pitched by YIN **or MIDI chords (6-voice, play a keyboard)** or a sidechain synth. Formant Shift, noise-excited Unvoiced for natural sibilants, tanh Drive. Zero-latency, live-ready. |
+| [**Pitch**](effects/superduper-pitch/README.md) | pitch / formant | Pitch + independent formant shifter, **dual engine**. **Voice** (TD-PSOLA): solo voice with independent formant — raise pitch with formant fixed (not chipmunk) or move formant at Pitch 0 (gender/size). **Track** (phase vocoder): transpose **polyphony** — whole mixes, chords, songs (change a track's key). Presets: Chipmunk / Masyanya / Bass / Demon / Gender Flip / Deeper + Key ±2/±5. Latency reported for PDC. |
+| [**Harmonic**](effects/superduper-harmonic/README.md) | restoration / cleanup | Pitch-locked harmonic comb denoiser for a piezo / electric kubyz (jaw-harp): keep the harmonics AND the plucks, reject the between-harmonic contact rustle. Time-domain, **zero-latency** — YIN tracks f0, a period-synchronous comb (taps at `T, 2T…`) combined by **median** (rejects transient echo) drops noise while an onset detector re-opens the comb on attacks so plucks stay razor-sharp. Amount / Bandwidth / Transient / Mix / Output / Range / Mode. |
 | [**Denoise**](effects/superduper-denoise/README.md) *(planned)* | noise / breath suppression | Stub for RNNoise / nnnoiseless port — coming in a future release. |
 
 ### Instruments

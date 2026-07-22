@@ -1,0 +1,72 @@
+# Yukimatsu-style set — Part 01: "I Feel Love" cold-open (Donna Summer,
+# solo track, own stems). Eclectic disco/proto-techno scene-setter — the
+# classic-into-electronic move his cover-sets favor. Tempo-boost recipe:
+# +3.4% (125.76 -> 130), one continuous groove take (the song's own
+# 130s "chorus" zone is already a hypnotic 4-on-the-floor loop, no need
+# to re-loop it). Long groove-only tail for a BLEND transition into Part 02.
+#
+#   cargo run --release -p sdsp-mash -- tools/sdsp-mash/yuki_01_donna_summer_open.toml out.wav
+
+bpm = 130.0
+
+[intro_sweep]
+bars = 4
+from_hz = 250.0
+to_hz = 16000.0
+
+[duck]
+threshold_db = -24.0
+ratio = 2.0
+attack_ms = 10.0
+release_ms = 150.0
+
+[breath]
+every_bars = 16
+len_bars = 4
+from_hz = 30.0
+to_hz = 500.0
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Donna Summer - I Feel Love/drums.wav"
+role = "beat-drums"
+gain_db = 2.0
+start_sec = 0.4
+len_sec = 197.0
+tempo_ratio = 0.9677
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Donna Summer - I Feel Love/bass.wav"
+role = "beat-bass"
+gain_db = 3.0
+saturate_db = 2.0
+start_sec = 0.4
+len_sec = 197.0
+tempo_ratio = 0.9677
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Donna Summer - I Feel Love/other.wav"
+role = "beat-other"
+gain_db = 2.0
+start_sec = 0.4
+len_sec = 197.0
+tempo_ratio = 0.9677
+
+[[track]]
+path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Donna Summer - I Feel Love/vocals.wav"
+role = "vocal"
+gain_db = 4.0
+start_sec = 0.4
+len_sec = 197.0
+tempo_ratio = 0.9677
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.6, "1" = -2.8 }

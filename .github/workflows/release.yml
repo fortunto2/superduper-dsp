@@ -79,7 +79,8 @@ jobs:
             -p superduper-vocoder \
             -p superduper-pitch \
             -p superduper-nam \
-            -p superduper-harmonic
+            -p superduper-harmonic \
+            -p superduper-tune
 
       - name: Run tests
         run: |
@@ -109,6 +110,7 @@ jobs:
             -p superduper-pitch \
             -p superduper-nam \
             -p superduper-harmonic \
+            -p superduper-tune \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -143,7 +145,8 @@ jobs:
               "superduper_nam|SuperDuperNam|co.superduperai.nam" \
               "superduper_vocoder|SuperDuperVocoder|co.superduperai.vocoder" \
               "superduper_pitch|SuperDuperPitch|co.superduperai.pitch" \
-              "superduper_harmonic|SuperDuperHarmonic|co.superduperai.harmonic"
+              "superduper_harmonic|SuperDuperHarmonic|co.superduperai.harmonic" \
+              "superduper_tune|SuperDuperTune|co.superduperai.tune"
           do
               IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
               dylib="target/release/lib${dylib_stem}.dylib"
@@ -180,7 +183,7 @@ jobs:
               SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap \
               SuperDuperMidSide.clap SuperDuperLineq.clap SuperDuperSoothe.clap \
               SuperDuperNam.clap SuperDuperVocoder.clap SuperDuperPitch.clap \
-              SuperDuperHarmonic.clap)
+              SuperDuperHarmonic.clap SuperDuperTune.clap)
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -302,7 +305,8 @@ jobs:
             -p superduper-vocoder `
             -p superduper-pitch `
             -p superduper-nam `
-            -p superduper-harmonic
+            -p superduper-harmonic `
+            -p superduper-tune
 
       - name: Run tests
         run: |
@@ -332,6 +336,7 @@ jobs:
             -p superduper-pitch `
             -p superduper-nam `
             -p superduper-harmonic `
+            -p superduper-tune `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -366,7 +371,8 @@ jobs:
             @{ dll = "superduper_nam.dll";        name = "SuperDuperNam" },
             @{ dll = "superduper_vocoder.dll";    name = "SuperDuperVocoder" },
             @{ dll = "superduper_pitch.dll";      name = "SuperDuperPitch" },
-            @{ dll = "superduper_harmonic.dll";   name = "SuperDuperHarmonic" }
+            @{ dll = "superduper_harmonic.dll";   name = "SuperDuperHarmonic" },
+            @{ dll = "superduper_tune.dll";       name = "SuperDuperTune" }
           )
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"

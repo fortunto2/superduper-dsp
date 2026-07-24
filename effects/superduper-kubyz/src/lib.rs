@@ -157,6 +157,10 @@ pub struct SharedParamsInner {
     /// pitch-bend events and consumed by the audio thread when computing
     /// each voice's frequency.
     pub pitch_bend_st: AtomicF32,
+    /// Live MIDI CC7 (Channel Volume) 0..1, default 1.0 (full). Drives a
+    /// smoothed output VCA so a breath controller / mod wheel rig can swell
+    /// volume expressively without touching the Output param.
+    pub cc_volume: AtomicF32,
     /// Live host tempo in BPM — written from TransportEvents, read by
     /// the audio thread when computing tempo-synced rates.
     pub host_bpm: AtomicF32,
@@ -208,6 +212,7 @@ impl PluginShared {
                 gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| AtomicBool::new(false)),
                 pitch_bend_st: AtomicF32::new(0.0),
+                cc_volume: AtomicF32::new(1.0),
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
@@ -327,6 +332,7 @@ pub struct PluginAudioProcessor<'a> {
     smooth_vox: SmoothedParam,
     smooth_bright: SmoothedParam,
     smooth_output: SmoothedParam,
+    smooth_cc_vol: SmoothedParam,
     sample_rate: f32,
 }
 
@@ -500,6 +506,11 @@ impl<'a> PluginAudioProcessor<'a> {
                     let val = def.min as f32 + frac * (def.max - def.min) as f32;
                     self.shared.params[idx].store(val, Ordering::Relaxed);
                 };
+                // CC7 (Channel Volume) → output VCA, independent of any
+                // learned/legacy CC route. Neutral (1.0) until it arrives.
+                if key == 7 {
+                    self.shared.cc_volume.store(v, Ordering::Relaxed);
+                }
                 // User Learn mappings win over the hardcoded defaults
                 // (and a pending Learn consumes the CC without applying).
                 if let Some(idx) = self.shared.midi_learn.handle_cc(key) {
@@ -591,6 +602,7 @@ impl<'a> PluginAudioProcessor<'a> {
         let mouth_excursion_f2 = 600.0_f32;
 
         let mut mouth_phase = self.shared.mouth_phase.load(Ordering::Relaxed);
+        let cc_vol_target = self.shared.cc_volume.load(Ordering::Relaxed);
 
         for i in 0..out_l.len() {
             mouth_phase += mouth_rate / sr;
@@ -696,11 +708,12 @@ impl<'a> PluginAudioProcessor<'a> {
             let panned_r = mono * pan_r * core::f32::consts::SQRT_2;
             let final_l = raw_l * (1.0 - mouth_stereo) + panned_l * mouth_stereo;
             let final_r = raw_r * (1.0 - mouth_stereo) + panned_r * mouth_stereo;
-            out_l[i] = final_l;
-            out_r[i] = final_r;
+            let cc_vol = self.smooth_cc_vol.step(cc_vol_target, sr);
+            out_l[i] = final_l * cc_vol;
+            out_r[i] = final_r * cc_vol;
             // Feed the live oscilloscope with the mono mix-down so the GUI
-            // can show what the listener hears.
-            self.shared.scope.push((final_l + final_r) * 0.5);
+            // can show what the listener hears (post CC7 VCA).
+            self.shared.scope.push((out_l[i] + out_r[i]) * 0.5);
         }
         // Write the advanced phase back so the GUI can read where the
         // cursor should sit right now.
@@ -737,6 +750,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_vox: SmoothedParam::new(load(P_VOX_MIX)),
             smooth_bright: SmoothedParam::new(load(P_BRIGHT)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
+            smooth_cc_vol: SmoothedParam::new(1.0),
             sample_rate: sr,
         })
     }

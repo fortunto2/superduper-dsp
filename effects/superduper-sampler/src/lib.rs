@@ -243,6 +243,35 @@ pub fn pick_sample(shared: &SharedParamsInner, idx: usize) -> Result<String, Str
     Ok(label)
 }
 
+/// Main-thread: if the `Sample` param points at a different library index
+/// than the one currently loaded, decode that file and swap it in. This is
+/// what makes the sampler **headless-selectable** — host automation, MCP, or
+/// producer-pal can move the Sample param and get the audio to follow with no
+/// GUI. Woken by the audio thread's `request_callback()` (→ `on_main_thread`)
+/// and also driven by the main-thread param flush, so it works whether or not
+/// the transport is running. Decoding allocates + does file I/O → main-thread
+/// only, never call from `process()`. The param index is clamped to the
+/// scanned library so an out-of-range automation value loads the last sample
+/// instead of silently doing nothing.
+pub fn maybe_load_pending_sample(shared: &SharedParamsInner) {
+    let want = shared.params[P_SAMPLE].load(Ordering::Relaxed).round() as i32;
+    if want < 0 {
+        return;
+    }
+    let lib_len = shared.library.lock().len();
+    if lib_len == 0 {
+        return;
+    }
+    let idx = (want as usize).min(lib_len - 1);
+    if idx as i32 == shared.current_index.load(Ordering::Relaxed) {
+        return;
+    }
+    match pick_sample(shared, idx) {
+        Ok(name) => slog!("headless sample load: idx {} -> {}", idx, name),
+        Err(e) => slog!("headless sample load idx {} failed: {}", idx, e),
+    }
+}
+
 /// GUI helper: rerun the folder scan using the user's edited folder
 /// list and refresh the library. Returns the new entry count.
 pub fn refresh_library(shared: &SharedParamsInner) -> usize {
@@ -314,10 +343,20 @@ pub struct PluginMainThread<'a> {
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
 }
-impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
+    /// Host main-thread callback — the audio thread calls `request_callback()`
+    /// when the Sample param moved; here (off the RT thread) we decode + swap.
+    fn on_main_thread(&mut self) {
+        maybe_load_pending_sample(&self.shared.inner);
+    }
+}
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    /// Host handle — used to wake the main thread (request_callback) when
+    /// the Sample param is moved by host automation / MCP / producer-pal,
+    /// so the (allocating, file-I/O) decode runs off the audio thread.
+    host: HostAudioProcessorHandle<'a>,
     voices: [SampleVoice; VOICE_COUNT],
     next_age: u64,
     sample_rate: f32,
@@ -334,7 +373,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     for PluginAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut PluginMainThread<'a>,
         shared: &'a PluginShared,
         cfg: PluginAudioConfiguration,
@@ -345,6 +384,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         slog!("sampler activate sr={}", sr);
         Ok(Self {
             shared,
+            host,
             voices: std::array::from_fn(|_| SampleVoice::default()),
             next_age: 0,
             sample_rate: sr,
@@ -368,6 +408,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.params, &self.shared.dirty_params, events.output);
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
             &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+
+        // If the Sample param was moved by the host / MCP / producer-pal to a
+        // different library index than what's loaded, wake the main thread to
+        // decode + swap it in. load_sample allocates + reads the file, so it's
+        // forbidden here — we only request the callback (cheap, lock-free).
+        let want = self.shared.params[P_SAMPLE].load(Ordering::Relaxed).round() as i32;
+        if want >= 0 && want != self.shared.current_index.load(Ordering::Relaxed) {
+            self.host.shared().request_callback();
+        }
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
@@ -588,6 +637,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
     fn flush(&mut self, ev: &InputEvents, _: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
+        // Main-thread flush (transport stopped / idle track): the audio
+        // thread may never run its request_callback, so honour a Sample-param
+        // change right here too, off the RT path.
+        maybe_load_pending_sample(&self.shared.inner);
     }
 }
 
@@ -687,6 +740,30 @@ impl DefaultPluginFactory for SuperDuperSampler {
         // don't load any audio until they pick something.
         let count = refresh_library(&shared.inner);
         slog!("Sampler new_shared: found {} samples in default folders", count);
+        // Background decoder thread: watches the `Sample` param and loads the
+        // file off the RT thread whenever it changes. This is what makes the
+        // sampler reliably **headless-selectable** (host automation / MCP /
+        // producer-pal), independent of whether the host services
+        // request_callback/on_main_thread — REAPER routes param flushes for an
+        // active plugin to the audio thread, where decoding is forbidden, so
+        // the callback path alone never fired. Holds a `Weak` so the thread
+        // exits on its own when this plugin instance is dropped. The decode
+        // (file I/O + resample) happens here; only the finished Arc is swapped
+        // into `active_sample` under a brief lock — the audio thread never
+        // blocks on I/O.
+        let weak = std::sync::Arc::downgrade(&shared.inner);
+        let _ = std::thread::Builder::new()
+            .name("sdsp-sampler-loader".into())
+            .spawn(move || loop {
+                match weak.upgrade() {
+                    Some(inner) => {
+                        maybe_load_pending_sample(&inner);
+                        drop(inner);
+                    }
+                    None => break,
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            });
         Ok(shared)
     }
     fn new_main_thread<'a>(_host: HostMainThreadHandle<'a>, shared: &'a PluginShared)

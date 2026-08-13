@@ -216,6 +216,39 @@ pub fn write_mono_f32_wav(
     std::fs::write(path, out).map_err(WavError::Io)
 }
 
+/// Write `l`/`r` to `path` as an interleaved stereo 32-bit float WAV.
+/// Mastering output must stay stereo — folding to mono there destroys the
+/// image the chain's mid/side stage just shaped. Panics-free: mismatched
+/// channel lengths are truncated to the shorter one.
+pub fn write_stereo_f32_wav(
+    path: &std::path::Path,
+    l: &[f32],
+    r: &[f32],
+    sample_rate: u32,
+) -> Result<(), WavError> {
+    let frames = l.len().min(r.len());
+    let bytes = frames * 8; // 2 ch × f32
+    let mut out = Vec::with_capacity(44 + bytes);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + bytes) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());      // sub-chunk size
+    out.extend_from_slice(&3u16.to_le_bytes());       // format = IEEE float
+    out.extend_from_slice(&2u16.to_le_bytes());       // channels = 2
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 8).to_le_bytes()); // byte rate
+    out.extend_from_slice(&8u16.to_le_bytes());       // block align
+    out.extend_from_slice(&32u16.to_le_bytes());      // bits per sample
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(bytes as u32).to_le_bytes());
+    for i in 0..frames {
+        out.extend_from_slice(&l[i].to_le_bytes());
+        out.extend_from_slice(&r[i].to_le_bytes());
+    }
+    std::fs::write(path, out).map_err(WavError::Io)
+}
+
 /// Read `path` as a "Serum-style stitched" wavetable: if the file's
 /// mono-fold length is an exact multiple of `frame_len` AND the
 /// quotient is in [1, max_frames], split into that many cycles

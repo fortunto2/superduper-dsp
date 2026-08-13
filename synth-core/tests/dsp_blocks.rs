@@ -268,3 +268,122 @@ fn true_peak_no_phantom_overshoot_on_dc() {
     let db = tp.dbtp();
     assert!((db - -6.02).abs() < 0.15, "ramped DC 0.5 must read ≈ −6.02 dBTP, got {db}");
 }
+
+// ---------- FormantTracker ----------
+
+/// Band-limited glottal-ish pulse train: harmonics of `f0` with 1/k rolloff,
+/// stopping below 5 kHz so the tracker's search ranges see clean structure.
+fn pulse_train(f0: f32, sr: f32, n: usize) -> Vec<f32> {
+    let kmax = ((sr * 0.45).min(5_000.0) / f0) as usize;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / sr;
+            let mut s = 0.0;
+            for k in 1..=kmax {
+                s += (std::f32::consts::TAU * f0 * k as f32 * t).sin() / k as f32;
+            }
+            s * 0.3
+        })
+        .collect()
+}
+
+/// The tracker must recover the formants a known vowel filter imposed. This is
+/// the contract SuperDuper Formant's Follow mode rests on: sing a vowel, get
+/// its F1/F2/F3 back so another sound can be articulated with them.
+#[test]
+fn formant_tracker_recovers_a_known_vowel() {
+    use superduper_synth_core::formant::{Formant, FORMANT_PRESETS};
+    use superduper_synth_core::formant_track::FormantTracker;
+
+    // FORMANT_PRESETS[1] = Vowel A (/ɑ/) — 730 / 1090 / 2440 Hz.
+    let vowel = FORMANT_PRESETS[1];
+    let src = pulse_train(120.0, SR, SR as usize / 2); // 0.5 s of "aaah"
+    let mut filt = Formant::default();
+    let mut tracker = FormantTracker::new(SR);
+    for &s in &src {
+        let (l, _r) = filt.process(s, s, SR, vowel.f, vowel.bw, vowel.gain, 1.0);
+        tracker.push(l, 25.0, -60.0);
+    }
+    let got = tracker.formants();
+    assert!(tracker.is_active(), "0.5 s of vowel at -10 dBFS must open the gate");
+    for i in 0..3 {
+        let want = vowel.f[i];
+        let err = (got[i] - want).abs() / want;
+        assert!(
+            err < 0.15,
+            "F{} off by {:.1}% — wanted {want:.0} Hz, tracked {:.0} Hz (all: {got:?})",
+            i + 1,
+            err * 100.0,
+            got[i]
+        );
+    }
+}
+
+/// Two different vowels must land in different places — a tracker that always
+/// reports the same triple would pass the test above and still be useless.
+#[test]
+fn formant_tracker_separates_two_vowels() {
+    use superduper_synth_core::formant::{Formant, FORMANT_PRESETS};
+    use superduper_synth_core::formant_track::FormantTracker;
+
+    let track_vowel = |p: superduper_synth_core::formant::FormantPreset| {
+        let src = pulse_train(140.0, SR, SR as usize / 2);
+        let mut filt = Formant::default();
+        let mut tr = FormantTracker::new(SR);
+        for &s in &src {
+            let (l, _) = filt.process(s, s, SR, p.f, p.bw, p.gain, 1.0);
+            tr.push(l, 25.0, -60.0);
+        }
+        tr.formants()
+    };
+    // /i/ = 270 / 2290 (closed, bright) vs /ɔ/ = 570 / 840 (open, dark).
+    let i_vowel = track_vowel(FORMANT_PRESETS[3]);
+    let o_vowel = track_vowel(FORMANT_PRESETS[4]);
+    assert!(
+        i_vowel[0] < o_vowel[0],
+        "/i/ F1 ({:.0}) must sit below /ɔ/ F1 ({:.0})",
+        i_vowel[0],
+        o_vowel[0]
+    );
+    assert!(
+        i_vowel[1] > o_vowel[1] * 1.5,
+        "/i/ F2 ({:.0}) must sit far above /ɔ/ F2 ({:.0})",
+        i_vowel[1],
+        o_vowel[1]
+    );
+}
+
+/// Silence must freeze the last estimate, not collapse it — a breath between
+/// words should hold the vowel, not snap the articulation to the noise floor.
+#[test]
+fn formant_tracker_freezes_below_gate() {
+    use superduper_synth_core::formant::{Formant, FORMANT_PRESETS};
+    use superduper_synth_core::formant_track::FormantTracker;
+
+    let vowel = FORMANT_PRESETS[3]; // /i/ — far from the neutral start value
+    let src = pulse_train(120.0, SR, SR as usize / 2);
+    let mut filt = Formant::default();
+    let mut tr = FormantTracker::new(SR);
+    for &s in &src {
+        let (l, _) = filt.process(s, s, SR, vowel.f, vowel.bw, vowel.gain, 1.0);
+        tr.push(l, 25.0, -60.0);
+    }
+    let before = tr.formants();
+    for _ in 0..(SR as usize / 4) {
+        tr.push(0.0, 25.0, -60.0);
+    }
+    let after = tr.formants();
+    assert!(!tr.is_active(), "silence must close the gate");
+    // 2 % tolerance, not bit-equality: the first frame after the cut still
+    // holds the tail samples that hadn't yet reached a hop boundary, so it
+    // legitimately analyses real signal one last time.
+    for i in 0..3 {
+        assert!(
+            (after[i] - before[i]).abs() < before[i] * 0.02,
+            "F{} drifted during silence: {:.0} → {:.0}",
+            i + 1,
+            before[i],
+            after[i]
+        );
+    }
+}

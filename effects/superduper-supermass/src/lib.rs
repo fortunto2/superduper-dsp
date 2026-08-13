@@ -55,7 +55,7 @@ use superduper_dsp_sdk::slog;
 
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
-const PARAMS: &[ParamDef] = &[
+pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"Mix",          min: 0.0, max: 1.0,  default: 0.3,  unit: ""   },
     ParamDef { id: 1, name: b"Width",        min: 0.0, max: 1.0,  default: 1.0,  unit: ""   },
     ParamDef { id: 2, name: b"Drive",        min: 0.0, max: 1.0,  default: 0.0,  unit: ""   },

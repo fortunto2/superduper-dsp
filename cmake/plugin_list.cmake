@@ -44,4 +44,8 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-pitch|SuperDuperPitch|co.superduperai.pitch|co.superduperai.wrappers.pitch|aufx|sdPi"
     "superduper-tune|SuperDuperTune|co.superduperai.tune|co.superduperai.wrappers.tune|aufx|sdTu"
     "superduper-harmonic|SuperDuperHarmonic|co.superduperai.harmonic|co.superduperai.wrappers.harmonic|aufx|sdHm"
+    "superduper-wind|SuperDuperWind|co.superduperai.wind|co.superduperai.wrappers.wind|aufx|sdWi"
+    "superduper-formant|SuperDuperFormant|co.superduperai.formant|co.superduperai.wrappers.formant|aufx|sdFm"
+    "superduper-granular|SuperDuperGranular|co.superduperai.granular|co.superduperai.wrappers.granular|aufx|sdGr"
+    "superduper-stretch|SuperDuperStretch|co.superduperai.stretch|co.superduperai.wrappers.stretch|aufx|sdSt"
 )

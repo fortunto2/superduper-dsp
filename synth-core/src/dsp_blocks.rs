@@ -907,10 +907,17 @@ pub struct OnePoleLp {
 }
 
 impl OnePoleLp {
-    /// Process one sample. `cutoff_hz` clamped internally.
+    /// Process one sample. `cutoff_hz` is clamped internally to
+    /// `[0.001 Hz, sr·0.45]`.
+    ///
+    /// The floor used to be 20 Hz, which is fine for a tone control inside a
+    /// delay but silently broke the other legitimate use of a one-pole: smoothing
+    /// a modulation source. A gust that wanders at 0.05-0.5 Hz, or any slow LFO
+    /// smoother, was clamped to 20 Hz and its rate control did nothing at all.
+    /// 0.001 Hz still keeps `coef` strictly below 1, so the state can't freeze.
     #[inline]
     pub fn process(&mut self, x: f32, sr: f32, cutoff_hz: f32) -> f32 {
-        let cutoff = cutoff_hz.clamp(20.0, sr * 0.45);
+        let cutoff = cutoff_hz.clamp(0.001, sr * 0.45);
         let coef = (-core::f32::consts::TAU * cutoff / sr).exp();
         self.z = x * (1.0 - coef) + self.z * coef;
         self.z
@@ -1292,4 +1299,61 @@ pub fn pick_voice_slot<V: VoiceSlot>(voices: &[V]) -> usize {
         }
     }
     idle.unwrap_or(oldest_idx)
+}
+
+// ---------------------------------------------------------------------------
+// Xorshift — RT-safe deterministic PRNG.
+//
+// Audio DSP needs randomness in a lot of places (grain scatter, phase
+// randomisation, noise beds) and `rand` is neither RT-safe nor deterministic
+// across runs, so the codebase kept hand-rolling xorshift32 inline. This is
+// that primitive, once: no allocation, no locks, ~3 shifts + 3 XORs per draw,
+// and reproducible from its seed so tests can assert on exact output.
+//
+// Being a struct rather than a `&mut self` method on the owner also keeps the
+// borrow checker happy: drawing from `self.rng` while another field (a window
+// table, a buffer) is immutably borrowed is a field-disjoint borrow, whereas
+// `self.next_rand()` would need all of `&mut self`.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub struct Xorshift {
+    state: u32,
+}
+
+impl Default for Xorshift {
+    fn default() -> Self {
+        Self::new(0x1234_5678)
+    }
+}
+
+impl Xorshift {
+    /// A zero seed would lock the generator at zero forever, so it is remapped.
+    pub const fn new(seed: u32) -> Self {
+        Self {
+            state: if seed == 0 { 0x9E37_79B9 } else { seed },
+        }
+    }
+
+    #[inline]
+    pub fn next_u32(&mut self) -> u32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.state = x;
+        x
+    }
+
+    /// Uniform in `[0, 1)`.
+    #[inline]
+    pub fn next_f32(&mut self) -> f32 {
+        (self.next_u32() >> 8) as f32 / 16_777_216.0
+    }
+
+    /// Uniform in `[-1, 1)`.
+    #[inline]
+    pub fn next_bipolar(&mut self) -> f32 {
+        self.next_f32() * 2.0 - 1.0
+    }
 }

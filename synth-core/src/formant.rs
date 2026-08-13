@@ -14,6 +14,13 @@
 
 use crate::dsp_blocks::Biquad;
 
+/// Band-pass outputs peak around Q, so for the F/BW ratios in the vowel table
+/// (Q ≈ 3-5) the three-band sum lands about 10 dB below a unity sine at a
+/// formant centre. This make-up brings a fully-wet signal back to roughly the
+/// dry signal's loudness; the `tanh` after it catches the rare moment all three
+/// bands coincide.
+const MAKEUP: f32 = 1.8;
+
 /// One stereo-paired 3-band formant.
 #[derive(Default, Clone, Copy)]
 pub struct Formant {
@@ -27,12 +34,18 @@ struct CachedTuning {
     f: [f32; 3],
     bw: [f32; 3],
     sr: f32,
+    /// Whether the last tuning updated only the L bank (mono path). Part of the
+    /// key so alternating between `process` and `process_mono` on one instance
+    /// can't reuse a half-tuned bank.
+    mono: bool,
 }
 
 impl Formant {
     /// Recompute biquad coefficients only when tuning changed (cheap cache).
-    fn ensure_tuned(&mut self, sr: f32, f: [f32; 3], bw: [f32; 3]) {
-        let next = CachedTuning { f, bw, sr };
+    /// `mono` skips the R bank — nothing reads it on the mono path, and each
+    /// `set_bandpass` carries a `sin`/`cos`, so that is the expensive half.
+    fn ensure_tuned(&mut self, sr: f32, f: [f32; 3], bw: [f32; 3], mono: bool) {
+        let next = CachedTuning { f, bw, sr, mono };
         if self.cached == next {
             return;
         }
@@ -45,7 +58,9 @@ impl Formant {
             // the centre frequency. KubizBeat's KubyzVoice uses the same
             // shape (`BandPassButterworthFilter` × 3 → mixer).
             self.bp_l[i].set_bandpass(sr, f[i], q);
-            self.bp_r[i].set_bandpass(sr, f[i], q);
+            if !mono {
+                self.bp_r[i].set_bandpass(sr, f[i], q);
+            }
         }
         self.cached = next;
     }
@@ -66,7 +81,7 @@ impl Formant {
         if mix <= 0.0 {
             return (l, r);
         }
-        self.ensure_tuned(sr, f, bw);
+        self.ensure_tuned(sr, f, bw, false);
         let mut wet_l = 0.0_f32;
         let mut wet_r = 0.0_f32;
         for i in 0..3 {
@@ -79,10 +94,38 @@ impl Formant {
         // Mix=1 lands at roughly the dry signal's loudness; tanh-soft
         // catches the rare moments the three bands coincide.
         let mix = mix.clamp(0.0, 1.0);
-        let makeup = 1.8;
+        let makeup = MAKEUP;
         let out_l = l * (1.0 - mix) + (wet_l * makeup).tanh() * mix;
         let out_r = r * (1.0 - mix) + (wet_r * makeup).tanh() * mix;
         (out_l, out_r)
+    }
+}
+
+impl Formant {
+    /// Filter ONE channel, using only the L bank.
+    ///
+    /// For a caller that needs two channels tuned to *different* centre
+    /// frequencies (e.g. an anti-phase stereo trajectory), two `Formant`s each
+    /// running `process_mono` cost three biquads and three coefficient updates
+    /// per channel. Doing the same thing with the stereo `process` — feeding it
+    /// a duplicated pair and discarding half the result — costs six of each.
+    ///
+    /// Returns the wet signal; the caller owns the dry/wet blend.
+    #[inline]
+    pub fn process_mono(
+        &mut self,
+        x: f32,
+        sr: f32,
+        f: [f32; 3],
+        bw: [f32; 3],
+        gains: [f32; 3],
+    ) -> f32 {
+        self.ensure_tuned(sr, f, bw, true);
+        let mut wet = 0.0_f32;
+        for i in 0..3 {
+            wet += self.bp_l[i].process(x) * gains[i];
+        }
+        (wet * MAKEUP).tanh()
     }
 }
 

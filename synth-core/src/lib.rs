@@ -11,6 +11,10 @@
 pub mod analysis;
 pub mod dsp_blocks;
 pub mod formant;
+pub mod formant_fx; // formant articulator: tracker + resonators + trajectory (superduper-formant's DSP)
+pub mod formant_track; // live F1/F2/F3 estimator (drives superduper-formant's Follow mode)
+pub mod granular; // real-time granular cloud + freeze (drives superduper-granular)
+pub mod paulstretch; // extreme time-stretch smear, random-phase STFT (drives superduper-stretch)
 pub mod linphase;
 pub mod loudness;
 pub mod nam;

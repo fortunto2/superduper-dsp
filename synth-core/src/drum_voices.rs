@@ -323,6 +323,47 @@ pub enum VoiceKind {
     Cowbell = 5,
 }
 
+/// Which note layout the kit answers to.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum NoteMap {
+    /// GM first, white keys as the fallback. See [`note_to_voice_auto`].
+    #[default]
+    Auto = 0,
+    /// Six consecutive white keys only — the original layout.
+    WhiteKeys = 1,
+    /// GM percussion only.
+    Gm = 2,
+}
+
+impl NoteMap {
+    /// From the `Note Map` param value (stepped 0..2).
+    pub fn from_param(v: f32) -> Self {
+        match v.round() as i32 {
+            1 => NoteMap::WhiteKeys,
+            2 => NoteMap::Gm,
+            _ => NoteMap::Auto,
+        }
+    }
+}
+
+/// Map a MIDI note number to a drum voice. We use **six consecutive
+/// white keys** so a player can sweep across the keyboard left-to-
+/// right and hit every voice in order — much easier to find than the
+/// spread GM Percussion layout that puts the kit on alternating
+/// white and black keys.
+///
+/// Mapping (class within an octave), works in any octave (mod 12):
+///   C  →  Kick
+///   D  →  Snare
+///   E  →  HH Closed
+///   F  →  HH Open
+///   G  →  Clap
+///   A  →  Cowbell
+///
+/// Black keys (C#, D#, F#, G#, A#) and B fall through to the
+/// note-output port for chained Wave/Kubyz bass — bass parts in
+/// minor / major / blues all play cleanly without colliding with a
+/// drum hit.
 /// Map a MIDI note number to a drum voice. We use **six consecutive
 /// white keys** so a player can sweep across the keyboard left-to-
 /// right and hit every voice in order — much easier to find than the
@@ -351,5 +392,47 @@ pub fn note_to_voice(key: u8) -> Option<VoiceKind> {
         7 => Some(VoiceKind::Clap),       // G
         9 => Some(VoiceKind::Cowbell),    // A
         _ => None,
+    }
+}
+
+/// The GM Percussion layout, restricted to the six voices we actually have.
+///
+/// This is what every drum pattern written anywhere else in the world uses —
+/// a loop exported from Ableton, an Addictive Drums MIDI pack, a groove off
+/// the internet. Notes GM assigns to instruments we don't model (toms, ride,
+/// crash, tambourine…) return `None` and fall through to the note output,
+/// same as any other unmapped key.
+pub fn note_to_voice_gm(key: u8) -> Option<VoiceKind> {
+    match key {
+        35 | 36 => Some(VoiceKind::Kick),        // Acoustic / Bass Drum 1
+        38 | 40 => Some(VoiceKind::Snare),       // Acoustic / Electric Snare
+        37 => Some(VoiceKind::Snare),            // Side Stick — closest voice we have
+        39 => Some(VoiceKind::Clap),             // Hand Clap
+        42 | 44 => Some(VoiceKind::HatClosed),   // Closed / Pedal Hi-Hat
+        46 => Some(VoiceKind::HatOpen),          // Open Hi-Hat
+        56 => Some(VoiceKind::Cowbell),          // Cowbell
+        _ => None,
+    }
+}
+
+/// GM first, white keys as the fallback — the default, and the one layout
+/// that does not surprise anybody.
+///
+/// The two layouts only genuinely collide on **40** (GM Electric Snare vs.
+/// white-key E = closed hat). GM wins there, because a note in the GM
+/// percussion octave almost certainly came from a GM pattern; a player using
+/// the white-key layout has 34 other octaves in which E is still a hat.
+/// Outside GM's 35-56 window the white-key mapping applies unchanged, so
+/// playing the kit from a keyboard works exactly as it always did.
+pub fn note_to_voice_auto(key: u8) -> Option<VoiceKind> {
+    note_to_voice_gm(key).or_else(|| note_to_voice(key))
+}
+
+/// Resolve a note through the selected layout.
+pub fn note_to_voice_with(map: NoteMap, key: u8) -> Option<VoiceKind> {
+    match map {
+        NoteMap::Auto => note_to_voice_auto(key),
+        NoteMap::WhiteKeys => note_to_voice(key),
+        NoteMap::Gm => note_to_voice_gm(key),
     }
 }

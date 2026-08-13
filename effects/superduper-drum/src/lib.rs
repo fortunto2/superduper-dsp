@@ -55,7 +55,10 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::{output_slice, ParamDef};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 
-use voices::{Clap as ClapVoice, Cowbell, DrumParams, HiHat, Kick, Snare, VoiceKind, note_to_voice};
+use voices::{
+    Clap as ClapVoice, Cowbell, DrumParams, HiHat, Kick, NoteMap, Snare, VoiceKind,
+    note_to_voice_with,
+};
 use presets::{PRESETS, PRESET_COUNT};
 
 // ---------------------------------------------------------------------------
@@ -118,6 +121,14 @@ pub const PARAMS: &[ParamDef] = &[
     // GUI. The recall (apply_preset) allocates, so it runs on the main
     // thread — see PluginMainThreadParams::flush + on_main_thread.
     ParamDef { id: 27, name: b"Preset",   min: 0.0,   max: (PRESET_COUNT - 1) as f64, default: 0.0, unit: "" },
+    // Which note layout the kit answers to: 0 Auto (GM, white keys as the
+    // fallback) / 1 White Keys / 2 GM. Appended AFTER Preset on purpose —
+    // Preset's index is published (27) and relied on by hosts, agents and the
+    // docs, so it must not move. Default is Auto: before this existed the kit
+    // understood white keys only, so every drum pattern written outside this
+    // project — a GM loop, an exported Ableton clip — silently lost its hats
+    // and its clap, because GM's 42/46/39 land on no white key at all.
+    ParamDef { id: 28, name: b"Note Map", min: 0.0,   max: 2.0, default: 0.0, unit: "" },
 ];
 
 pub const fn voice_param_idx(voice: usize, offset: usize) -> usize {
@@ -128,6 +139,7 @@ pub const P_DRIVE: usize = 24;
 pub const P_MASTER: usize = 25;
 pub const P_NOTE_OUT: usize = 26;
 pub const P_PRESET: usize = 27;
+pub const P_NOTE_MAP: usize = 28;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -194,7 +206,11 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
     let Some(preset) = PRESETS.get(preset_idx) else { return };
     for (i, &v) in preset.values.iter().enumerate() {
-        if i == P_PRESET { continue; } // never clobber the selector itself
+        // Never clobber the selector itself, nor the note layout: which keys
+        // the kit answers to is a property of the session's MIDI, not of the
+        // kit's sound, so swapping Trap for Boom Bap must not silently move
+        // the hats back onto a different key.
+        if i == P_PRESET || i == P_NOTE_MAP { continue; }
         if let Some(atom) = shared.params.get(i) {
             atom.store(v, Ordering::Relaxed);
             // Mark dirty so the audio thread emits the new value back to the
@@ -302,6 +318,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
         let note_passthrough = self.shared.params[P_NOTE_OUT].load(Ordering::Relaxed) >= 0.5;
+        // Read once per block: the layout must not change mid-batch, or a
+        // note-on and its note-off could resolve to different voices.
+        let note_map = NoteMap::from_param(self.shared.params[P_NOTE_MAP].load(Ordering::Relaxed));
 
         // Drain GUI-triggered hits — the pads in the GUI write a
         // non-zero velocity here when clicked. We zero each slot
@@ -338,7 +357,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 }
                             };
                             let velocity = n.velocity().clamp(0.0, 1.0) as f32;
-                            let voice = note_to_voice(key);
+                            let voice = note_to_voice_with(note_map, key);
                             slog!(
                                 "rx NoteOn(clap) key={} vel={:.2} → {}",
                                 key, velocity,
@@ -367,7 +386,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 Match::Specific(k) => k as u8,
                                 _ => continue,
                             };
-                            if note_to_voice(key).is_none() && note_passthrough {
+                            if note_to_voice_with(note_map, key).is_none() && note_passthrough {
                                 let fwd = NoteOffEvent::new(
                                     n.header().time(),
                                     Pckn::new(0u16, 0u16, key as u16, 0u32),
@@ -387,7 +406,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 0x90 if data[2] > 0 => {
                                     let key = data[1];
                                     let vel = data[2] as f32 / 127.0;
-                                    if let Some(voice) = note_to_voice(key) {
+                                    if let Some(voice) = note_to_voice_with(note_map, key) {
                                         self.trigger(voice, vel);
                                     } else if note_passthrough {
                                         let fwd = NoteOnEvent::new(
@@ -400,7 +419,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 }
                                 0x90 | 0x80 => {
                                     let key = data[1];
-                                    if note_to_voice(key).is_none() && note_passthrough {
+                                    if note_to_voice_with(note_map, key).is_none() && note_passthrough {
                                         let fwd = NoteOffEvent::new(
                                             m.header().time(),
                                             Pckn::new(0u16, 0u16, key as u16, 0u32),

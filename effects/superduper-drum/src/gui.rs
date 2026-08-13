@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{voice_name, voice_param_idx, P_DRIVE, P_MASTER, P_NOTE_OUT, PARAMS, SharedParams};
+use crate::{voice_name, voice_param_idx, P_DRIVE, P_MASTER, P_NOTE_MAP, P_NOTE_OUT, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 760;
 pub const DEFAULT_HEIGHT: u32 = 540;
@@ -112,6 +112,9 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_DRIVE], &PARAMS[P_DRIVE], &state.shared.dirty_params[P_DRIVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DRIVE);
             core_gui::dirty_param_row_g(ui, &state.shared.params[P_MASTER], &PARAMS[P_MASTER], &state.shared.dirty_params[P_MASTER], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MASTER);
             core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_NOTE_OUT], &PARAMS[P_NOTE_OUT], &state.shared.dirty_params[P_NOTE_OUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_NOTE_OUT);
+            core_gui::dirty_choice_row_g(ui, &state.shared.params[P_NOTE_MAP], &PARAMS[P_NOTE_MAP], &["Auto", "White Keys", "GM"], &state.shared.dirty_params[P_NOTE_MAP], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_NOTE_MAP);
+            ui.label(egui::RichText::new("Auto: GM notes (36 kick, 38 snare, 42 hat, 46 open, 39 clap) plus the white keys C-A.")
+                .color(core_gui::GREEN_DIM).monospace().small());
             ui.label(egui::RichText::new("Tip: send bass notes (outside C1-A1) to drive Wave/Kubyz on a chained synth track.")
                 .color(core_gui::GREEN_DIM).monospace().small());
         });

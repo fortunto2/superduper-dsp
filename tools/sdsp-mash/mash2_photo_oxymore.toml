@@ -1,0 +1,55 @@
+# Oddysei example #2 — Carbon Based Lifeforms «Photosynthesis» × Jean-Michel Jarre «Oxymore»
+# 100.04 vs 99.94 BPM — the closest pair in the folder. CBL pulse under Jarre's 2022 textures.
+bpm = 100.0
+
+[intro_sweep]
+bars = 4
+from_hz = 250.0
+to_hz = 20000.0
+
+# CBL — the pulse
+[[track]]
+path = "/Users/rustam/Music/Albums/Carbon Based Lifeforms - Discography [2003 - 2023] 320/Albums/(2006) World Of Sleepers/(2006) World Of Sleepers (inre 021)/14. Photosynthesis.mp3"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0
+start_sec = 66.0
+len_sec = 112.0
+
+# Jarre — the texture on top
+[[track]]
+path = "/Users/rustam/Music/Albums/Jean-Michel Jarre - Oxymore (2022)/Jean-Michel Jarre - Oxymore.mp3"
+role = "beat-other"
+gain_db = -2.0
+tempo_ratio = 1.0
+offset_beats = 32
+start_sec = 48.0
+len_sec = 92.0
+
+[[fx]]
+kind = "breath"
+at_sec = 40.0
+len_beats = 8
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 98.0
+len_beats = 8
+
+[[fx]]
+kind = "echo_out"
+at_sec = 101.0
+delay_ms = 480.0
+feedback = 0.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

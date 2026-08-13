@@ -25,6 +25,21 @@ superduper-supermass  = { path = "../../effects/superduper-supermass" }
 superduper-delay      = { path = "../../effects/superduper-delay" }
 superduper-vocal      = { path = "../../effects/superduper-vocal" }
 superduper-chorus     = { path = "../../effects/superduper-chorus" }
+superduper-formant    = { path = "../../effects/superduper-formant" }
+superduper-granular   = { path = "../../effects/superduper-granular" }
+superduper-stretch    = { path = "../../effects/superduper-stretch" }
+superduper-pitch      = { path = "../../effects/superduper-pitch" }
+superduper-tune       = { path = "../../effects/superduper-tune" }
+superduper-vocoder    = { path = "../../effects/superduper-vocoder" }
+superduper-harmonic   = { path = "../../effects/superduper-harmonic" }
+superduper-wind       = { path = "../../effects/superduper-wind" }
+superduper-soothe     = { path = "../../effects/superduper-soothe" }
+# Instruments: not renderable here (the chain has no MIDI), but their parameter
+# and preset tables are what you need when driving them over MCP in a DAW.
+superduper-wave       = { path = "../../effects/superduper-wave" }
+superduper-kubyz      = { path = "../../effects/superduper-kubyz" }
+superduper-pad        = { path = "../../effects/superduper-pad" }
+superduper-drum       = { path = "../../effects/superduper-drum" }
 
 superduper-synth-core = { path = "../../synth-core" }
 superduper-dsp-sdk    = { path = "../../sdk" }

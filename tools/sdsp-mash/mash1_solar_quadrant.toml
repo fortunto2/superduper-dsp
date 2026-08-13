@@ -1,0 +1,55 @@
+# Oddysei example #1 — Daft Punk «Solar Sailer» × Basic Channel «Quadrant Dub I»
+# 123.43 vs 123.73 BPM → 0.2% apart, no stretch needed. Dub-techno bed, TRON melody on top.
+bpm = 123.7
+
+[intro_sweep]
+bars = 4
+from_hz = 300.0
+to_hz = 20000.0
+
+# Basic Channel — the bed (enters first, runs through)
+[[track]]
+path = "/Users/rustam/Music/Albums/BC l M l MS l RS/(1995 - RI 2003) BCD Basic Channel - BCD/CD/04. Basic Channel - Quadrant Dub I Edit.flac"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0
+start_sec = 72.0
+len_sec = 108.0
+
+# Daft Punk — the melody, in after 8 bars
+[[track]]
+path = "/Users/rustam/Music/Albums/Daft Punk - TRON Legacy (FLAC)/15 - Solar Sailer.flac"
+role = "beat-other"
+gain_db = -1.5
+tempo_ratio = 1.0
+offset_beats = 32
+start_sec = 8.0
+len_sec = 92.0
+
+[[fx]]
+kind = "beat_repeat"
+at_sec = 84.0
+len_beats = 4
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 96.0
+len_beats = 6
+
+[[fx]]
+kind = "echo_out"
+at_sec = 99.0
+delay_ms = 360.0
+feedback = 0.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

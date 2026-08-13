@@ -1,160 +1,153 @@
 ---
 name: sdsp-chain
-description: Run a headless mastering / mixing chain of SuperDuper DSP plugins from the CLI — no REAPER, no DAW. Use when the user wants to process a WAV file through a chain of our CLAP effects (EQ → Compressor → Saturator → MidSide → Limiter, etc.) and get per-stage LUFS / dBTP / RMS measurements, build a reproducible mastering pipeline, drive a CI render farm, or A/B mastering recipes. Do NOT use for single-plugin testing (use `sdsp-runner`), for REAPER session work (use reaper-daw skill), or for designing the plugins themselves (use superduper-plugin skill).
+description: Render SuperDuper DSP plugin chains headlessly from the CLI — no REAPER, no DAW. Multi-track mixing, per-stage sidechains, time-varying parameter automation, params by name, per-stage LUFS/dBTP/RMS. Use when the user wants to process WAVs through our CLAP plugins reproducibly (mastering chains, sound-design demos, "voice → kubyz" renders, CI render farms, A/B recipes). Do NOT use for single-plugin audition (use `sdsp-runner`), REAPER session work (reaper-daw skill), or writing the plugins themselves (superduper-plugin skill).
 ---
 
-# sdsp-chain — Headless mastering / mixing chain
+# sdsp-chain — headless renderer for plugin chains
 
-`tools/sdsp-chain` in `/Users/rustam/Music/1music/superduper-dsp/` is a CLI that statically links 12 of our CLAP effects and runs them serially over a WAV file. Same DSP as REAPER would load — just in one process with no DAW, no plugin scanning, no GUI.
-
-Per-stage measurement (LUFS-I, dBTP true peak, RMS) is printed to stdout. Output WAV is written to the path you pass.
+`tools/sdsp-chain` in `/Users/rustam/Music/1music/superduper-dsp/` statically links
+**15** of our CLAP plugins and renders a whole arrangement from one TOML file. Same
+DSP REAPER would load, in one process: no DAW, no plugin scan, no GUI. This is the
+engine a future GUI app is meant to sit on.
 
 ## Invocation
 
 ```bash
 cd /Users/rustam/Music/1music/superduper-dsp
-cargo run --release -p sdsp-chain -- <config.toml> <in.wav> <out.wav>
+cargo run --release -p sdsp-chain -- <config.toml> [<in.wav> <out.wav>]
+
+# Introspection — no need to grep PARAMS tables any more:
+cargo run --release -p sdsp-chain -- --list             # every plugin + param count
+cargo run --release -p sdsp-chain -- --params formant   # id / name / min / max / default / unit
 ```
 
-First build pulls in 12 plugin rlibs + synth-core + clack — takes a few minutes. Subsequent builds are seconds.
+The binary lands at `$CARGO_TARGET_DIR/release/sdsp-chain` (this machine:
+`/Users/rustam/.cargo-target/release/sdsp-chain`) — call it directly to skip cargo.
 
-## Config format — TOML
+`in.wav`/`out.wav` are optional: a config with `[[track]]` entries carries its own
+inputs, and `out = "…"` in the config sets the destination.
 
-Each `[[stage]]` is one plugin in the chain. Stages run in declaration order. Params are keyed by CLAP param ID (string-encoded integer) → float value.
+## Params are addressed BY NAME, in real units
 
 ```toml
 [[stage]]
+plugin = "formant"
+params = { Mode = 1.0, Follow = 1.0, Glide = 22.0, Width = 0.9, Mix = 0.95 }
+```
+
+Names are case-insensitive; numeric ids still work. Values are in each param's own
+units — Hz, dB, ms, semitones, `gr/s` — the same numbers the plugin GUI shows, **not**
+normalised 0..1. An unknown name or an out-of-range value is reported (unknown = hard
+error, out-of-range = warning + clamp), so a typo can't silently do nothing.
+
+## Single chain (simple case)
+
+```toml
+out = "master.wav"
+
+[[stage]]
 plugin = "eq"
-params = { "1" = 1.0, "3" = -0.5, "6" = 1.5, "7" = 30.0 }
-
-[[stage]]
-plugin = "compressor"
-params = { "0" = -18.0, "1" = 2.0, "2" = 30.0, "3" = 200.0 }
-
-[[stage]]
-plugin = "saturator"
-params = { "0" = 4.0, "1" = 0.0, "5" = 1.0 }
-
-[[stage]]
-plugin = "midside"
-params = { "1" = 1.15, "2" = 1.0 }
+params = { "Low Gain" = 1.0, "High Gain" = -0.5 }
 
 [[stage]]
 plugin = "limiter"
-params = { "0" = -8.0, "1" = -1.0 }
+params = { Input = 6.0, Ceiling = -1.0 }
 ```
 
-A working example lives at `tools/sdsp-chain/example.toml` — copy and edit it.
+## Multi-track mix
 
-## Supported plugins + their param IDs
+Each `[[track]]` has its own input and chain; the tracks are summed, then `[[master]]`
+stages run on the mix.
 
-Param tables live in `effects/<crate>/src/lib.rs` under `const PARAMS: &[ParamDef]`. **Always grep that file** when picking IDs — they're the single source of truth and can drift.
+```toml
+out = "render.wav"
+tail_s = 4.0                    # extra silence so reverbs/pads/clouds ring out
+sidechain = "voice.wav"         # default key for every sidechain-capable stage
 
-Quick reference (current state, double-check by reading `PARAMS` if uncertain):
+[[track]]
+name = "kubyz speaking"
+input = "kubyz.wav"
+gain_automate = [[0.0, -60.0], [8.0, -8.0], [18.0, 1.0]]   # [[seconds, dB], …]
 
-| `plugin =` | Crate | Typical params (id → name) |
-|---|---|---|
-| `eq` | `superduper-eq` | 0 Low Freq · 1 Low Gain · 2 Mid Freq · 3 Mid Gain · 4 Mid Q · 5 High Freq · 6 High Gain · 7 HP · 8 LP · 9 Output |
-| `lineq` | `superduper-lineq` | same shape as EQ but linear-phase FIR (~21 ms latency) |
-| `compressor` | `superduper-compressor` | 0 Threshold dB · 1 Ratio · 2 Attack ms · 3 Release ms · 4 Range dB · 5 Hold · 6 Knee dB · 7 Curve · 8 Mix · 9 Output |
-| `saturator` | `superduper-saturator` | 0 Drive dB · 1 Type (0 Tape / 1 Tube / 2 Soft) · 2 Tone · 3 Output · 4 Mix · 5 OS (0/1/2 = 1×/2×/4×) |
-| `limiter` | `superduper-limiter` | 0 Threshold dB · 1 Ceiling dBTP · 2 Release · 3 Lookahead · 4 Output |
-| `midside` | `superduper-midside` | 0 Mode (0 Width / 1 Encode / 2 Decode) · 1 Width · 2 Mid Gain · 3 Side Gain · 4 Output |
-| `filter` | `superduper-filter` | mastering filter — HP / LP / shelves + Daft-style resonance |
-| `reverb` | `superduper-reverb` | Dattorro plate |
-| `supermass` | `superduper-supermass` | Valhalla-style cascade |
-| `delay` | `superduper-delay` | Lagrange-interp + ping-pong |
-| `vocal` | `superduper-vocal` | de-esser (peaking-EQ) + de-clicker + hum / plosive + Sub Mode for 2-band chains |
-| `chorus` | `superduper-chorus` | stereo chorus |
+  [[track.stage]]
+  plugin = "formant"
+  params = { Mode = 1.0, Follow = 1.0, Drive = 0.3 }
 
-**Not currently in sdsp-chain (CLAP-only, would need to be added as path deps in `tools/sdsp-chain/Cargo.toml`):**
-- `soothe` (`superduper-soothe`) — dynamic resonance suppressor (24-band filter bank)
-- `nam` (`superduper-nam`) — Neural Amp Modeler — needs `~/.superduper-dsp/nam/<model>.nam` available at runtime
+  [[track.stage]]
+  plugin = "supermass"
+  sidechain = ""                # "" = no sidechain for this stage
+  params = { Mix = 0.25 }
 
-Add either by:
-1. Adding the path dependency to `tools/sdsp-chain/Cargo.toml`.
-2. Adding an `impl_stage!` invocation in `src/main.rs` referencing the
-   plugin's `PluginShared` / `Plugin` types.
-3. Adding a `match` arm in `dispatch()`.
-
-The pattern is identical to the existing 12 stages.
-
-The list of statically-linked plugins is declared in `tools/sdsp-chain/Cargo.toml` — if a plugin you need isn't there, add it as a path dep and wire up a stage function in `src/main.rs` (use the `impl_stage!` macro pattern).
-
-## What the runner prints
-
-For every stage:
-
-```
-[1/5] eq           LUFS-I -18.4   dBTP -2.1   RMS -22.7
-[2/5] compressor   LUFS-I -16.8   dBTP -1.9   RMS -19.4
-…
+[[master]]
+plugin = "limiter"
+params = { Input = 8.0, Ceiling = -1.0 }
 ```
 
-Plus the final output WAV-file LUFS-I + dBTP. This is the same BS.1770-4 K-weighted meter that ships inside `superduper-spectrum` (`synth-core::loudness`) — calibrated against a 1 kHz sine.
+Track keys: `name`, `input`, `sidechain`, `gain_db`, `gain_automate`, `mute`, `[[track.stage]]`.
 
-## Typical use cases
+## Automation — parameters over time
 
-**1. Reproducible mastering preset.** Commit the TOML next to the source WAV; CI re-renders and asserts LUFS-I ∈ target range.
-
-**2. Mastering recipe iteration.** Edit the TOML, re-run, compare per-stage LUFS — no DAW round-trip.
-
-**3. A/B between configs.** Render `out_A.wav` and `out_B.wav` with two TOMLs; open in REAPER side-by-side.
-
-**4. Render farm / batch.** Loop over a folder of stems:
-```bash
-for w in stems/*.wav; do
-  cargo run --release -q -p sdsp-chain -- master.toml "$w" "out/$(basename "$w")"
-done
+```toml
+[[track.stage]]
+plugin = "granular"
+params = { Density = 45.0, Size = 240.0, Spray = 0.55 }
+# Freeze catches the moment at 12 s and holds it forever after.
+automate = { Freeze = [[0.0, 0.0], [11.9, 0.0], [12.0, 1.0]] }
 ```
 
-## Authoring a new chain — recipe
+Breakpoints are `[[seconds, value]]`, linearly interpolated, clamped outside the
+range, applied once per 256-sample block (5.3 ms at 48 kHz). This is the only way to
+show anything time-varying in a headless render — Freeze catching a moment, a voice
+handing a phrase over, a filter opening.
 
-1. **Pick the target LUFS.** Spotify -14, Apple Music -16, YouTube -14, club master -8 to -10. See `MASTERING.md` in the repo for the full table.
+## Sidechain
 
-2. **Start from `example.toml`** and copy it: `cp tools/sdsp-chain/example.toml my-master.toml`.
+`sidechain = "file.wav"` at the top level keys **every** stage that has an input port
+1; per-stage `sidechain` overrides it; `sidechain = ""` disables it for one stage.
+Stages that have no sidechain input just ignore it.
 
-3. **Read the param tables.** `rg 'ParamDef' effects/superduper-eq/src/lib.rs` (or whichever plugin) — IDs are positional, so the `&[ParamDef]` order is the ID-to-name map.
+Plugins with a sidechain input: `compressor`, `reverb`, `supermass`, `delay`,
+`formant` (its `Voice` input — this is what Follow mode tracks).
 
-4. **Iterate.** Run, inspect per-stage LUFS, adjust thresholds. A typical mastering chain:
-   - `eq` — subtractive corrective EQ (cut not boost)
-   - `compressor` — 2:1, slow attack (~30 ms), release matched to song tempo
-   - `saturator` — 1-4 dB Tape or Tube, 4× OS for clean mastering
-   - `midside` — Width 1.05-1.20, Side Gain +1 dB max for stereo glue
-   - `limiter` — push threshold until LUFS-I hits target, ceiling -1 dBTP
+## Plugins
 
-5. **Validate the output WAV** in REAPER (drag in, compare against original) — the CLI numbers are accurate but ears are the final judge.
+`--list` is authoritative. Currently: `eq`, `lineq`, `compressor`, `saturator`,
+`limiter`, `midside`, `vocal`, `filter`, `reverb`, `supermass`, `delay`, `chorus`,
+`formant`, `granular`, `stretch`.
 
-## Pitfalls
+## What it guarantees
 
-- **`PARAMS` ordering can change between releases.** A TOML pinned to an old git revision may use stale IDs. Always re-read the param table after a `git pull`.
-- **MidSide Mode = 0 (Width)** does in-place L/R → M/S → adjust → L/R. Modes 1 and 2 leave the signal in M/S — only use 1 and 2 if you have an encode/decode pair somewhere in the chain.
-- **Saturator OS 0** means 1× (native) — aliasing climbs fast above drive 6 dB. Default to OS 2 (4×) for mastering.
-- **Limiter Lookahead** adds latency — for offline rendering that's fine; for live preview the chain runner is offline anyway.
-- **Sample rate of the input WAV** is preserved; plugins activate at the file's `sr`. Don't mix SR within a chain.
+- **Sample rate comes from the input file.** All inputs must share a rate (a mismatch
+  is a clear error, not a silently wrong render).
+- **No sample is dropped.** The final partial block is padded and the output truncated
+  back to the input length, so output length == input length (+ `tail_s`).
+- **Deterministic.** Fixed 256-frame blocks, so a render is identical regardless of
+  any host buffer setting.
+- Per-stage LUFS-I / dBTP / RMS printed for every stage, plus the mix and master.
 
-## See also: sdsp-mash
+## Worked example — "voice → kubyz"
 
-`tools/sdsp-mash` is the sibling tool for **building mashups**, not mastering a
-single WAV. It places the demucs beat stems of one song and the vocal of
-another on a shared BPM grid (`offset_beats`), sidechain-ducks the `beat-other`
-bus from the vocal, opens an intro lowpass sweep over the first N bars, then
-runs a master chain reusing the *same* `[[master]]` stage format as sdsp-chain's
-`[[stage]]`. Output is stereo (sdsp-chain folds to mono). Reach for it when the
-input is "beat of A + acappella of B" rather than "one finished mix to master".
+`~/Music/1music/demos/` holds five configs built from a real take (vocal stem + live
+kubyz), the clearest being `05_journey.toml`: the voice sings, a `stretch` pad grows
+out of it, `formant` in Follow mode makes the kubyz speak the voice's vowels, then the
+voice's track gain drops away — the tracker gates, the last vowel freezes and the
+instrument finishes the phrase. Three tracks, sidechain, gain automation, master
+limiter: a good template for any arrangement-shaped render.
 
-```bash
-cargo run --release -p sdsp-mash -- tools/sdsp-mash/example.toml out.wav
-```
+## Adding a plugin
 
-v0 has no time-stretch — sources must share a tempo. See
-`tools/sdsp-mash/README.md` for the full `mash.toml` schema.
+1. `tools/sdsp-chain/Cargo.toml` — add the crate as a dependency.
+2. `impl_stage!(stage_<key>, superduper_<key>::SuperDuper<Name>, "co.superduperai.<key>", "/sdsp-chain/<key>");`
+3. Add a `PluginSpec` row in `registry()` — key, `PARAMS` table, render fn, and whether
+   it has a sidechain input. `--list`, `--params` and dispatch all read that one table.
+4. The plugin's `PARAMS` must be `pub`.
 
-## Where to dig deeper
+## Lessons
 
-- `tools/sdsp-chain/src/main.rs` — `impl_stage!` macro + dispatch table
-- `tools/sdsp-chain/example.toml` — five-stage example
-- `tools/sdsp-mash/README.md` — mashup engine (align + duck + sweep + master)
-- `synth-core/src/loudness.rs` — BS.1770 meter implementation
-- `MASTERING.md` (repo root) — full mastering recipe + per-platform LUFS targets
-- Project `CLAUDE.md` — full plugin list + DSP rules
+- **Don't write a second renderer.** If a render needs something this tool lacks
+  (another input, automation, a mixer), extend this tool — that's the point of it.
+- `OnePoleLp` used to clamp its cutoff at 20 Hz, which silently disabled every
+  sub-20 Hz modulation smoother in the codebase. If a rate control seems inert, check
+  what the primitive underneath clamps to.
+- Level: chains routinely land 10 dB under a listenable level. The limiter's `Input`
+  is the easy lift; check the printed LUFS-I rather than guessing.

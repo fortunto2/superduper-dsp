@@ -3472,17 +3472,30 @@ dependencies = [
  "superduper-chorus",
  "superduper-compressor",
  "superduper-delay",
+ "superduper-drum",
  "superduper-dsp-sdk",
  "superduper-eq",
  "superduper-filter",
+ "superduper-formant",
+ "superduper-granular",
+ "superduper-harmonic",
+ "superduper-kubyz",
  "superduper-limiter",
  "superduper-lineq",
  "superduper-midside",
+ "superduper-pad",
+ "superduper-pitch",
  "superduper-reverb",
  "superduper-saturator",
+ "superduper-soothe",
+ "superduper-stretch",
  "superduper-supermass",
  "superduper-synth-core",
+ "superduper-tune",
  "superduper-vocal",
+ "superduper-vocoder",
+ "superduper-wave",
+ "superduper-wind",
  "toml",
 ]
 
@@ -3978,6 +3991,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-formant"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
+name = "superduper-granular"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-harmonic"
 version = "0.1.0"
 dependencies = [
@@ -4247,6 +4298,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-stretch"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-supermass"
 version = "0.2.0"
 dependencies = [
@@ -4355,6 +4425,27 @@ dependencies = [
  "parking_lot",
  "raw-window-handle 0.5.2",
  "rfd",
+ "serde",
+ "serde_json",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
+name = "superduper-wind"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
  "serde",
  "serde_json",
  "superduper-dsp-sdk",

@@ -47,7 +47,7 @@ use std::sync::atomic::Ordering;
 
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 
-const PARAMS: &[ParamDef] = &[
+pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"Size",          min: 0.1, max: 1.5, default: 0.7,  unit: ""   },
     ParamDef { id: 1, name: b"Decay",         min: 0.0, max: 0.95, default: 0.7, unit: ""   },
     ParamDef { id: 2, name: b"Damping",       min: 0.0, max: 1.0,  default: 0.4, unit: ""   },

@@ -24,12 +24,39 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
 
 ## Modules
 
-- **`dsp_blocks`** — `Ducker`, `Tilt`, `DcBlocker`, `SmoothedParam`. RT-safe
+- **`dsp_blocks`** — `Ducker`, `Tilt`, `DcBlocker`, `SmoothedParam`, `Xorshift`
+  (the shared RT-safe deterministic PRNG — use it instead of hand-rolling
+  another xorshift; being a struct rather than a `&mut self` method also keeps
+  field-disjoint borrows working). RT-safe
   building blocks. Default-constructible, process methods take params as
   arguments (no internal state besides what each block actually needs).
 - **`analysis`** — FFT (`magnitude_spectrum_db`), ASCII spectrogram
   (`ascii_spectrum`), sine-sweep frequency response. For tests only — not
   RT-safe (uses heap, mutex-guarded planner cache).
+- **`formant`** — 3-band parallel band-pass vocal-tract filter + the
+  Peterson-Barney vowel table and the Bashkir/khomus presets. Used by Kubyz,
+  Wind, and Formant.
+- **`formant_fx`** — the whole formant-articulator engine (tracker + resonators
+  + mouth trajectory + drive/mix) behind SuperDuper Formant. Lives here rather
+  than in the plugin crate for the usual reason: DSP parked under `effects/`
+  can't reach the mobile staticlib.
+- **`formant_track`** — live F1/F2/F3 estimator (Hann FFT 1024/256 →
+  pre-emphasis → frequency-proportional envelope smoothing → per-formant
+  peak-pick → glide). Gates on the newest hop only so the estimate **freezes**
+  instead of chasing the noise floor. Drives SuperDuper Formant's Follow mode.
+- **`spectral`** — `StftProcessor` (streaming STFT overlap-add with a per-frame
+  callback; one shared `hop`, so an algorithm needing different analysis and
+  synthesis hops can't use it) plus `smooth_proportional`, the
+  frequency-proportional magnitude smoother shared by the formant tracker and
+  the stretcher.
+- **`granular`** — real-time granular cloud: capture ring + fixed grain pool,
+  per-grain pitch/pan/direction/window, Freeze, and a DC-blocked feedback path.
+  Level-compensated by √overlap. Drives SuperDuper Granular.
+- **`paulstretch`** — extreme time-stretch: long-window STFT with randomised
+  phase (blendable back toward the analysed phase), analysis hop = synthesis hop
+  / stretch, Live and Freeze read-head policies. FFT plans for every selectable
+  window size are pre-built so `Window` changes allocate nothing. Drives
+  SuperDuper Stretch.
 - **`supermass`** — Valhalla-style cascade reverb as a fundsp `Net`. Ported
   from rust-synth's `preset.rs`. Caller owns the Net: `set_sample_rate`,
   `tick(in, out)` per sample.

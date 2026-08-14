@@ -81,6 +81,16 @@ fn harmonics_real_d2() -> [f32; N_HARMONICS] {
     db_to_lin_array(db)
 }
 
+/// Odyssey theme — double-reed aulos. Reed instruments buzz on the mid
+/// harmonics rather than the fundamental; boost H2-H6, taper the rest.
+fn harmonics_aulos() -> [f32; N_HARMONICS] {
+    let db: [f32; N_HARMONICS] = [
+         0.0,  4.0,  6.5,  8.0,  7.0,  5.0,  1.0, -2.0,
+        -4.0, -6.0, -8.0, -10.0, -12.0, -14.0, -16.0, -18.0,
+    ];
+    db_to_lin_array(db)
+}
+
 fn db_to_lin_array(db: [f32; N_HARMONICS]) -> [f32; N_HARMONICS] {
     // The JSON dB values are relative to H1 but can go EITHER direction:
     // for a jaw harp many overtones sit ABOVE the fundamental (mouth-cavity
@@ -128,12 +138,21 @@ const REAL_D2_FORMANT: FormantPreset = FormantPreset {
     bw: [50.0, 50.0, 50.0],
     gain: [1.0, 1.0, 1.0],
 };
+/// Odyssey theme — double-reed aulos. Formants pulled down into the
+/// 300-800 Hz band (vs. Bashkir's 705/1301/2165) for the nasal, breathy
+/// reed colour; tighter, tapering bandwidths/gains give the "biting" edge.
+const AULOS_FORMANT: FormantPreset = FormantPreset {
+    name: "Aulos",
+    f: [320.0, 560.0, 780.0],
+    bw: [180.0, 220.0, 260.0],
+    gain: [1.0, 0.85, 0.6],
+};
 
 /// Number of factory presets — kept in sync with the `presets()` array
 /// length. Used by the Preset selector CLAP param (which needs the count
 /// at const-eval time, where `presets()` can't run because it does runtime
 /// `powf` for the harmonic dB→linear conversion).
-pub const PRESET_COUNT: usize = 4;
+pub const PRESET_COUNT: usize = 5;
 
 pub fn presets() -> [KubyzPreset; PRESET_COUNT] {
     [
@@ -183,6 +202,20 @@ pub fn presets() -> [KubyzPreset; PRESET_COUNT] {
             release_s: 0.3,
             velocity_formant_shift: 0.10,
             default_vox_mix: 0.5,
+        },
+        // Sustained reed instrument, not a plucked tongue — slow swell
+        // envelope (high sustain) instead of the jaw-harp pluck-and-decay
+        // shape the other presets use.
+        KubyzPreset {
+            name: "Aulos (Odyssey)",
+            harmonics: harmonics_aulos(),
+            formant: AULOS_FORMANT,
+            attack_s: 0.5,
+            decay_s: 0.6,
+            sustain: 0.85,
+            release_s: 0.6,
+            velocity_formant_shift: 0.05,
+            default_vox_mix: 1.0,
         },
     ]
 }

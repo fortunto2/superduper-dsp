@@ -200,6 +200,10 @@ pub struct SharedParamsInner {
     pub mod_wheel: AtomicF32,
     /// Channel aftertouch 0..1. Same independence rationale as mod_wheel.
     pub aftertouch: AtomicF32,
+    /// Live MIDI CC7 (Channel Volume) 0..1, default 1.0 (full). Drives a
+    /// smoothed output VCA so a breath controller / mod wheel rig can swell
+    /// volume expressively without touching the Output param.
+    pub cc_volume: AtomicF32,
     /// Host transport BPM — updated from TransportEvent so the LFO can
     /// run in sync mode at musical divisions.
     pub host_bpm: AtomicF32,
@@ -232,6 +236,7 @@ impl PluginShared {
                 pitch_bend_st: AtomicF32::new(0.0),
                 mod_wheel: AtomicF32::new(0.0),
                 aftertouch: AtomicF32::new(0.0),
+                cc_volume: AtomicF32::new(1.0),
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
@@ -392,6 +397,7 @@ pub struct PluginAudioProcessor<'a> {
     smooth_resonance: SmoothedParam,
     smooth_drive: SmoothedParam,
     smooth_output: SmoothedParam,
+    smooth_cc_vol: SmoothedParam,
     sample_rate: f32,
 }
 
@@ -580,6 +586,11 @@ impl<'a> PluginAudioProcessor<'a> {
                 if key == 1 {
                     self.shared.mod_wheel.store(v, Ordering::Relaxed);
                 }
+                // CC7 (Channel Volume) → output VCA, independent of any
+                // learned/legacy CC route. Neutral (1.0) until it arrives.
+                if key == 7 {
+                    self.shared.cc_volume.store(v, Ordering::Relaxed);
+                }
                 let lin = |idx: usize, frac: f32| {
                     let def = &PARAMS[idx];
                     let val = def.min as f32 + frac * (def.max - def.min) as f32;
@@ -695,6 +706,7 @@ impl<'a> PluginAudioProcessor<'a> {
         ];
         let mod_wheel = self.shared.mod_wheel.load(Ordering::Relaxed);
         let aftertouch = self.shared.aftertouch.load(Ordering::Relaxed);
+        let cc_vol_target = self.shared.cc_volume.load(Ordering::Relaxed);
 
         for i in 0..out_l.len() {
             let wt_pos = self.smooth_wt_pos.step(wt_pos_target, sr).clamp(0.0, 1.0);
@@ -806,8 +818,9 @@ impl<'a> PluginAudioProcessor<'a> {
 
             let voice_scale = 0.5_f32;
             let out_lin = 10f32.powf(output_db / 20.0);
-            let final_l = mix_l * voice_scale * out_lin;
-            let final_r = mix_r * voice_scale * out_lin;
+            let cc_vol = self.smooth_cc_vol.step(cc_vol_target, sr);
+            let final_l = mix_l * voice_scale * out_lin * cc_vol;
+            let final_r = mix_r * voice_scale * out_lin * cc_vol;
             out_l[i] = final_l;
             out_r[i] = final_r;
             self.shared.scope.push((final_l + final_r) * 0.5);
@@ -895,6 +908,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_resonance: SmoothedParam::new(load(P_RESONANCE)),
             smooth_drive: SmoothedParam::new(load(P_DRIVE)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
+            smooth_cc_vol: SmoothedParam::new(1.0),
             sample_rate: sr,
         })
     }

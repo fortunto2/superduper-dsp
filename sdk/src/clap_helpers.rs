@@ -235,23 +235,43 @@ pub fn emit_dirty_param_events(
 // safe because the caller reads index `i` before writing to index `i`.
 // ---------------------------------------------------------------------------
 
-pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32])> {
+/// Split a `ChannelPair` while keeping the two directions independent.
+///
+/// [`split_io`] demands both an input and an output, which is right for a plain
+/// effect but wrong for a plugin that is an effect in one mode and an instrument
+/// in another (SuperDuper Wind): such a plugin legitimately gets `OutputOnly`
+/// buffers and still needs the writable half. This is the one place in the
+/// codebase that performs the `InPlace` aliasing split — `split_io` is expressed
+/// in terms of it, so the `unsafe` reasoning lives in a single spot.
+pub fn split_io_parts<'b>(
+    c: ChannelPair<'b, f32>,
+) -> (Option<&'b [f32]>, Option<&'b mut [f32]>) {
     match c {
-        ChannelPair::InputOutput(i, o) => Some((i, o)),
+        ChannelPair::InputOutput(i, o) => (Some(i), Some(o)),
         ChannelPair::InPlace(buf) => {
-            // SAFETY: caller reads sample `i` before overwriting index `i` —
+            // SAFETY: the caller reads sample `i` before overwriting index `i` —
             // the same access pattern every audio plugin uses with InPlace.
             let ptr = buf.as_mut_ptr();
             let len = buf.len();
             let read = unsafe { core::slice::from_raw_parts(ptr, len) };
             let write = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-            Some((read, write))
+            (Some(read), Some(write))
         }
-        ChannelPair::OutputOnly(buf) => {
-            buf.fill(0.0);
+        ChannelPair::OutputOnly(buf) => (None, Some(buf)),
+        ChannelPair::InputOnly(buf) => (Some(buf), None),
+    }
+}
+
+pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32])> {
+    match split_io_parts(c) {
+        (Some(read), Some(write)) => Some((read, write)),
+        // No input to process: leave the caller with silence rather than
+        // whatever the host's buffer happened to contain.
+        (None, Some(write)) => {
+            write.fill(0.0);
             None
         }
-        ChannelPair::InputOnly(_) => None,
+        _ => None,
     }
 }
 

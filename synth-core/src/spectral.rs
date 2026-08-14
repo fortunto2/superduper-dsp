@@ -214,3 +214,34 @@ impl StftProcessor {
         }
     }
 }
+
+/// Frequency-proportional moving average over a magnitude spectrum.
+///
+/// A fixed smoothing width can't serve a whole spectrum: enough averaging to
+/// flatten the harmonic comb at 2.5 kHz will also merge F1 and F2 of an open
+/// vowel down at 700-1100 Hz. The half-width therefore grows with the bin index
+/// (`frac` of it) — constant-Q in spirit.
+///
+/// **O(n), not O(n·width).** Re-summing each window from scratch is quadratic in
+/// disguise, because the window itself grows with the bin index: at a 32768-bin
+/// spectrum with `frac = 0.13` that is ~1.4e8 additions *per channel per frame*,
+/// which overruns an audio deadline by orders of magnitude. A prefix sum makes
+/// every window a single subtraction. `prefix` is caller-owned scratch of at
+/// least `src.len() + 1`; it is `f64` because differencing two large f32 partial
+/// sums loses the precision that narrow low-bin windows depend on.
+pub fn smooth_proportional(src: &[f32], dst: &mut [f32], frac: f32, prefix: &mut [f64]) {
+    let n = src.len().min(dst.len()).min(prefix.len().saturating_sub(1));
+    if n == 0 {
+        return;
+    }
+    prefix[0] = 0.0;
+    for k in 0..n {
+        prefix[k + 1] = prefix[k] + src[k] as f64;
+    }
+    for k in 0..n {
+        let w = ((k as f32 * frac) as usize).max(1);
+        let lo = k.saturating_sub(w);
+        let hi = (k + w).min(n - 1);
+        dst[k] = ((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1) as f64) as f32;
+    }
+}

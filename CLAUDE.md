@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 27 plugins (21 effects + 6 instruments)
+## Current state — 31 plugins (25 effects + 6 instruments)
 
 **Effects (audio-in, audio-out):**
 
@@ -179,6 +179,156 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   under median than mean. Median needs ≥3 taps so K is floored at 3 in Median
   mode. Delay lines pre-allocated at `activate()`; median via alloc-free
   `sort_unstable_by(total_cmp)` on a stack slice; RT-safe process().
+- **superduper-wind** *(new)* — breath/wind instrument (kurai / nay / low
+  Bashkir flute / **actual howling wind**), built on **Spectral Modeling
+  Synthesis**: deterministic additive tone (6 harmonics, brightness via
+  `Tone`) through a 3-band `synth_core::formant::Formant`, plus a
+  **stochastic noise "wind bed"** that cross-fades between TWO engines via
+  `Howl`: the original gentle formant-bandpassed breath noise (pink↔white
+  via `Color`, Paul Kellet 3-pole cascade), and — added after user feedback
+  that the instrument sounded "weak/breathy, not howling" — a **procedural
+  HOWLING-WIND engine** (`howl.rs`, Andy Farnell "Designing Sound" model):
+  broadband noise → **3 high-Q resonant bandpasses** independently swept by
+  an LFO + smoothed random walk (0.1-2 Hz) across **200 Hz-2 kHz**, the
+  pitched "whoooo" of real wind («завывание»). `Howl` (repurposed from the
+  old static `Cutoff` param — same index, new 0..1 meaning) sets both the
+  bandpass Q and sweep depth AND fades the additive tone down as it rises,
+  so a full-Howl patch reads as wind, not flute. The howl engine's sweep
+  range is transposed by the played note (`root_hz`), so it's still
+  "playable". **`Gust`** (new param, appended before `Preset`) drives ONE
+  shared slow (0.05-0.5 Hz) surge envelope — computed once per block in
+  `lib.rs` (`gust_gen: WobbleGen`), not per voice, since a real gust hits
+  every held note uniformly — that swells the whole noise bed's amplitude.
+  Amplitude = `Breath` × envelope × (1 + `Shimmer` wobble) × `gust_mult`.
+  `Jitter`/`Shimmer` are smoothed 1/f noise (pink → extra one-pole LP) for
+  an organic non-repeating wander; `Chiff` fires a short breath-noise burst
+  on note-on. **`Mode` param — one plugin, two personalities:** `Instrument`
+  (8-voice poly synth, click-free deferred-steal voice pool per lesson 17b)
+  or `Overlay` (reads the main audio input — after feedback that Overlay
+  "barely changed the sound", it now does TWO coupled, obviously-audible
+  things: a wind-bed keyed to the input's `EnvelopeDetector` envelope +
+  the shared gust, AND the SAME gust envelope opens/closes a **resonant
+  ducking lowpass directly on the dry input** (17 kHz open → 500 Hz at full
+  gust — "the wind blows through it"), a real sidechain-style interaction,
+  not just an added layer; loosely follows input pitch via
+  `YinPitchTracker`). Declares **one** in-place-paired stereo port doing
+  double duty for both modes (Instrument mostly ignores the input; Overlay
+  reads it) plus a note-ports input, mirroring the vocoder's audio+note
+  combo — a single `main_io` helper merges `split_io`/`output_slice`
+  semantics since the plugin genuinely needs both. `Formant` param (±12 st)
+  multiplies a fixed base F1/F2/F3 (500/1100/2000 Hz) rather than exposing
+  three separate frequencies. On top of the broadband howl, **`Whistle`**
+  blends in an **Aeolian tone** — a physically-derived vortex-shedding
+  whistle (wind past a wire/edge) via the **Strouhal relation**
+  `f = St·U/d` (St≈0.2): a narrow high-Q bandpass tuned to `f`, driven by
+  the same wind noise, gated by `Howl` (no whistle in the gentle-breath
+  end of the range). Virtual wind speed `U` is driven by the shared gust
+  multiplier so the whistle **glides up in pitch and gets louder on every
+  gust surge** (verified 500 Hz → 2000 Hz across the Gust range on a
+  reference note; `d` scales with the played note like the howl bands, so
+  it transposes too). **17 params** + stepped `Preset` last (index 16) —
+  `Gust` at index 14, `Whistle` at index 15 (appended before `Preset`,
+  which shifted from 15→16), `Cutoff` repurposed to `Howl` at index 10
+  (all pre-release, no back-compat concern). Presets: Kurai (Low Wind),
+  Nay, Wind Pad, **Wind (Howl)** (howl-engine-dominant, now with a touch
+  of whistle), **Howling Gale** (max Howl + Whistle + Gust — the
+  showcase), Air Enhancer (Overlay, tuned for obvious ducking).
+  **Fixed 2026-08-13 (code review):** (a) a NoteOff arriving while a stolen
+  voice was still choke-fading was matched only against `v.key` — which still
+  held the note being faded OUT — so the note parked in `pending_key` was
+  promoted with its NoteOff already consumed and **sounded forever** (only CC
+  123/120 cleared it); `pending_released` now carries the release across the
+  fade, and a choke discards the parked note instead of promoting it. Wave and
+  Kubyz share this deferred-steal pattern and are worth auditing for the same
+  hole. (b) The shared gust generator ticked **once per block**, but `WobbleGen`
+  takes one one-pole step per call with a coefficient derived from `sr` — so the
+  gust ran 256x slower than its rate control claimed and its period changed with
+  the host's buffer size; it is now a per-sample curve (`gust_curve` /
+  `swell_curve`, pre-allocated) shared by both render paths. (c) `WobbleGen`
+  passed `rate_hz` into `OnePoleLp`, which clamped cutoff at **20 Hz** — so Gust
+  (0.05-0.5 Hz), Jitter and Shimmer were all silently running at 20 Hz and their
+  rate controls did nothing; the primitive's floor is now 0.001 Hz. (d) Each
+  howl band's `lfo_phase` was seeded `(seed as f32 * 0.618).fract()`, which is
+  exactly 0.0 for the >2^24 seeds actually used (no fractional bits left in f32)
+  — all three bands started phase-locked; now seeded from an integer hash.
+  (e) Its private xorshift and its `main_io` copy of `split_io` were replaced by
+  `dsp_blocks::Xorshift` and `clap_helpers::split_io_parts`.
+- **superduper-formant** *(new)* — formant filter / **articulator**: three
+  band-pass vocal-tract resonances (F1/F2/F3, via the shared
+  `synth_core::formant::Formant`) imposed on any input. Engine lives in
+  `synth_core::formant_fx` (re-exported as the crate's `dsp`) so it reaches iOS, with bandwidths derived
+  from the Peterson-Barney table so `Width = 1` lands on a natural vowel Q.
+  Three articulation sources (`Mode`): **Manual** (the IPA vowel pad — F2
+  across, F1 down, drag it or automate it or drive it from gesture CCs),
+  **Follow** (a new `synth_core::formant_track::FormantTracker` reads F1/F2/F3
+  out of the voice on the `Voice` sidechain port and imposes them on the main
+  input), **Motion** (a `kubyz::trajectory::MouthShape` walks the pad on its
+  own — free or host-BPM-synced, `Stereo` runs L/R anti-phase).
+  **Why not the vocoder:** the vocoder copies a whole spectral envelope and
+  needs the voice sounding every instant (intelligible, robotic); this models
+  the *mechanism* — three resonances that glide — so it articulates an
+  instrument with **nobody singing**, and the tracker's gate **freezes the last
+  vowel** when the singing stops. That freeze is the plugin's reason to exist:
+  a sung phrase hands over to a kubyz drone as one continuous formant line
+  with only the excitation swapped underneath ("started singing, ended as
+  kubyz"). Tracker method: Hann FFT (1024/256) → **pre-emphasis** (+6 dB/oct —
+  without it the F1 skirt out-peaks F2 on a closed vowel like /i/ and the
+  picker returns 586 Hz instead of 2290) → **frequency-proportional** envelope
+  smoothing (a fixed width merges F1/F2 on an open /ɑ/) → per-formant
+  peak-pick with parabolic interpolation + monotonicity fix-up → one-pole
+  glide. Gate measures the **newest hop only** so the estimate freezes cleanly.
+  Stereo mode drives two channels through `Formant::process_mono` (one 3-biquad
+  bank each) rather than two stereo instances fed duplicated input — half the
+  biquads *and* half the sin/cos-bearing coefficient updates per sample.
+  Zero added latency (IIR filtering; the tracker only reads). 18 params +
+  stepped `Preset` (index 17); MIDI CC 1/74/71/73/76 → F1/F2/Width/Drive/Depth,
+  matching the live2play gesture map. 13 presets (5 vowels, Bashkir Kubyz,
+  **Voice → Kubyz**, Voice Colour, Talking Drone, Wah in Time, Wide Mouth,
+  Growl). **Measured:** tracker recovers a known vowel within 15 %, separates
+  /i/ from /ɔ/, holds the vowel through silence; resonators stand ≥10 dB above
+  the inter-formant valley; Follow copies /i/ onto a 100 Hz drone (tracked
+  297/2311/3148 vs sung 270/2290/3010).
+- **superduper-granular** *(new)* — live granular cloud (our Emergence). Input
+  streams into a 6 s ring (`synth_core::granular`); a scheduler spawns windowed
+  grains reading from behind the write head, each with its own pitch, pan,
+  direction and window (Hann / Tukey / Perc). **Freeze** stops the capture so the
+  cloud chews the last seconds forever — one sung note becomes an endless pad
+  (CC 64 / sustain pedal maps to it, so you can catch a moment with your foot).
+  **Feedback** writes the cloud's output back into the ring (grains granulating
+  grains) with a `DcBlocker` in the path per lesson 12. Level is compensated by
+  **√overlap** (`density × size`) so raising Density thickens instead of just
+  getting louder; grains use Hermite interpolation (linear interp on a
+  transposed grain read is an audible pitch-dependent high-shelf). **Sync**
+  replaces Density with a host-grid division → beat-locked stutter. Grain pool
+  is fixed at 96 and a full pool **skips** a spawn rather than stealing a
+  sounding grain (stealing would click). 16 params + `Preset` (index 15).
+  Zero added latency (grains read the past, but the plugin never delays the
+  signal path). 10 presets (Freeze Pad, Voice Cloud, Shimmer +12, Sub Drone −12, Pointillist,
+  Grid Stutter, Reverse Wash, Smear, Texture Bloom). **Measured:** max
+  sample-step 0.06 (no clicks), frozen cloud sustains with zero input while the
+  unfrozen one decays once the ring fills with silence, ±12 st moves the
+  centroid the right way, 6× density stays within 9 dB.
+- **superduper-stretch** *(new)* — extreme time-stretch smear, i.e. PaulStretch
+  (`synth_core::paulstretch`). Long-window FFT → magnitudes kept → **phases
+  randomised** → iFFT → overlap-add at a bigger hop than the read hop. Random
+  phase is what stops frames combing, which is why 20× sounds glassy rather than
+  metallic. **`Tonal`** blends the random phase back toward the analysed phase,
+  so one plugin covers both a plain slow-down (Tonal 1) and full ambient wash
+  (Tonal 0). `Window` is **stepped** over `WINDOW_SIZES` (4096…65536, 85 ms…1.37 s)
+  — every size gets its FFT plan built in `new()`, so switching allocates
+  nothing; the GUI/param display shows ms, not sample counts. Also `Smooth`
+  (frequency-proportional magnitude blur) and `Pitch` (spectral shift ±24 st).
+  **Live** mode trails the write head and skips forward when it falls >85 % of
+  the ring behind (unavoidable: stretching consumes input N× slower than it
+  emits); **Freeze** circles the last `Length` seconds forever. Reports **zero
+  latency on purpose** — stretched output isn't sample-aligned with its input,
+  so PDC has nothing to fix. Incoherent-OLA make-up (√2, scaled by 1−Tonal)
+  keeps the level right. 10 params + `Preset` (index 9). 8 presets (Paulstretch
+  Classic, Freeze Pad, **Voice → Pad**, Slow Motion, Glacier, Octave Wash, Sub
+  Bed). **Measured:** read head advances 0.512 / 0.1024 / 0.0341 s per second at
+  2× / 10× / 30× (targets 0.5 / 0.1 / 0.0333); a 440 Hz tone stretched 8× still
+  peaks at 436.5 Hz; output within −1.6 dB of input at Tonal 0; Freeze sustains
+  4 s of 331 Hz with no input; ±12 st → 442.4 / 111.3 Hz.
 
 **Instruments (MIDI-in or generator, audio-out):**
 
@@ -212,12 +362,20 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   Triangle / Line) + stereo motion from the trajectory + tempo-sync
   Mouth Rate + Tongue Pitch + Bashkir / Khomus / Real-D2 presets.
 - **superduper-drum** — 6 analog drum voices (Kick / Snare / HHc / HHo /
-  Clap / Cowbell) on consecutive white keys C-A, mouse-click pads.
+  Clap / Cowbell), mouse-click pads. **`Note Map` (param 28)** picks the
+  layout: `Auto` (default — GM percussion first, the white-key layout as
+  fallback), `White Keys` (the original C-A sweep), or `GM`. Auto exists
+  because the kit used to understand white keys only, so any drum pattern
+  written elsewhere — a GM loop, a DAW export — lost its hats (42/46) and
+  clap (39) without a sound or a warning. GM wins the single collision at
+  note 40 (GM Electric Snare vs. white-key E hat). Voices live in
+  `synth-core/src/drum_voices.rs`; the crate's own `src/voices.rs` is a
+  dead copy left behind by the move and is not compiled.
 - **superduper-sampler** — polyphonic WAV player with YIN pitch tuner,
   multi-mode SVF filter (LP/HP/BP/Notch), reverse playback,
   velocity→amp/cutoff, click-to-audition on the waveform.
 
-All 23 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+All 31 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
@@ -316,12 +474,20 @@ from host BPM read out of `CoreEventSpace::Transport` events.
 - **`tools/sdsp-runner`** — standalone CLAP host. Loads any `.clap`,
   plays a WAV file through it to cpal output. Single-plugin testing.
   Effects only — synth/MIDI plugins won't make sound (no MIDI events).
-- **`tools/sdsp-chain`** — headless multi-plugin chain runner.
-  Statically links 12 of our plugins, reads TOML config, processes
-  audio serially, reports per-stage LUFS-I + dBTP + RMS. Same plugins
-  REAPER would load, but in a CLI process — perfect for CI mastering
-  pipelines / reproducible A/B / render farms. Example:
-  `sdsp-chain example.toml in.wav out.wav`.
+- **`tools/sdsp-chain`** — headless renderer for plugin chains, and the
+  intended engine under a future GUI app. Statically links **15** plugins.
+  Beyond a serial chain it now does: **multi-track mixing** (`[[track]]` with
+  its own input/chain/gain, summed, then `[[master]]` stages), **per-stage
+  sidechains** (`sidechain = "voice.wav"`, which is what Formant's Follow mode
+  keys off), **time-varying automation** (`automate = { Freeze = [[0.0, 0.0],
+  [12.0, 1.0]] }`, linearly interpolated, applied per 256-frame block — the only
+  way a headless render can show Freeze catching a moment), **params addressed
+  by name in real units** (`params = { Glide = 22.0 }`; unknown name = error,
+  out-of-range = warning + clamp), and introspection (`--list`, `--params
+  <plugin>` — no more grepping `PARAMS` tables). Sample rate comes from the
+  input file (it used to be hardcoded 44.1 kHz regardless of the material), the
+  final partial block is no longer dropped, and `tail_s` appends silence so
+  reverbs/pads ring out. Worked examples: `~/Music/1music/demos/*.toml`.
 - **`tools/wave-inspect`** — diagnostic CLI for Wave's WAV-to-wavetable
   pipeline. Pitch detection, single + multi-frame extraction,
   spectrum diff per transform, asserts on invariants. Default input
@@ -399,6 +565,10 @@ superduper-dsp/
     superduper-pitch/        pitch + formant shifter, dual engine (Voice=PSOLA / Track=phase vocoder for polyphony)
     superduper-tune/         autotune — pitch correction to Scale / MIDI / Sidechain, formant-preserving (shared PSOLA engine)
     superduper-harmonic/     pitch-locked harmonic comb denoiser (piezo-kubyz cleanup; keep harmonics+plucks, reject between-harmonic noise)
+    superduper-wind/         breath/wind instrument (kurai/nay) — additive tone + formant-bandpassed breath noise (SMS), Instrument/Overlay mode
+    superduper-formant/      formant filter / articulator — F1/F2/F3 resonators driven by the vowel pad, a tracked sidechain voice (Follow), or a trajectory (Motion)
+    superduper-granular/     live granular cloud (our Emergence) — grains, freeze, feedback textures, grid-synced stutter
+    superduper-stretch/      extreme time-stretch smear (our PaulXStretch) — random-phase STFT, live or frozen
     superduper-ambient/      autonomous chord-drone generator
     superduper-pad/          polyphonic MIDI pad synth
     superduper-wave/         wavetable bass/lead synth (curve editor + mip-AA)
@@ -942,6 +1112,10 @@ and the CFBundleIdentifier. The script also installs to
 ./scripts/build_vocoder_bundle.sh
 ./scripts/build_pitch_bundle.sh
 ./scripts/build_harmonic_bundle.sh
+./scripts/build_wind_bundle.sh
+./scripts/build_formant_bundle.sh
+./scripts/build_granular_bundle.sh
+./scripts/build_stretch_bundle.sh
 # new effects: copy one of the above and change two strings (package name +
 # CFBundleIdentifier). Or call ./scripts/build_bundle.sh <name> directly.
 ```

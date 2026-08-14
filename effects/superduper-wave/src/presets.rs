@@ -6,7 +6,10 @@
 //!
 //! Adding a preset = add a new line. The formula is the documentation.
 
-use crate::{P_DETUNE, P_DRIVE, P_SUB, P_UNISON, P_WT_POS, PARAMS};
+use crate::{
+    P_ATTACK, P_CUTOFF, P_DETUNE, P_DRIVE, P_NOISE, P_RELEASE, P_RESONANCE, P_SUB, P_SUSTAIN,
+    P_UNISON, P_WT_POS, PARAMS,
+};
 use core::f32::consts::TAU;
 
 /// Pure waveform formula. Phase normalised to [0, 1); output in [-1, 1].
@@ -160,5 +163,19 @@ pub const PRESETS: &[Preset] = &[
         frame_a: formant_a,
         frame_b: sine,
         overrides: &[],
+    },
+
+    // ---- Odyssey theme — double-reed aulos: detune beating, mid formant,
+    // breathy noise floor, slow swell. ----
+    Preset {
+        name: "Aulos (Odyssey)",
+        frame_a: saw,
+        frame_b: formant_a,
+        overrides: &[
+            (P_WT_POS, 0.55), (P_UNISON, 3.0), (P_DETUNE, 12.0),
+            (P_SUB, 0.0), (P_CUTOFF, 1800.0), (P_RESONANCE, 0.35),
+            (P_DRIVE, 0.25), (P_NOISE, 0.12),
+            (P_ATTACK, 0.5), (P_SUSTAIN, 0.9), (P_RELEASE, 0.6),
+        ],
     },
 ];

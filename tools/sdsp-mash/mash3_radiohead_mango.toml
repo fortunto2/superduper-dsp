@@ -1,0 +1,63 @@
+# Oddysei example #3 — Radiohead «Everything In Its Right Place» (vocal) × Rhythm & Sound «Mango Drive»
+# Vocal 124.19 → grid 125.75 (Mango Drive native) = ratio 0.9876, −1.2%, well inside the ±5% vocal budget.
+# The dub bed carries; Yorke's loop is the anchor at the peak of the set.
+bpm = 125.75
+
+[intro_sweep]
+bars = 4
+from_hz = 250.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -26.0
+ratio = 1.8
+attack_ms = 10.0
+release_ms = 180.0
+
+# Rhythm & Sound — the dub bed
+[[track]]
+path = "/Users/rustam/Music/Albums/BC l M l MS l RS/(2001 - RI 2003) RSD-1 Rhythm & Sound/03. Rhythm & Sound - Mango Drive.flac"
+role = "beat-drums"
+gain_db = 0.0
+tempo_ratio = 1.0
+start_sec = 60.0
+len_sec = 110.0
+
+# Radiohead — vocal stem (demucs), in after 8 bars
+[[track]]
+path = "/tmp/stems_eiirp/htdemucs/13 - Radiohead - Everything In Its Right Place/vocals.wav"
+role = "vocal"
+gain_db = -1.0
+tempo_ratio = 0.9876
+offset_beats = 32
+start_sec = 22.0
+len_sec = 84.0
+highpass_hz = 110.0
+
+[[fx]]
+kind = "beat_repeat"
+at_sec = 86.0
+len_beats = 4
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 98.0
+len_beats = 6
+
+[[fx]]
+kind = "echo_out"
+at_sec = 101.0
+delay_ms = 420.0
+feedback = 0.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

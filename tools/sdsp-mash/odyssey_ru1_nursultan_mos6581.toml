@@ -1,0 +1,64 @@
+# Odyssey (ru) #1 — Опиа «Я умираю в Нур-Султане» × Carbon Based Lifeforms «MOS 6581»
+# 120.02 vs 119.98 BPM — the tightest pair found (0.03%). Both ratio 1.0, no stretch at all.
+# Theme: exile / dying far from home — the Odyssey's nostos, in Russian.
+# Vocal stem lives in ~/Music/DJ/Sets/AI Mashups/_stems/ (NOT scratchpad — that gets wiped).
+bpm = 120.0
+
+[intro_sweep]
+bars = 4
+from_hz = 250.0
+to_hz = 20000.0
+
+[duck]
+threshold_db = -26.0
+ratio = 2.0
+attack_ms = 10.0
+release_ms = 200.0
+
+# CBL — the bed (beat-other so the ducker can open room for the voice)
+[[track]]
+path = "/Users/rustam/Music/Albums/Carbon Based Lifeforms - Discography [2003 - 2023] 320/Albums/(2003) Hydroponic Garden/(2003) Hydroponic Garden (inre 009)/03. MOS 6581 (Album Version).mp3"
+role = "beat-other"
+gain_db = 0.0
+tempo_ratio = 1.0
+start_sec = 90.0
+len_sec = 112.0
+
+# Опиа — vocal, in after 8 bars, taken from the hot late section (RMS scan: 112 s)
+[[track]]
+path = "/Users/rustam/Music/DJ/Sets/AI Mashups/_stems/Опиа - Я умираю в Нур-Султане (vocals).wav"
+role = "vocal"
+gain_db = 1.0
+tempo_ratio = 1.0
+offset_beats = 32
+start_sec = 60.0
+len_sec = 95.0
+highpass_hz = 110.0
+
+[[fx]]
+kind = "breath"
+at_sec = 40.0
+len_beats = 8
+
+[[fx]]
+kind = "tape_stop"
+at_sec = 98.0
+len_beats = 8
+
+[[fx]]
+kind = "echo_out"
+at_sec = 101.0
+delay_ms = 500.0
+feedback = 0.5
+
+[[master]]
+plugin = "eq"
+params = { "7" = 30.0, "1" = 1.5, "5" = 7000.0, "6" = 2.5 }
+
+[[master]]
+plugin = "compressor"
+params = { "0" = -16.0, "1" = 2.0, "2" = 30.0, "3" = 200.0, "5" = 2.0 }
+
+[[master]]
+plugin = "limiter"
+params = { "0" = 2.8, "1" = -2.8 }

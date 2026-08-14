@@ -8,7 +8,11 @@ Everything every SuperDuper plugin needs that isn't DSP. DSP lives in
 - **`clap_helpers`** — `ParamDef` struct + `write_info` / `write_display` /
   `parse_text` / `init_atomics` static methods. `apply_param_events` reads
   `ParamValueEvent` from the input stream into atomics. `split_io` unifies
-  every `ChannelPair` variant into `(read_slice, write_slice)`.
+  every `ChannelPair` variant into `(read_slice, write_slice)`; `split_io_parts`
+  is the same thing with the two directions kept independent
+  (`(Option<read>, Option<write>)`) for a plugin that is an effect in one mode and
+  an instrument in another — Wind used to carry its own copy of that aliasing
+  `unsafe`, now there is one.
 - **`build_meta`** — macros that turn `SDSP_BUILD_*` env vars (from sdk-build)
   into compile-time strings: `plugin_display_name!`, `version_string!`,
   `build_num!`, `build_date!`.

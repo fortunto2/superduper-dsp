@@ -285,7 +285,9 @@ fn preset_recall_leaves_the_preset_param_consistent() {
     let stored = shared.params[P_PRESET].load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(stored.round() as usize, 2, "P_PRESET must name the recalled preset");
     assert!(
-        preset_recall_target(stored, &shared.active_preset).is_none(),
+        preset_recall_target(stored, &shared.active_preset,
+    superduper_stretch::presets::PRESETS.len(),
+).is_none(),
         "recall must be quiet after applying — otherwise the next block reverts the pick"
     );
 }

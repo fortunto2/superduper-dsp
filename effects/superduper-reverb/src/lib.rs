@@ -67,6 +67,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 12, name: b"Freeze",       min: 0.0, max: 1.0,  default: 0.0, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[12];
+
 pub const P_SIZE: usize = 0;
 pub const P_DECAY: usize = 1;
 pub const P_DAMP: usize = 2;
@@ -442,25 +448,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             events.output,
         );
 
-        // Periodic param dump so we can see — without REAPER — what we're
-        // actually playing through. Every ~22 sec at 48k/512.
-        static PROCESS_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = PROCESS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if n.is_multiple_of(1024) {
-            slog!(
-                "process #{}: size={:.2} decay={:.2} damp={:.2} predelay={:.1}ms mod={:.2} width={:.2} mix={:.2} bypass={}",
-                n,
-                self.shared.params[P_SIZE].load(Ordering::Relaxed),
-                self.shared.params[P_DECAY].load(Ordering::Relaxed),
-                self.shared.params[P_DAMP].load(Ordering::Relaxed),
-                self.shared.params[P_PREDELAY].load(Ordering::Relaxed),
-                self.shared.params[P_MOD].load(Ordering::Relaxed),
-                self.shared.params[P_WIDTH].load(Ordering::Relaxed),
-                self.shared.params[P_MIX].load(Ordering::Relaxed),
-                self.shared.bypass.load(Ordering::Relaxed),
-            );
-        }
-
         let size_target = self.shared.params[P_SIZE].load(Ordering::Relaxed);
         let freeze_on = self.shared.params[P_FREEZE].load(Ordering::Relaxed) >= 0.5;
         // Freeze raises decay to its cap (effectively infinite tail) and
@@ -606,7 +593,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, param_index, info);
+        ParamDef::write_info_stepped(PARAMS, param_index, info, STEPPED_PARAMS);
     }
 
     fn get_value(&mut self, param_id: ClapId) -> Option<f64> {

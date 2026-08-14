@@ -103,6 +103,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 19, name: b"Preset",        min: 0.0, max: (PRESET_COUNT - 1) as f64, default: 1.0, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[19];
+
 pub const P_F1: usize = 0;
 pub const P_F2: usize = 1;
 pub const P_F3: usize = 2;
@@ -140,8 +146,13 @@ pub struct SharedParamsInner {
     /// harmonic-bar editor can scribble into it without a lock and the
     /// audio thread can read directly per render call.
     pub harmonics: [AtomicF32; N_HARMONICS],
-    pub formant_bw: Mutex<[f32; 3]>,
-    pub formant_gain: Mutex<[f32; 3]>,
+    /// Formant bandwidths / gains. Atomics, not a Mutex: the audio thread read
+    /// these twice per event batch, and the GUI writes them during preset
+    /// apply and state load — so a preset recall while notes were playing
+    /// could block the callback. Same treatment `harmonics` above already had,
+    /// and the codebase's own rule: atomics only inside process().
+    pub formant_bw: [AtomicF32; 3],
+    pub formant_gain: [AtomicF32; 3],
     /// Continuously-advanced LFO phase for the mouth trajectory — the
     /// audio thread bumps it once per sample at MouthRate, the GUI reads
     /// it to animate the cursor on the vowel pad.
@@ -205,8 +216,8 @@ impl PluginShared {
                 bypass: AtomicBool::new(false),
                 active_voices: AtomicU32::new(0),
                 harmonics,
-                formant_bw: Mutex::new(init.formant.bw),
-                formant_gain: Mutex::new(init.formant.gain),
+                formant_bw: std::array::from_fn(|i| AtomicF32::new(init.formant.bw[i])),
+                formant_gain: std::array::from_fn(|i| AtomicF32::new(init.formant.gain[i])),
                 mouth_phase: AtomicF32::new(0.0),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
@@ -256,8 +267,10 @@ pub fn apply_preset(shared: &SharedParamsInner, preset: &KubyzPreset) {
     for i in 0..N_HARMONICS {
         shared.harmonics[i].store(preset.harmonics[i], Ordering::Relaxed);
     }
-    *shared.formant_bw.lock() = preset.formant.bw;
-    *shared.formant_gain.lock() = preset.formant.gain;
+    for i in 0..3 {
+        shared.formant_bw[i].store(preset.formant.bw[i], Ordering::Relaxed);
+        shared.formant_gain[i].store(preset.formant.gain[i], Ordering::Relaxed);
+    }
     // Tell the audio thread every CLAP param changed so it emits a
     // ParamValue event to the host — preset picks become automation too.
     for flag in shared.dirty_params.iter() {
@@ -313,6 +326,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESET_COUNT,
         ) {
             apply_preset_idx(&self.shared.inner, idx);
         }
@@ -441,6 +455,15 @@ impl<'a> PluginAudioProcessor<'a> {
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
         for v in self.voices.iter_mut() {
+            // A note parked behind a choke-fade has not reached `key` yet, so
+            // it needs matching separately. Without this the NoteOff is eaten
+            // by the note being faded out and the parked note drones forever.
+            if v.pending_key != NOTE_FREE
+                && matches_key(key_match, v.pending_key)
+                && matches_note_id(note_id_match, v.pending_note_id)
+            {
+                v.pending_released = true;
+            }
             if v.key == NOTE_FREE { continue; }
             if matches_key(key_match, v.key) && matches_note_id(note_id_match, v.note_id) {
                 v.env.gate_off();
@@ -453,6 +476,10 @@ impl<'a> PluginAudioProcessor<'a> {
         for v in self.voices.iter_mut() {
             if v.key == NOTE_FREE && v.choke_remaining == 0 { continue; }
             if matches_key(key_match, v.key) && matches_note_id(note_id_match, v.note_id) {
+                // Choking the old note must not hand its slot to a parked note
+                // the player never got to release.
+                v.pending_key = NOTE_FREE;
+                v.pending_released = false;
                 v.choke_level = v.env.level();
                 v.choke_total = fade_samples.max(1);
                 v.choke_remaining = v.choke_total;
@@ -668,6 +695,12 @@ impl<'a> PluginAudioProcessor<'a> {
                             v.env = AdsrEnvelope::default();
                             v.env.gate_on();
                             v.on_note_on(sr);
+                            // Released while parked: start it and let it go
+                            // straight into release, so a short note stays short.
+                            if v.pending_released {
+                                v.env.gate_off();
+                                v.pending_released = false;
+                            }
                         } else {
                             v.env = AdsrEnvelope::default();
                             v.key = NOTE_FREE;
@@ -789,6 +822,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESET_COUNT,
         )
         .is_some()
         {
@@ -849,8 +883,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let sustain = self.shared.params[P_SUSTAIN].load(Ordering::Relaxed);
                 let release = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
                 let vel_shift = self.shared.params[P_VEL_SHIFT].load(Ordering::Relaxed);
-                let formant_bw = *self.shared.formant_bw.lock();
-                let formant_gain = *self.shared.formant_gain.lock();
+                let formant_bw: [f32; 3] =
+                    std::array::from_fn(|i| self.shared.formant_bw[i].load(Ordering::Relaxed));
+                let formant_gain: [f32; 3] =
+                    std::array::from_fn(|i| self.shared.formant_gain[i].load(Ordering::Relaxed));
 
                 self.render_subblock(
                     &mut out_l[start..end],
@@ -905,7 +941,7 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;
@@ -945,6 +981,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESET_COUNT,
         ) {
             apply_preset_idx(&self.shared.inner, idx);
         }
@@ -996,8 +1033,8 @@ impl PluginStateImpl for PluginMainThread<'_> {
             version: STATE_VERSION,
             params,
             harmonics,
-            formant_bw: *self.shared.formant_bw.lock(),
-            formant_gain: *self.shared.formant_gain.lock(),
+            formant_bw: std::array::from_fn(|i| self.shared.formant_bw[i].load(Ordering::Relaxed)),
+            formant_gain: std::array::from_fn(|i| self.shared.formant_gain[i].load(Ordering::Relaxed)),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             midi_learn: self.shared.midi_learn.snapshot(),
             active_preset: self.shared.active_preset.load(Ordering::Relaxed),
@@ -1023,8 +1060,10 @@ impl PluginStateImpl for PluginMainThread<'_> {
                 slot.store(*v, Ordering::Relaxed);
             }
         }
-        *self.shared.formant_bw.lock() = state.formant_bw;
-        *self.shared.formant_gain.lock() = state.formant_gain;
+        for i in 0..3 {
+            self.shared.formant_bw[i].store(state.formant_bw[i], Ordering::Relaxed);
+            self.shared.formant_gain[i].store(state.formant_gain[i], Ordering::Relaxed);
+        }
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
         self.shared.midi_learn.replace(&state.midi_learn);
         self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
@@ -1129,8 +1168,10 @@ impl DefaultPluginFactory for SuperDuperKubyz {
                     slot.store(*h, Ordering::Relaxed);
                 }
             }
-            *shared.formant_bw.lock() = preset.extra.formant_bw;
-            *shared.formant_gain.lock() = preset.extra.formant_gain;
+            for i in 0..3 {
+                shared.formant_bw[i].store(preset.extra.formant_bw[i], Ordering::Relaxed);
+                shared.formant_gain[i].store(preset.extra.formant_gain[i], Ordering::Relaxed);
+            }
         }
         Ok(shared)
     }

@@ -50,10 +50,32 @@ impl ParamDef {
         param_index: u32,
         info: &mut ParamInfoWriter<'_>,
     ) {
+        Self::write_info_stepped(table, param_index, info, &[]);
+    }
+
+    /// Same, but `stepped_ids` lists the params that are discrete — enums,
+    /// booleans, the Preset selector, band counts, note-map choices.
+    ///
+    /// Without `IS_STEPPED` the host treats them as continuous. Draw an
+    /// automation ramp from Preset 3 to Preset 9 and the host interpolates
+    /// through 4, 5, 6, 7, 8 — every intermediate value trips
+    /// `preset_recall_target` and runs a full preset recall (in Wave, a whole
+    /// mip-wavetable rebuild). Generic host UIs and MCP/producer-pal agents
+    /// also render an enum as a smooth 0..N knob.
+    pub fn write_info_stepped(
+        table: &'static [ParamDef],
+        param_index: u32,
+        info: &mut ParamInfoWriter<'_>,
+        stepped_ids: &[u32],
+    ) {
         let Some(p) = table.get(param_index as usize) else { return };
+        let mut flags = ParamInfoFlags::IS_AUTOMATABLE;
+        if stepped_ids.contains(&p.id) {
+            flags |= ParamInfoFlags::IS_STEPPED;
+        }
         info.set(&ParamInfo {
             id: ClapId::new(p.id),
-            flags: ParamInfoFlags::IS_AUTOMATABLE,
+            flags,
             cookie: Default::default(),
             name: p.name,
             module: b"",
@@ -222,7 +244,15 @@ pub fn emit_dirty_param_events(
                 value,
                 Cookie::empty(),
             );
-            let _ = output.try_push(&ev);
+            // Put the flag back if the host's queue is full, so the next block
+            // retries. Dropping it lost the value for good: a preset recall
+            // marks every param dirty at once (lesson 21d — 38 of them in
+            // Wave), which is exactly when the queue overflows, and the host
+            // then records a half-written preset switch that reverts on
+            // playback. That is the failure 21d exists to prevent.
+            if output.try_push(&ev).is_err() {
+                flag.store(true, SyncOrdering::Release);
+            }
         }
     }
 }
@@ -295,13 +325,20 @@ pub fn emit_gesture_events(
     for (i, flag) in begin.iter().enumerate() {
         if flag.swap(false, SyncOrdering::AcqRel) {
             let ev = ParamGestureBeginEvent::new(0, ClapId::new(i as u32));
-            let _ = output.try_push(&ev);
+            if output.try_push(&ev).is_err() {
+                flag.store(true, SyncOrdering::Release);
+            }
         }
     }
     for (i, flag) in end.iter().enumerate() {
         if flag.swap(false, SyncOrdering::AcqRel) {
             let ev = ParamGestureEndEvent::new(0, ClapId::new(i as u32));
-            let _ = output.try_push(&ev);
+            // A dropped End is worse than a dropped value: the host's touch /
+            // latch automation stays armed and keeps writing the parameter
+            // after the user let go of the knob.
+            if output.try_push(&ev).is_err() {
+                flag.store(true, SyncOrdering::Release);
+            }
         }
     }
 }
@@ -345,11 +382,25 @@ pub fn output_slice<'b>(c: ChannelPair<'b, f32>) -> Option<&'b mut [f32]> {
 /// allocation-free, so it's safe to call from the audio thread. The caller
 /// decides what to do: the audio thread asks the host for a main-thread
 /// callback; the main thread runs the (allocating) `apply_preset`.
+///
+/// `preset_count` bounds the index. Without it an out-of-range value — a
+/// project saved by a build with more presets, or an agent writing Preset = 20
+/// on a 7-kit Drum — made `apply_preset` early-return without updating
+/// `active`, so the condition never cleared and the audio thread called
+/// `request_callback()` on every single block, waking the main thread a few
+/// hundred times a second for the life of the instance.
 #[inline]
-pub fn preset_recall_target(preset_param_value: f32, active: &AtomicU32) -> Option<usize> {
-    let want = preset_param_value.round();
-    if want >= 0.0 && (want as u32) != active.load(Ordering::Relaxed) {
-        Some(want as usize)
+pub fn preset_recall_target(
+    preset_param_value: f32,
+    active: &AtomicU32,
+    preset_count: usize,
+) -> Option<usize> {
+    if preset_count == 0 {
+        return None;
+    }
+    let want = (preset_param_value.round().max(0.0) as usize).min(preset_count - 1);
+    if want as u32 != active.load(Ordering::Relaxed) {
+        Some(want)
     } else {
         None
     }

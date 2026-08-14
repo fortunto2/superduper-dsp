@@ -117,6 +117,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 16, name: b"M/S",       min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[12, 13];
+
 pub const P_THRESHOLD: usize = 0;
 pub const P_RATIO: usize = 1;
 pub const P_ATTACK: usize = 2;
@@ -837,7 +843,7 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;

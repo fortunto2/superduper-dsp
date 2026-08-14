@@ -584,6 +584,19 @@ struct Config {
 
 #[derive(Debug, Deserialize)]
 struct TrackCfg {
+    /// Duck this track off another one — `duck_from = "kick"`.
+    ///
+    /// Appends a compressor at the end of the chain keyed off that track's
+    /// finished render. This is the single most load-bearing move in a mix
+    /// with both a kick and a bass: they share 40-120 Hz, they sum, and the
+    /// limiter eats the result. Ducking the bass 3-6 dB for ~90 ms gives the
+    /// kick its own moment and hands back the headroom.
+    duck_from: Option<String>,
+    /// How hard to duck, in dB of gain reduction. Default 5.
+    duck_db: Option<f64>,
+    /// How long to stay down, in ms. Default 90 — recovered before the next
+    /// beat at anything from 100 to 150 BPM.
+    duck_release_ms: Option<f64>,
     #[serde(default)]
     name: Option<String>,
     /// WAV for this track; omitted means the CLI input.
@@ -711,15 +724,34 @@ fn measure(label: &str, a: &Audio) {
 
 /// Load every distinct sidechain path once — a chain often keys several stages
 /// off the same voice take.
+///
+/// A key can also be another track in the same config, written `track:<name>`.
+/// That is what makes ducking possible headlessly: the kick's finished render
+/// becomes the key that pulls the bass down, with no DAW routing involved.
 struct SidechainCache {
     files: BTreeMap<String, Audio>,
+    /// Tracks already rendered this run, by name, for `track:` keys.
+    tracks: BTreeMap<String, Audio>,
 }
 
 impl SidechainCache {
     fn new() -> Self {
-        Self { files: BTreeMap::new() }
+        Self { files: BTreeMap::new(), tracks: BTreeMap::new() }
+    }
+    /// Publish a finished track so later tracks can key off it.
+    fn publish(&mut self, name: &str, audio: &Audio) {
+        self.tracks.insert(name.to_string(), audio.clone());
     }
     fn get(&mut self, path: &str, frames: usize, sr: f64) -> Result<&Audio, String> {
+        if let Some(name) = path.strip_prefix("track:") {
+            return self.tracks.get(name).ok_or_else(|| {
+                format!(
+                    "sidechain 'track:{name}' — no track called '{name}' has been rendered yet. \
+                     Tracks render in config order, so the key has to be declared above the \
+                     track that ducks off it."
+                )
+            });
+        }
         if !self.files.contains_key(path) {
             let mut a = Audio::load(Path::new(path))?;
             if (a.sr - sr).abs() > 1.0 {
@@ -932,6 +964,35 @@ fn real_main() -> Result<(), String> {
             for st in &t.stage {
                 stages.push(resolve_stage(st)?);
             }
+            if let Some(key) = &t.duck_from {
+                // Fast attack so the duck lands on the transient, no lookahead
+                // (ducking early sounds like a mistake), and the sidechain HPF
+                // off — the key here IS low end, filtering it would deafen the
+                // detector. Ratio and threshold are derived from the requested
+                // depth so the knob the user turns is "how many dB".
+                let depth = t.duck_db.unwrap_or(5.0).clamp(1.0, 24.0);
+                let release = t.duck_release_ms.unwrap_or(90.0).clamp(5.0, 1000.0);
+                let mut params: BTreeMap<String, f64> = BTreeMap::new();
+                params.insert("Threshold".into(), -26.0);
+                params.insert("Ratio".into(), (1.0 + depth * 1.0).min(20.0));
+                params.insert("Attack".into(), 0.5);
+                params.insert("Release".into(), release);
+                params.insert("Knee".into(), 3.0);
+                params.insert("SC HPF".into(), 0.0);
+                params.insert("Auto Rel".into(), 0.0);
+                params.insert("Lookahead".into(), 0.0);
+                params.insert("Mix".into(), 1.0);
+                let cfg_stage = StageCfg {
+                    plugin: "compressor".into(),
+                    params: params
+                        .into_iter()
+                        .map(|(k, v)| (k, toml::Value::Float(v)))
+                        .collect(),
+                    automate: toml::Table::new(),
+                    sidechain: Some(format!("track:{key}")),
+                };
+                stages.push(resolve_stage(&cfg_stage)?);
+            }
             tracks.push(Track {
                 name: t.name.clone().unwrap_or_else(|| format!("track {}", i + 1)),
                 audio: load_input(&path)?,
@@ -978,8 +1039,19 @@ fn real_main() -> Result<(), String> {
     let mut master = Audio::silence(frames, sr);
 
     for t in tracks.iter() {
+        // A muted track still renders, because something later may key off it:
+        // "kick used only as a sidechain source, never heard" is a normal way
+        // to build a mix. It just doesn't reach the master.
         if t.mute {
-            println!("── {} (muted, skipped)", t.name);
+            println!("── {} (muted — rendered as a key only)", t.name);
+            let keyed = run_chain(
+                "  ",
+                t.audio.clone(),
+                &t.stages,
+                t.sidechain.as_deref().or(cfg.sidechain.as_deref()).filter(|p| !p.is_empty()),
+                &mut sc_cache,
+            )?;
+            sc_cache.publish(&t.name, &keyed);
             continue;
         }
         println!("── {}", t.name);
@@ -992,6 +1064,9 @@ fn real_main() -> Result<(), String> {
             default_sc.filter(|p| !p.is_empty()),
             &mut sc_cache,
         )?;
+        // Publish before gain/pan: a key should follow the part's sound, not
+        // the fader move the engineer makes afterwards.
+        sc_cache.publish(&t.name, &rendered);
         let curve = gain_curve(&t.gain_automate, t.gain_db, frames, sr);
         if !t.gain_automate.is_empty() {
             let lo = t.gain_automate.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);

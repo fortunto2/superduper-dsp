@@ -355,6 +355,13 @@ pub struct WaveVoice {
     pub pending_key: u8,
     pub pending_note_id: i32,
     pub pending_velocity: f32,
+    /// A NoteOff can arrive for a note that is still parked behind the choke
+    /// fade — every event in the block is drained before rendering, and the
+    /// fade is only ~4 ms. Matching that NoteOff against `key` (which still
+    /// holds the note being faded OUT) consumed the release and the parked
+    /// note then sounded forever. Wind hit this first; Wave and Kubyz carried
+    /// the same hole until it was found by review.
+    pub pending_released: bool,
     /// Phantom master phase used by Hard Sync — when this crosses 1.0
     /// the main unison-osc phases are reset to 0, producing the
     /// classic "sync sweep" sound.
@@ -388,6 +395,7 @@ impl Default for WaveVoice {
             pending_key: NOTE_FREE,
             pending_note_id: -1,
             pending_velocity: 0.0,
+            pending_released: false,
             sync_phase: 0.0,
             fm_phase: 0.0,
         }

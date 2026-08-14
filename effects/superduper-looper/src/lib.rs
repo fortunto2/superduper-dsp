@@ -93,6 +93,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: pidx(3, 2), name: b"T4 Mute",     min: 0.0, max: 1.0, default: 0.0, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[0];
+
 pub const P_SYNC: usize = 0;
 pub const P_BARS: usize = 1;
 pub const P_DRY: usize = 2;
@@ -234,6 +240,12 @@ pub struct PluginAudioProcessor<'a> {
     /// whole bar. We track that here so the second Rec press just
     /// arms the auto-stop instead of locking immediately.
     pending_quantize_stop: [Option<usize>; TRACK_COUNT],
+    /// Scratch for the mono path, sized once at activate(). It used to `vec!`
+    /// two buffers per block — two mallocs and two frees inside the audio
+    /// callback, on a live looper, where a dropout gets recorded into the loop
+    /// and stays there.
+    mono_in: Box<[f32]>,
+    mono_out: Box<[f32]>,
 }
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
@@ -249,11 +261,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let sr = cfg.sample_rate as f32;
         slog!("looper activate sr={}", sr);
         let cap = (sr * MAX_LOOP_SECONDS) as usize;
+        let max_frames = cfg.max_frames_count as usize;
         Ok(Self {
             shared,
             tracks: std::array::from_fn(|_| LoopTrack::new(cap)),
             sample_rate: sr,
             pending_quantize_stop: [None; TRACK_COUNT],
+            mono_in: vec![0.0; max_frames].into_boxed_slice(),
+            mono_out: vec![0.0; max_frames].into_boxed_slice(),
         })
     }
 
@@ -550,19 +565,23 @@ impl<'a> PluginAudioProcessor<'a> {
         levels: &[f32; 4], feedbacks: &[f32; 4], mutes: &[bool; 4],
         sync_on: bool, bars_target: u32, bar_samples: usize,
     ) {
-        // Reuse the stereo path with mirrored channel. Simpler than a
-        // second fully-tested implementation.
-        let n = l_read.len().min(l_write.len());
-        let mut r_buf = vec![0.0_f32; n];
-        for i in 0..n { r_buf[i] = l_read[i]; }
-        let mut r_out = vec![0.0_f32; n];
-        let r_read_slice: &[f32] = &r_buf;
-        let r_write_slice: &mut [f32] = &mut r_out;
+        // Reuse the stereo path with a mirrored channel. Simpler than a
+        // second fully-tested implementation — but the mirror buffers are
+        // pre-allocated, not `vec!`'d per block.
+        let n = l_read.len().min(l_write.len()).min(self.mono_in.len());
+        // Move the scratch out so render_stereo can borrow &mut self, then put
+        // BOTH buffers back — leaving either taken would hand the next block an
+        // empty slice and panic on the first index.
+        let mut mono_in = std::mem::take(&mut self.mono_in);
+        let mut mono_out = std::mem::take(&mut self.mono_out);
+        mono_in[..n].copy_from_slice(&l_read[..n]);
         self.render_stereo(
-            l_read, l_write, r_read_slice, r_write_slice,
+            &l_read[..n], &mut l_write[..n], &mono_in[..n], &mut mono_out[..n],
             dry_gain, master_lin, levels, feedbacks, mutes,
             sync_on, bars_target, bar_samples,
         );
+        self.mono_in = mono_in;
+        self.mono_out = mono_out;
     }
 }
 
@@ -600,7 +619,7 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;

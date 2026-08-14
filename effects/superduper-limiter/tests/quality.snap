@@ -1,0 +1,24 @@
+# Quality snapshot for limiter. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-limiter --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -0.300
+impulse_rms_db = -45.454
+noise_band_air = 0.000
+noise_band_body = -12.612
+noise_band_kick = -19.852
+noise_band_low = -17.101
+noise_band_mid = -7.510
+noise_band_presence = -4.395
+noise_band_sub = -22.286
+noise_gain_db = -0.019
+noise_max_step = 0.593
+tone_band_air = -79.321
+tone_band_body = -70.787
+tone_band_kick = -83.920
+tone_band_low = -80.632
+tone_band_mid = 0.000
+tone_band_presence = -82.644
+tone_band_sub = -84.792
+tone_gain_db = -0.019
+tone_peak_db = -6.021
+tone_thd_db = -99.508

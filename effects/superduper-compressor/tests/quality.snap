@@ -1,0 +1,24 @@
+# Quality snapshot for compressor. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-compressor --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -0.000
+impulse_rms_db = -45.155
+noise_band_air = 0.000
+noise_band_body = -12.582
+noise_band_kick = -19.625
+noise_band_low = -17.094
+noise_band_mid = -7.510
+noise_band_presence = -4.409
+noise_band_sub = -22.138
+noise_gain_db = -4.085
+noise_max_step = 0.571
+tone_band_air = -71.964
+tone_band_body = -69.522
+tone_band_kick = -82.521
+tone_band_low = -79.248
+tone_band_mid = 0.000
+tone_band_presence = -69.332
+tone_band_sub = -83.398
+tone_gain_db = -8.095
+tone_peak_db = -6.021
+tone_thd_db = -77.725

@@ -1,0 +1,24 @@
+# Quality snapshot for soothe. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-soothe --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -0.007
+impulse_rms_db = -45.161
+noise_band_air = 0.000
+noise_band_body = -15.179
+noise_band_kick = -18.238
+noise_band_low = -15.910
+noise_band_mid = -10.603
+noise_band_presence = -7.061
+noise_band_sub = -20.983
+noise_gain_db = -1.420
+noise_max_step = 0.632
+tone_band_air = -72.197
+tone_band_body = -77.952
+tone_band_kick = -93.397
+tone_band_low = -89.161
+tone_band_mid = 0.000
+tone_band_presence = -76.898
+tone_band_sub = -94.880
+tone_gain_db = -7.348
+tone_peak_db = -6.200
+tone_thd_db = -92.022

@@ -25,3 +25,6 @@ raw-window-handle = "0.5"
 
 [build-dependencies]
 superduper-dsp-sdk-build = { path = "../../sdk-build" }
+
+[dev-dependencies]
+sdsp-test-kit = { path = "../../tools/sdsp-test-kit" }

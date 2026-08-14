@@ -1,0 +1,13 @@
+[package]
+name = "sdsp-test-kit"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared test harness for SuperDuper plugins — in-process CLAP host plus snapshot-based quality measurement"
+
+[dependencies]
+clack-host = { version = "0.1", features = ["clack-plugin"] }
+clack-plugin = "0.1"
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "note-ports", "latency", "clack-host", "clack-plugin"] }
+clack-common = "0.1"
+superduper-synth-core = { path = "../../synth-core" }

@@ -1,0 +1,24 @@
+# Quality snapshot for vocal. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-vocal --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -0.270
+impulse_rms_db = -45.424
+noise_band_air = 0.000
+noise_band_body = -11.806
+noise_band_kick = -18.896
+noise_band_low = -16.378
+noise_band_mid = -6.752
+noise_band_presence = -5.221
+noise_band_sub = -21.725
+noise_gain_db = -0.673
+noise_max_step = 0.616
+tone_band_air = -79.271
+tone_band_body = -81.034
+tone_band_kick = -101.914
+tone_band_low = -98.757
+tone_band_mid = 0.000
+tone_band_presence = -83.605
+tone_band_sub = -102.706
+tone_gain_db = -0.087
+tone_peak_db = -6.021
+tone_thd_db = -99.507

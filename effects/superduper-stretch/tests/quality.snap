@@ -1,0 +1,24 @@
+# Quality snapshot for stretch. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-stretch --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = 0.000
+impulse_rms_db = -45.154
+noise_band_air = 0.000
+noise_band_body = -12.534
+noise_band_kick = -18.566
+noise_band_low = -17.415
+noise_band_mid = -7.658
+noise_band_presence = -4.465
+noise_band_sub = -20.810
+noise_gain_db = -1.302
+noise_max_step = 0.941
+tone_band_air = -79.707
+tone_band_body = -81.022
+tone_band_kick = -101.404
+tone_band_low = -98.393
+tone_band_mid = 0.000
+tone_band_presence = -84.352
+tone_band_sub = -102.196
+tone_gain_db = -0.524
+tone_peak_db = -2.036
+tone_thd_db = -65.621

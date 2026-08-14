@@ -1,0 +1,24 @@
+# Quality snapshot for chorus. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-chorus --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -6.021
+impulse_rms_db = -48.389
+noise_band_air = 0.000
+noise_band_body = -11.847
+noise_band_kick = -20.796
+noise_band_low = -16.535
+noise_band_mid = -6.974
+noise_band_presence = -4.153
+noise_band_sub = -23.653
+noise_gain_db = -3.518
+noise_max_step = 0.543
+tone_band_air = -40.655
+tone_band_body = -31.505
+tone_band_kick = -47.821
+tone_band_low = -37.215
+tone_band_mid = 0.000
+tone_band_presence = -36.542
+tone_band_sub = -53.106
+tone_gain_db = -3.570
+tone_peak_db = -5.971
+tone_thd_db = -50.390

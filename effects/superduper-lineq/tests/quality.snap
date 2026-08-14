@@ -1,0 +1,24 @@
+# Quality snapshot for lineq. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-lineq --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -0.000
+impulse_rms_db = -45.155
+noise_band_air = 0.000
+noise_band_body = -12.074
+noise_band_kick = -21.194
+noise_band_low = -17.187
+noise_band_mid = -7.406
+noise_band_presence = -4.541
+noise_band_sub = -21.585
+noise_gain_db = -0.143
+noise_max_step = 0.593
+tone_band_air = -67.054
+tone_band_body = -38.476
+tone_band_kick = -51.496
+tone_band_low = -48.247
+tone_band_mid = 0.000
+tone_band_presence = -55.894
+tone_band_sub = -52.345
+tone_gain_db = -0.138
+tone_peak_db = -6.021
+tone_thd_db = -99.506

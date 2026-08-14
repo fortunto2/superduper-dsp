@@ -1,0 +1,24 @@
+# Quality snapshot for supermass. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-supermass --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -3.098
+impulse_rms_db = -48.252
+noise_band_air = 0.000
+noise_band_body = -12.688
+noise_band_kick = -19.790
+noise_band_low = -17.273
+noise_band_mid = -7.556
+noise_band_presence = -4.385
+noise_band_sub = -22.582
+noise_gain_db = -3.098
+noise_max_step = 0.415
+tone_band_air = -76.770
+tone_band_body = -73.534
+tone_band_kick = -86.206
+tone_band_low = -86.537
+tone_band_mid = 0.000
+tone_band_presence = -81.098
+tone_band_sub = -92.066
+tone_gain_db = -3.109
+tone_peak_db = -9.046
+tone_thd_db = -96.396

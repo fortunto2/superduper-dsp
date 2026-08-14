@@ -1,0 +1,24 @@
+# Quality snapshot for delay. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-delay --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -3.742
+impulse_rms_db = -48.635
+noise_band_air = 0.000
+noise_band_body = -12.005
+noise_band_kick = -19.722
+noise_band_low = -17.101
+noise_band_mid = -7.050
+noise_band_presence = -4.195
+noise_band_sub = -22.409
+noise_gain_db = -3.532
+noise_max_step = 0.461
+tone_band_air = -54.919
+tone_band_body = -61.121
+tone_band_kick = -73.620
+tone_band_low = -70.652
+tone_band_mid = 0.000
+tone_band_presence = -34.570
+tone_band_sub = -74.580
+tone_gain_db = -2.768
+tone_peak_db = -7.757
+tone_thd_db = -37.814

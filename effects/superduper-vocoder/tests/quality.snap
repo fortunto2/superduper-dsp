@@ -1,0 +1,24 @@
+# Quality snapshot for vocoder. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-vocoder --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -51.401
+impulse_rms_db = -73.221
+noise_band_air = -6.716
+noise_band_body = -3.172
+noise_band_kick = -4.491
+noise_band_low = 0.000
+noise_band_mid = -6.511
+noise_band_presence = -8.091
+noise_band_sub = -27.452
+noise_gain_db = -24.747
+noise_max_step = 0.025
+tone_band_air = -58.928
+tone_band_body = -14.212
+tone_band_kick = -49.620
+tone_band_low = -41.666
+tone_band_mid = 0.000
+tone_band_presence = -36.055
+tone_band_sub = -65.780
+tone_gain_db = -8.093
+tone_peak_db = -10.742
+tone_thd_db = -30.275

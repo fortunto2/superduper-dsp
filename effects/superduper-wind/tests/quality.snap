@@ -1,0 +1,24 @@
+# Quality snapshot for wind. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-wind --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -240.000
+impulse_rms_db = -240.000
+noise_band_air = 0.000
+noise_band_body = -12.502
+noise_band_kick = -21.533
+noise_band_low = -18.523
+noise_band_mid = -7.671
+noise_band_presence = -4.543
+noise_band_sub = -22.325
+noise_gain_db = -224.777
+noise_max_step = 0.000
+tone_band_air = 0.000
+tone_band_body = -12.502
+tone_band_kick = -21.533
+tone_band_low = -18.523
+tone_band_mid = -7.671
+tone_band_presence = -4.543
+tone_band_sub = -22.325
+tone_gain_db = -230.969
+tone_peak_db = -240.000
+tone_thd_db = 8.451

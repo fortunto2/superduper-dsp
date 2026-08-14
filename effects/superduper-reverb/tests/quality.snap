@@ -1,0 +1,24 @@
+# Quality snapshot for reverb. Regenerate deliberately:
+#   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-reverb --test quality
+# A change here is a change in how the plugin sounds.
+impulse_peak_db = -3.098
+impulse_rms_db = -47.376
+noise_band_air = 0.000
+noise_band_body = -11.512
+noise_band_kick = -18.944
+noise_band_low = -17.149
+noise_band_mid = -6.623
+noise_band_presence = -3.622
+noise_band_sub = -22.283
+noise_gain_db = -2.495
+noise_max_step = 0.509
+tone_band_air = -62.880
+tone_band_body = -37.213
+tone_band_kick = -49.479
+tone_band_low = -45.384
+tone_band_mid = 0.000
+tone_band_presence = -53.099
+tone_band_sub = -55.073
+tone_gain_db = -4.171
+tone_peak_db = -6.364
+tone_thd_db = -66.251

@@ -29,6 +29,7 @@ raw-window-handle = "0.5"
 superduper-dsp-sdk-build = { path = "../../sdk-build" }
 
 [dev-dependencies]
+sdsp-test-kit = { path = "../../tools/sdsp-test-kit" }
 clack-host = { version = "0.1", features = ["clack-plugin"] }
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "state", "latency", "log", "clack-host"] }
 superduper-synth-core = { path = "../../synth-core" }

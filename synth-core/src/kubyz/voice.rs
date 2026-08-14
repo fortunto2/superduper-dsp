@@ -38,6 +38,13 @@ pub struct KubyzVoice {
     pub pending_key: u8,
     pub pending_note_id: i32,
     pub pending_velocity: f32,
+    /// A NoteOff can arrive for a note that is still parked behind the choke
+    /// fade — every event in the block is drained before rendering, and the
+    /// fade is only ~4 ms. Matching that NoteOff against `key` (which still
+    /// holds the note being faded OUT) consumed the release and the parked
+    /// note then sounded forever. Wind hit this first; Wave and Kubyz carried
+    /// the same hole until it was found by review.
+    pub pending_released: bool,
     /// Sample-counter for the on-note amplitude fade. Counts down from
     /// `note_fade_total` to 0; while > 0 the voice output is multiplied
     /// by `(total - remaining) / total` so the first ~2 ms of every
@@ -66,6 +73,7 @@ impl Default for KubyzVoice {
             pending_key: NOTE_FREE,
             pending_note_id: -1,
             pending_velocity: 0.0,
+            pending_released: false,
             note_fade_remaining: 0,
             note_fade_total: 0,
         }

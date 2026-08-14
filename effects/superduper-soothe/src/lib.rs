@@ -86,6 +86,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 9, name: b"Mode",     min: 0.0,    max: 2.0,     default: 1.0,    unit: ""   },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[9];
+
 pub const P_AMOUNT: usize = 0;
 pub const P_SENS: usize = 1;
 pub const P_Q: usize = 2;
@@ -522,7 +528,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         PARAMS.len() as u32
     }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;

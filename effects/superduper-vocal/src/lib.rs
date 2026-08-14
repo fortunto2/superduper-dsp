@@ -135,6 +135,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 22, name: b"Sub Mode", min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[13, 17, 21, 22];
+
 pub const P_ESS_THR: usize = 0;
 pub const P_ESS_FREQ: usize = 1;
 pub const P_ESS_AMT: usize = 2;
@@ -510,8 +516,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let n = n_frames.min(r.len());
                         self.sc_r[..n].copy_from_slice(&r[..n]);
                     } else {
-                        let copy = self.sc_l[..n_frames].to_vec();
-                        self.sc_r[..n_frames].copy_from_slice(&copy);
+                        // Mono sidechain: mirror L into R. The temporary Vec
+                        // this used to build was a heap allocation per block in
+                        // the audio callback — and unnecessary, since sc_l and
+                        // sc_r are separate fields and borrow independently.
+                        let (src, dst) = (&self.sc_l, &mut self.sc_r);
+                        dst[..n_frames].copy_from_slice(&src[..n_frames]);
                     }
                 }
             }
@@ -973,7 +983,7 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;

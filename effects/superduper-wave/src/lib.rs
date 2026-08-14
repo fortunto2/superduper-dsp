@@ -117,6 +117,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 37, name: b"Preset",     min: 0.0,    max: (PRESETS.len() - 1) as f64, default: 0.0, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[25, 26, 33, 37];
+
 pub const P_WT_POS: usize = 0;
 pub const P_UNISON: usize = 1;
 pub const P_DETUNE: usize = 2;
@@ -182,6 +188,13 @@ pub struct SharedParamsInner {
     /// edits) or any other out-of-band wavetable change. Audio thread
     /// re-clones from `wavetable` on the next process() block.
     pub pending_swap: AtomicBool,
+    /// Main/GUI thread → audio thread hand-off for a new wavetable. The audio
+    /// thread used to `lock()` `wavetable` and clone the whole mip vector
+    /// inside process(): a blocking wait on a thread that might be mid-FFT
+    /// building the next pyramid (priority inversion), plus an allocation in
+    /// the callback. Now the writer parks a ready copy here and the audio
+    /// thread `try_lock`s and takes it.
+    pub pending_frames: parking_lot::Mutex<Option<Vec<MipWavetable>>>,
     /// Wavetable frames currently in use — 1..=`FRAMES_MAX` mip
     /// pyramids. Audio thread picks the right band-limited level
     /// per voice and lerps between adjacent frames via the WT Pos
@@ -231,6 +244,7 @@ impl PluginShared {
                 active_voices: AtomicU32::new(0),
                 pending_preset: AtomicU32::new(u32::MAX),
                 pending_swap: AtomicBool::new(false),
+                pending_frames: parking_lot::Mutex::new(None),
                 wavetable: Mutex::new(vec![frame_a, frame_b]),
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
@@ -288,8 +302,10 @@ pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
     let frame_a = osc::render_formula_mip(preset.frame_a);
     let frame_b = osc::render_formula_mip(preset.frame_b);
     {
+        let frames = vec![frame_a, frame_b];
+        *shared.pending_frames.lock() = Some(frames.clone());
         let mut guard = shared.wavetable.lock();
-        *guard = vec![frame_a, frame_b];
+        *guard = frames;
     }
     shared.active_preset.store(preset_idx as u32, Ordering::Relaxed);
     shared.pending_preset.store(preset_idx as u32, Ordering::Relaxed);
@@ -313,6 +329,7 @@ pub fn push_custom_frame_a(shared: &SharedParamsInner, new_frame_a: MipWavetable
         } else {
             guard[0] = new_frame_a;
         }
+        *shared.pending_frames.lock() = Some(guard.clone());
     }
     shared.pending_swap.store(true, Ordering::Relaxed);
 }
@@ -331,6 +348,7 @@ pub fn push_custom_frames(
         frames.truncate(FRAMES_MAX);
     }
     {
+        *shared.pending_frames.lock() = Some(frames.clone());
         let mut guard = shared.wavetable.lock();
         *guard = frames;
     }
@@ -365,6 +383,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset(&self.shared.inner, idx);
         }
@@ -523,6 +542,15 @@ impl<'a> PluginAudioProcessor<'a> {
 
     fn release_voice(&mut self, key_match: Match<u16>, note_id_match: Match<u32>) {
         for v in self.voices.iter_mut() {
+            // A note parked behind a choke-fade has not reached `key` yet, so
+            // it needs matching separately. Without this the NoteOff is eaten
+            // by the note being faded out and the parked note never releases.
+            if v.pending_key != NOTE_FREE
+                && matches_key(key_match, v.pending_key)
+                && matches_note_id(note_id_match, v.pending_note_id)
+            {
+                v.pending_released = true;
+            }
             if v.key == NOTE_FREE {
                 continue;
             }
@@ -540,6 +568,10 @@ impl<'a> PluginAudioProcessor<'a> {
                 continue;
             }
             if matches_key(key_match, v.key) && matches_note_id(note_id_match, v.note_id) {
+                // Choking the old note must not hand its slot to a parked note
+                // that the player never got to release.
+                v.pending_key = NOTE_FREE;
+                v.pending_released = false;
                 v.choke_level = v.env.level();
                 v.choke_total = fade_samples.max(1);
                 v.choke_remaining = v.choke_total;
@@ -732,14 +764,18 @@ impl<'a> PluginAudioProcessor<'a> {
 
             let mut mix_l = 0.0_f32;
             let mut mix_r = 0.0_f32;
+            // Advance the crossfade once per output sample, before the voice
+            // loop. It used to sit inside that loop, after the `continue` that
+            // skips idle voices — so it ticked once per SOUNDING voice and a
+            // wavetable swap under an eight-note chord finished eight times
+            // sooner than under a single note. The fade length is supposed to
+            // be what hides the swap; it cannot depend on how many keys are down.
+            self.fade_pos = (self.fade_pos + self.fade_inc).min(1.0);
+            let fade_pos = self.fade_pos;
             for v in self.voices.iter_mut() {
                 if v.key == NOTE_FREE && v.env.is_idle() && v.choke_remaining == 0 {
                     continue;
                 }
-                // Advance the crossfade once per output sample so every
-                // voice (and the choke-fade above) sees the same fade pos.
-                self.fade_pos = (self.fade_pos + self.fade_inc).min(1.0);
-                let fade_pos = self.fade_pos;
 
                 let base_hz =
                     midi_note_to_hz(v.key as f32 + self.shared.pitch_bend_st.load(Ordering::Relaxed));
@@ -797,6 +833,14 @@ impl<'a> PluginAudioProcessor<'a> {
                             v.lfo_phase = 0.0;
                             v.configure_unison(unison, detune);
                             v.scatter_phases();
+                            // Released while parked: start it, then let it go
+                            // straight into release, so a very short note
+                            // sounds short instead of sounding forever.
+                            if v.pending_released {
+                                v.env.gate_off();
+                                v.filter_env.gate_off();
+                                v.pending_released = false;
+                            }
                         } else {
                             v.env = AdsrEnvelope::default();
                             v.key = NOTE_FREE;
@@ -840,10 +884,15 @@ impl<'a> PluginAudioProcessor<'a> {
     /// pointless fades when nothing actually moved.
     fn maybe_swap_wavetable(&mut self) {
         if self.shared.pending_swap.swap(false, Ordering::AcqRel) {
-            let new_frames: Vec<MipWavetable> = {
-                let guard = self.shared.wavetable.lock();
-                guard.clone()
+            // try_lock, never lock: the writer may be holding this while it
+            // bakes the next pyramid, and waiting would block the callback on
+            // a normal-priority thread. Re-arm and pick it up next block.
+            let Some(mut slot) = self.shared.pending_frames.try_lock() else {
+                self.shared.pending_swap.store(true, Ordering::Release);
+                return;
             };
+            let Some(new_frames) = slot.take() else { return };
+            drop(slot);
             if new_frames.is_empty() {
                 return;
             }
@@ -936,6 +985,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         )
         .is_some()
         {
@@ -1110,7 +1160,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         PARAMS.len() as u32
     }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;
@@ -1177,6 +1227,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset(&self.shared.inner, idx);
         }

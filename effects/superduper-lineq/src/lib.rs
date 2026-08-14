@@ -95,9 +95,17 @@ pub struct SharedParamsInner {
     pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub active_preset: std::sync::atomic::AtomicU32,
     /// Set whenever a param that affects the FIR moves — the audio
-    /// thread checks this once per block and rebuilds the FIR off the
-    /// hot per-sample path when the flag is set.
+    /// thread checks this once per block and asks for a rebuild.
     pub fir_dirty: std::sync::atomic::AtomicBool,
+    /// Audio thread → main thread: "the curve moved, design a new FIR".
+    pub fir_request: std::sync::atomic::AtomicBool,
+    /// Main thread → audio thread: freshly designed coefficients waiting to be
+    /// swapped in. The audio thread only ever `try_lock`s this, so a main
+    /// thread mid-design can never block the callback.
+    pub pending_fir: parking_lot::Mutex<Option<Vec<f32>>>,
+    /// Cached at activate() so the main thread can design against the host's
+    /// actual rate without reaching into the audio processor.
+    pub sample_rate: AtomicF32,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -115,6 +123,9 @@ impl PluginShared {
                 scope: superduper_synth_core::gui::LiveScope::new(1024),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 fir_dirty: std::sync::atomic::AtomicBool::new(true),
+                fir_request: std::sync::atomic::AtomicBool::new(false),
+                pending_fir: parking_lot::Mutex::new(None),
+                sample_rate: AtomicF32::new(48_000.0),
             }),
         }
     }
@@ -137,13 +148,30 @@ pub struct PluginMainThread<'a> {
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
 }
-impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {}
+impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
+    /// Woken by the audio thread's request_callback when the EQ curve moved.
+    /// This is where the 2048-tap design actually happens — allocations and
+    /// all — and the result is parked for the audio thread to pick up.
+    fn on_main_thread(&mut self) {
+        if self.shared.fir_request.swap(false, Ordering::AcqRel) {
+            let sr = self.shared.sample_rate.load(Ordering::Relaxed);
+            let fir = build_fir(self.shared, sr);
+            *self.shared.pending_fir.lock() = Some(fir);
+        }
+    }
+}
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    host: HostAudioProcessorHandle<'a>,
     conv_l: DirectFirConvolver,
     conv_r: DirectFirConvolver,
     sample_rate: f32,
+    /// Last param values the FIR was designed for. The dirty_params array
+    /// cannot be used for this: emit_dirty_param_events clears it at the top
+    /// of every block, so by the time the rebuild check ran, every flag was
+    /// already false and host automation never triggered a redesign at all.
+    last_params: [f32; PARAMS.len()],
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -201,7 +229,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     for PluginAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut PluginMainThread<'a>,
         shared: &'a PluginShared,
         cfg: PluginAudioConfiguration,
@@ -212,8 +240,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let conv_l = DirectFirConvolver::new(fir.clone());
         let conv_r = DirectFirConvolver::new(fir);
         shared.fir_dirty.store(false, Ordering::Release);
+        shared.sample_rate.store(sr, Ordering::Relaxed);
         Ok(Self {
             shared,
+            host,
+            last_params: std::array::from_fn(|i| shared.params[i].load(Ordering::Relaxed)),
             conv_l,
             conv_r,
             sample_rate: sr,
@@ -236,24 +267,31 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
             &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
 
-        // Rebuild the FIR off the per-sample path when any param touched.
-        // Each block is ≥ 64 samples typically; even with one block of
-        // ~30 ms FIR design (FFT ~ 16k flops at FIR_LEN=2048) we stay
-        // well inside real-time budget.
-        if self
-            .shared
-            .fir_dirty
-            .swap(false, Ordering::AcqRel)
-            || self
-                .shared
-                .dirty_params
-                .iter()
-                .take(PARAMS.len())
-                .any(|d| d.load(Ordering::Relaxed))
-        {
-            let fir = build_fir(self.shared, self.sample_rate);
-            self.conv_l.replace_fir(fir.clone());
-            self.conv_r.replace_fir(fir);
+        // Designing the FIR means an FFT plan, three Vec allocations and two
+        // deallocations — ~30 ms by this crate's own estimate, against a 2.7 ms
+        // block budget at 128 frames. It used to run right here, so dragging a
+        // band gain dropped audio for the length of the drag. Now the audio
+        // thread only notices the change and asks; the main thread designs.
+        let mut curve_moved = self.shared.fir_dirty.swap(false, Ordering::AcqRel);
+        for (i, last) in self.last_params.iter_mut().enumerate() {
+            let now = self.shared.params[i].load(Ordering::Relaxed);
+            if *last != now {
+                *last = now;
+                curve_moved = true;
+            }
+        }
+        if curve_moved {
+            self.shared.fir_request.store(true, Ordering::Release);
+            self.host.shared().request_callback();
+        }
+        // try_lock, never lock: the main thread holds this while designing, and
+        // waiting on it would hand the audio callback's deadline to a normal
+        // priority thread.
+        if let Some(mut slot) = self.shared.pending_fir.try_lock() {
+            if let Some(fir) = slot.take() {
+                self.conv_l.replace_fir(fir.clone());
+                self.conv_r.replace_fir(fir);
+            }
         }
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);

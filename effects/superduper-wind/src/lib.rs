@@ -109,6 +109,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 16, name: b"Preset",     min: 0.0,    max: (presets::PRESET_COUNT - 1) as f64, default: presets::DEFAULT_PRESET as f64, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[0, 16];
+
 pub const P_MODE: usize = 0;
 pub const P_BREATH: usize = 1;
 pub const P_JITTER: usize = 2;
@@ -268,6 +274,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset_idx(&self.shared.inner, idx);
         }
@@ -766,6 +773,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         )
         .is_some()
         {
@@ -987,7 +995,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         PARAMS.len() as u32
     }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;
@@ -1035,6 +1043,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset_idx(&self.shared.inner, idx);
         }

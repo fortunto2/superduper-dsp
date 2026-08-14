@@ -373,8 +373,8 @@ fn snapshot_kubyz_preset(
         params,
         extra: crate::user_extra::KubyzExtra {
             harmonics,
-            formant_bw: *shared.formant_bw.lock(),
-            formant_gain: *shared.formant_gain.lock(),
+            formant_bw: std::array::from_fn(|i| shared.formant_bw[i].load(Ordering::Relaxed)),
+            formant_gain: std::array::from_fn(|i| shared.formant_gain[i].load(Ordering::Relaxed)),
         },
     }
 }
@@ -440,8 +440,12 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                                 slot.store(*h, Ordering::Relaxed);
                             }
                         }
-                        *state.shared.formant_bw.lock() = preset.extra.formant_bw;
-                        *state.shared.formant_gain.lock() = preset.extra.formant_gain;
+                        for i in 0..3 {
+                            state.shared.formant_bw[i]
+                                .store(preset.extra.formant_bw[i], Ordering::Relaxed);
+                            state.shared.formant_gain[i]
+                                .store(preset.extra.formant_gain[i], Ordering::Relaxed);
+                        }
                         state.selected_user_preset = Some(i);
                         state.last_io_msg =
                             Some((format!("Loaded '{name}'"), std::time::Instant::now()));

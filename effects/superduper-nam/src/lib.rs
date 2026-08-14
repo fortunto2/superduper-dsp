@@ -212,7 +212,6 @@ pub struct PluginAudioProcessor<'a> {
     /// its own ring-buffer state so left/right run truly in parallel
     /// without phasing artefacts from shared internal history.
     net_l: NamModel,
-    net_r: NamModel,
     dc_l: DcBlocker,
     dc_r: DcBlocker,
     /// Tilt EQ post-network for tone shaping.
@@ -258,7 +257,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         Ok(Self {
             shared,
             net_l: net.clone(),
-            net_r: net,
             dc_l: DcBlocker::default(),
             dc_r: DcBlocker::default(),
             tilt_l: superduper_synth_core::dsp_blocks::Tilt::default(),
@@ -300,9 +298,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // thread silently keeps using the current net.
         if let Some(mut guard) = self.shared.pending_net.try_lock() {
             if let Some(new_net) = guard.take() {
-                self.net_l = new_net.clone();
-                self.net_r = new_net;
-                slog!("process: model swapped in");
+                // Move, don't clone. NamModel derives Clone over its weight
+                // Vecs, so `net_l = new.clone(); net_r = new;` deep-copied
+                // megabytes of coefficients and then dropped two old models —
+                // all in the audio callback, guaranteeing an xrun on every
+                // model change. net_r was never read anyway.
+                self.net_l = new_net;
             }
         }
 
@@ -327,9 +328,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
                 continue;
             };
-            let chans: Vec<_> = channel_pairs.into_iter().collect();
             process_stereo_mono_net(
-                &mut self.net_l, // net_r is kept in sync via swap; left is the active one
+                &mut self.net_l,
                 &mut self.dc_l,
                 &mut self.dc_r,
                 &mut self.tilt_l,
@@ -339,7 +339,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 &mut self.smooth_output,
                 &mut self.smooth_mix,
                 &mut self.smooth_tone,
-                chans,
+                channel_pairs.into_iter(),
                 sr,
                 input_target,
                 drive_target,
@@ -355,7 +355,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_stereo_mono_net(
+fn process_stereo_mono_net<'a>(
     net: &mut NamModel,
     dc_l: &mut DcBlocker,
     dc_r: &mut DcBlocker,
@@ -366,7 +366,9 @@ fn process_stereo_mono_net(
     smooth_output: &mut SmoothedParam,
     smooth_mix: &mut SmoothedParam,
     smooth_tone: &mut SmoothedParam,
-    chans: Vec<ChannelPair<'_, f32>>,
+    // Takes the iterator itself: collecting into a Vec allocated once per
+    // block for no reason other than to call .into_iter() on it again.
+    chans: impl Iterator<Item = ChannelPair<'a, f32>>,
     sr: f32,
     input_target: f32,
     drive_target: f32,
@@ -378,7 +380,7 @@ fn process_stereo_mono_net(
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     // Two channels expected (stereo plugin); split each.
-    let mut iter = chans.into_iter();
+    let mut iter = chans;
     let Some(ch0) = iter.next() else { return };
     let ch1 = iter.next();
     let Some((read_l, write_l)) = split_io(ch0) else { return };

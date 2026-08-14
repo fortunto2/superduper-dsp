@@ -96,11 +96,18 @@ impl DirectFirConvolver {
         }
     }
 
-    pub fn replace_fir(&mut self, fir: Vec<f32>) {
-        assert_eq!(fir.len(), self.fir.len(), "FIR length must match");
+    /// Swap in new coefficients. Called from the audio thread, so a length
+    /// mismatch keeps the old FIR instead of panicking — a panic here would
+    /// take down the host's audio callback, and the rule against panicking in
+    /// `process()` does not have an exception for "this should never happen".
+    pub fn replace_fir(&mut self, fir: Vec<f32>) -> bool {
+        if fir.len() != self.fir.len() {
+            return false;
+        }
         self.fir = fir;
         // Don't clear history — would click. Coefficient swap is
         // generally smooth as long as the response shape is similar.
+        true
     }
 
     pub fn clear(&mut self) {

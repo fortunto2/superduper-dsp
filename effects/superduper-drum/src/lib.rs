@@ -131,6 +131,12 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 28, name: b"Note Map", min: 0.0,   max: 2.0, default: 0.0, unit: "" },
 ];
 
+/// Params that are discrete: enums, booleans, the preset selector. Declared to
+/// the host with IS_STEPPED so it quantises automation instead of sweeping
+/// through the intermediate values — a ramp across a preset selector otherwise
+/// recalls every kit between the two endpoints.
+const STEPPED_PARAMS: &[u32] = &[26, 27, 28];
+
 pub const fn voice_param_idx(voice: usize, offset: usize) -> usize {
     voice * PARAMS_PER_VOICE + offset
 }
@@ -244,6 +250,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset(&self.shared.inner, idx);
         }
@@ -309,6 +316,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         )
         .is_some()
         {
@@ -351,22 +359,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         CoreEventSpace::NoteOn(n) => {
                             let key = match n.key() {
                                 Match::Specific(k) => k as u8,
-                                Match::All => {
-                                    slog!("rx NoteOn key=All vel={:.2} → ignored", n.velocity());
-                                    continue;
-                                }
+                                Match::All => continue,
                             };
                             let velocity = n.velocity().clamp(0.0, 1.0) as f32;
+                            // No logging on this path: slog! takes a mutex and
+                            // writes to a file, and a 16th-note hat pattern is
+                            // ~9 events a second. sdk/src/log.rs says outright
+                            // that it is not RT-safe.
                             let voice = note_to_voice_with(note_map, key);
-                            slog!(
-                                "rx NoteOn(clap) key={} vel={:.2} → {}",
-                                key, velocity,
-                                match voice {
-                                    Some(v) => format!("trigger {:?}", v),
-                                    None if note_passthrough => "passthrough".into(),
-                                    None => "ignored (no map, passthrough off)".into(),
-                                }
-                            );
                             if let Some(voice) = voice {
                                 self.trigger(voice, velocity);
                             } else if note_passthrough {
@@ -401,7 +401,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                             // passes through verbatim.
                             let data = m.data();
                             let status = data[0] & 0xF0;
-                            slog!("rx MIDI status=0x{:02X} d1={} d2={}", status, data[1], data[2]);
                             match status {
                                 0x90 if data[2] > 0 => {
                                     let key = data[1];
@@ -599,7 +598,7 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;
@@ -641,6 +640,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
+            PRESETS.len(),
         ) {
             apply_preset(&self.shared.inner, idx);
         }

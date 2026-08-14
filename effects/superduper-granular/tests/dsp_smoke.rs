@@ -303,5 +303,7 @@ fn preset_recall_leaves_the_preset_param_consistent() {
     apply_preset_idx(&shared.inner, 1);
     let stored = shared.params[P_PRESET].load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(stored.round() as usize, 1);
-    assert!(preset_recall_target(stored, &shared.active_preset).is_none());
+    assert!(preset_recall_target(stored, &shared.active_preset,
+    superduper_granular::presets::PRESETS.len(),
+).is_none());
 }

@@ -32,38 +32,31 @@ rm -rf "$RELEASE_DIR" "$BUNDLE_TMP"
 mkdir -p "$RELEASE_DIR" "$BUNDLE_TMP"
 
 # ---------------------------------------------------------------------------
-# Plugin manifest: (crate_name, dylib_name, bundle_name, identifier).
-# Add a new entry when shipping a new effect.
+# Plugin manifest — parsed from cmake/plugin_list.cmake, which is the single
+# source of truth (the wrapper build already reads it). This list used to be
+# maintained by hand here and drifted to 11 of the 30 plugins, so a release cut
+# from this script silently shipped without Wind, Formant, Granular, Stretch
+# and fourteen others.
 # ---------------------------------------------------------------------------
-PLUGINS=(
-    "superduper-reverb|libsuperduper_reverb.dylib|SuperDuperReverb|co.superduperai.reverb"
-    "superduper-supermass|libsuperduper_supermass.dylib|SuperDuperSupermass|co.superduperai.supermass"
-    "superduper-spectrum|libsuperduper_spectrum.dylib|SuperDuperSpectrum|co.superduperai.spectrum"
-    "superduper-saturator|libsuperduper_saturator.dylib|SuperDuperSaturator|co.superduperai.saturator"
-    "superduper-delay|libsuperduper_delay.dylib|SuperDuperDelay|co.superduperai.delay"
-    "superduper-compressor|libsuperduper_compressor.dylib|SuperDuperCompressor|co.superduperai.compressor"
-    "superduper-eq|libsuperduper_eq.dylib|SuperDuperEq|co.superduperai.eq"
-    "superduper-limiter|libsuperduper_limiter.dylib|SuperDuperLimiter|co.superduperai.limiter"
-    "superduper-ambient|libsuperduper_ambient.dylib|SuperDuperAmbient|co.superduperai.ambient"
-    "superduper-pad|libsuperduper_pad.dylib|SuperDuperPad|co.superduperai.pad"
-    "superduper-vocal|libsuperduper_vocal.dylib|SuperDuperVocal|co.superduperai.vocal"
-)
+PLUGINS=()
+while IFS= read -r row; do
+    crate="${row%%|*}"
+    rest="${row#*|}"
+    bundle_name="${rest%%|*}"
+    rest="${rest#*|}"
+    clap_id="${rest%%|*}"
+    dylib="lib${crate//-/_}.dylib"
+    PLUGINS+=("${crate}|${dylib}|${bundle_name}|${clap_id}")
+done < <(grep -oE '"superduper-[^"]+"' "$ROOT/cmake/plugin_list.cmake" | tr -d '"')
+
+echo "==> ${#PLUGINS[@]} plugins from cmake/plugin_list.cmake"
 
 echo "==> Building release binaries..."
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
-# Build all nine crates in one go so cargo amortises the shared deps.
-cargo build --release \
-    -p superduper-reverb \
-    -p superduper-supermass \
-    -p superduper-spectrum \
-    -p superduper-saturator \
-    -p superduper-delay \
-    -p superduper-compressor \
-    -p superduper-eq \
-    -p superduper-limiter \
-    -p superduper-ambient \
-    -p superduper-pad \
-    -p superduper-vocal
+# One cargo invocation for all of them so the shared deps are built once.
+CRATES=()
+for entry in "${PLUGINS[@]}"; do CRATES+=(-p "${entry%%|*}"); done
+cargo build --release "${CRATES[@]}"
 
 # ---------------------------------------------------------------------------
 # Bundle each plugin as a .clap (macOS bundle = directory).
@@ -110,11 +103,7 @@ done
 # Combined bundle: all three plugins in one zip.
 # ---------------------------------------------------------------------------
 COMBINED_ZIP="$RELEASE_DIR/superduper-dsp-${VERSION}-${PLATFORM}.zip"
-(cd "$BUNDLE_TMP" && zip -qry "$COMBINED_ZIP" \
-    SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
-    SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
-    SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
-    SuperDuperPad.clap SuperDuperVocal.clap)
+(cd "$BUNDLE_TMP" && zip -qry "$COMBINED_ZIP" ./*.clap)
 echo "==> Packaged $COMBINED_ZIP"
 
 # ---------------------------------------------------------------------------

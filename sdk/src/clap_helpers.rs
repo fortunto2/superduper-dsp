@@ -292,6 +292,90 @@ pub fn split_io_parts<'b>(
     }
 }
 
+/// Splits `InPlace` buffers into a real input and a real output.
+///
+/// `split_io` hands back a `&[f32]` and a `&mut [f32]` pointing at the SAME
+/// buffer for the `InPlace` case. Both carry LLVM `noalias`, so the compiler is
+/// entitled to assume writes through one cannot be seen by reads through the
+/// other — undefined behaviour, regardless of the read-before-write discipline
+/// the caller follows. It has worked so far only because the optimiser has not
+/// exercised that right; a rustc upgrade could start mis-rendering silently.
+///
+/// This copies the input into its own buffer first, so the two slices are
+/// genuinely different memory. The copy is a per-block `memcpy` of at most
+/// `max_frames` floats — a few microseconds — and it also gives plugins that
+/// read a neighbouring index (delay taps, lookahead detectors) a stable input
+/// rather than one being overwritten underneath them.
+///
+/// Allocate once in `activate()`, call `stereo()` once per block:
+///
+/// ```ignore
+/// // in the audio processor struct
+/// io: IoSplitter,
+/// // in activate()
+/// io: IoSplitter::new(cfg.max_frames_count as usize),
+/// // in process()
+/// let Some((l_read, l_write, right)) = self.io.stereo(ch_l, ch_r) else { continue };
+/// ```
+#[derive(Default)]
+pub struct IoSplitter {
+    buf: Box<[f32]>,
+}
+
+impl IoSplitter {
+    /// One scratch buffer per channel of a stereo pair.
+    pub fn new(max_frames: usize) -> Self {
+        Self { buf: vec![0.0; max_frames.max(1) * 2].into_boxed_slice() }
+    }
+
+    /// Split a left channel and an optional right one in a single borrow —
+    /// both are needed at once, and a per-channel method would hand out two
+    /// simultaneous `&mut self`.
+    #[allow(clippy::type_complexity)]
+    /// A splitter whose buffer was moved out and never put back would silently
+    /// hand every channel a zero-length input. Callers that `mem::take` it are
+    /// expected to restore it; this makes the failure loud instead of subtle.
+    pub fn is_ready(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
+    pub fn stereo<'b>(
+        &'b mut self,
+        left: ChannelPair<'b, f32>,
+        right: Option<ChannelPair<'b, f32>>,
+    ) -> Option<(&'b [f32], &'b mut [f32], Option<(&'b [f32], &'b mut [f32])>)> {
+        debug_assert!(self.is_ready(), "IoSplitter buffer was taken and not restored");
+        let half = self.buf.len() / 2;
+        let (scratch_l, scratch_r) = self.buf.split_at_mut(half);
+        let (l_read, l_write) = split_io_scratch(left, scratch_l)?;
+        let r = right.and_then(|c| split_io_scratch(c, scratch_r));
+        Some((l_read, l_write, r))
+    }
+}
+
+/// One channel's worth of the above. `scratch` only gets used for `InPlace`.
+pub fn split_io_scratch<'b>(
+    c: ChannelPair<'b, f32>,
+    scratch: &'b mut [f32],
+) -> Option<(&'b [f32], &'b mut [f32])> {
+    match c {
+        ChannelPair::InputOutput(i, o) => Some((i, o)),
+        ChannelPair::InPlace(buf) => {
+            let n = buf.len().min(scratch.len());
+            let src = &mut scratch[..n];
+            src.copy_from_slice(&buf[..n]);
+            // `&*src` and `&mut buf[..n]` are different allocations now, so the
+            // aliasing question does not arise.
+            Some((&*src, &mut buf[..n]))
+        }
+        ChannelPair::OutputOnly(buf) => {
+            buf.fill(0.0);
+            None
+        }
+        ChannelPair::InputOnly(_) => None,
+    }
+}
+
 pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32])> {
     match split_io_parts(c) {
         (Some(read), Some(write)) => Some((read, write)),

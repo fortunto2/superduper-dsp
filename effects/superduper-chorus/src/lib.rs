@@ -399,7 +399,9 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
             channel_count: 2,
             flags: AudioPortFlags::IS_MAIN,
             port_type: Some(AudioPortType::STEREO),
-            in_place_pair: Some(ClapId::new(0)),
+            // No in-place — see the note in the sibling plugins: it existed
+            // only to let split_io alias one buffer as both input and output.
+            in_place_pair: None,
         });
     }
 }

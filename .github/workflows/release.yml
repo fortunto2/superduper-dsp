@@ -199,9 +199,34 @@ jobs:
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
+      # The wrapper build is 30 plugins x (VST3 SDK + AudioUnit SDK) of C++.
+      # rust-cache does nothing for it, so every release recompiled the SDKs
+      # from scratch: v0.13.0 spent its entire six-hour job limit here and was
+      # killed before uploading a single macOS artifact.
+      - name: Install ccache
+        run: brew install ccache
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-wrappers-${{ runner.os }}-${{ hashFiles('tools/clap-wrapper-patches/*.patch', 'cmake/plugin_list.cmake', 'CMakeLists.txt') }}
+          restore-keys: |
+            ccache-wrappers-${{ runner.os }}-
+      - name: Cache the CMake tree
+        uses: actions/cache@v4
+        with:
+          path: build-wrappers
+          key: cmake-wrappers-${{ runner.os }}-${{ hashFiles('cmake/plugin_list.cmake', 'CMakeLists.txt') }}
+          restore-keys: |
+            cmake-wrappers-${{ runner.os }}-
+
       - name: Build VST3 + AU wrappers
+        timeout-minutes: 240
         env:
           V: ${{ steps.ver.outputs.version }}
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_MAXSIZE: 2G
         shell: bash
         run: |
           set -euo pipefail

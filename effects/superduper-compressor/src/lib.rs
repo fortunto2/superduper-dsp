@@ -825,7 +825,14 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
                 channel_count: 2,
                 flags: AudioPortFlags::IS_MAIN,
                 port_type: Some(AudioPortType::STEREO),
-                in_place_pair: Some(ClapId::new(0)),
+                // No in-place: the host must hand us separate input and output
+                // buffers. With in-place allowed, split_io had to return a
+                // &[f32] and a &mut [f32] over the SAME memory to keep the
+                // "read x[i], write y[i]" style working — two noalias slices
+                // aliasing each other, which is undefined behaviour whatever
+                // the access order. The host's own copy costs the same as the
+                // scratch buffer we would otherwise keep per plugin.
+                in_place_pair: None,
             }),
             (1, true) => writer.set(&AudioPortInfo {
                 id: ClapId::new(1),

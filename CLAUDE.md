@@ -488,6 +488,20 @@ from host BPM read out of `CoreEventSpace::Transport` events.
   input file (it used to be hardcoded 44.1 kHz regardless of the material), the
   final partial block is no longer dropped, and `tail_s` appends silence so
   reverbs/pads ring out. Worked examples: `~/Music/1music/demos/*.toml`.
+- **`tools/sdsp-test-kit`** — the shared test harness. An in-process CLAP host
+  (the clack-host boilerplate that used to be copy-pasted per plugin), a
+  snapshot comparator, standard probes (level, peak, THD, aliasing, per-band
+  shape, max sample step, impulse tail), parameter-table consistency checks, and
+  a **counting global allocator** that fails a test if `process()` allocates.
+  Every plugin has `tests/quality.rs` + a checked-in `tests/quality.snap`;
+  instruments additionally assert every note in range sounds.
+  Re-record a snapshot deliberately:
+  `SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-<name> --test quality`.
+  The allocator found six real violations the lexical `rt_safety` scan could not
+  see, including a LoudnessMeter that grew a Vec by one f64 per 100 ms block.
+- **`tools/mixcheck.py`** — measure a finished mix: band balance against a
+  commercial reference, crest factor, channel correlation, per-section RMS arc.
+  See the `sdsp-mix` skill for how to act on the numbers.
 - **`tools/wave-inspect`** — diagnostic CLI for Wave's WAV-to-wavetable
   pipeline. Pitch detection, single + multi-frame extraction,
   spectrum diff per transform, asserts on invariants. Default input

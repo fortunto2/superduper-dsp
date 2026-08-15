@@ -389,6 +389,59 @@ pub fn split_io<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32]
     }
 }
 
+/// The four things every `process()` has to do before any DSP, in the one order
+/// that works.
+///
+/// Twenty-six plugins open with the same eight lines: denormals guard, apply
+/// incoming param events, emit dirty params, emit gestures. Nobody has ever
+/// forgotten one — but LinEQ got the *order* wrong in a way that looked right:
+/// it checked `dirty_params` to decide whether to rebuild its FIR, one line
+/// after `emit_dirty_param_events` had already swapped every flag to false. Host
+/// automation moved the atomics, moved the GUI, and never rebuilt the filter.
+///
+/// So this returns `changed`, sampled BEFORE the flags are cleared. A plugin
+/// that needs to react to "a parameter moved this block" reads that instead of
+/// re-reading flags that no longer exist.
+///
+/// ```ignore
+/// let pre = clap_helpers::begin_block(BlockInputs {
+///     params: &self.shared.params,
+///     dirty: &self.shared.dirty_params,
+///     gesture_begin: &self.shared.gesture_begin,
+///     gesture_end: &self.shared.gesture_end,
+///     bypass: &self.shared.bypass,
+/// }, events.input, events.output);
+/// if pre.changed { /* rebuild whatever caches the param feeds */ }
+/// ```
+pub struct BlockInputs<'a> {
+    pub params: &'a [AtomicF32],
+    pub dirty: &'a [AtomicBool],
+    pub gesture_begin: &'a [AtomicBool],
+    pub gesture_end: &'a [AtomicBool],
+    pub bypass: &'a AtomicBool,
+}
+
+pub struct BlockPrelude {
+    /// Host wants the plugin bypassed this block.
+    pub bypassed: bool,
+    /// A parameter moved since the previous block — sampled before the dirty
+    /// flags were consumed by the emit below.
+    pub changed: bool,
+}
+
+pub fn begin_block(
+    io: BlockInputs<'_>,
+    input: &InputEvents,
+    output: &mut OutputEvents,
+) -> BlockPrelude {
+    apply_param_events(io.params, input);
+    // Read before emitting: emit_dirty_param_events clears as it goes.
+    let changed = io.dirty.iter().any(|d| d.load(SyncOrdering::Relaxed));
+    emit_dirty_param_events(io.params, io.dirty, output);
+    emit_gesture_events(io.gesture_begin, io.gesture_end, output);
+    BlockPrelude { bypassed: io.bypass.load(SyncOrdering::Relaxed), changed }
+}
+
 /// Emit `ParamGestureBeginEvent` / `ParamGestureEndEvent` for every flag
 /// the GUI set since the previous block. Pair with `emit_dirty_param_events`
 /// — call this immediately after it, so the ordering inside the host's

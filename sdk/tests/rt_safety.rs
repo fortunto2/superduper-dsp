@@ -85,6 +85,49 @@ fn strip_comments(body: &str) -> String {
         .join("\n")
 }
 
+/// Reading `dirty_params` after `emit_dirty_param_events` has consumed them.
+///
+/// This is the LinEQ bug, and it is invisible on inspection: both lines look
+/// correct, the emit is where every plugin puts it, and the check reads a field
+/// that exists. The plugin simply never notices host automation. Anything that
+/// needs "did a parameter move this block" should take it from
+/// `clap_helpers::begin_block`, which samples before clearing.
+#[test]
+fn nothing_reads_dirty_flags_after_emitting_them() {
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(effects_dir()).expect("effects/ exists") {
+        let dir = entry.expect("readable entry").path();
+        let lib = dir.join("src/lib.rs");
+        if !lib.is_file() {
+            continue;
+        }
+        let crate_name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let src = std::fs::read_to_string(&lib).expect("readable lib.rs");
+        for (line, body) in process_bodies(&src) {
+            let code = strip_comments(&body);
+            let Some(emit) = code.find("emit_dirty_param_events") else { continue };
+            // Look for an actual READ of the flags — `dirty_params[i].load(..)`
+            // or `dirty_params.iter()` — not merely the identifier appearing
+            // again, which it does in the emit call's own argument list.
+            let after = &code[emit + "emit_dirty_param_events".len()..];
+            let reads_flags = after.split("dirty_params").skip(1).any(|tail| {
+                let head: String = tail.chars().take(60).collect();
+                head.contains(".load(") || head.contains(".iter()")
+            });
+            if reads_flags {
+                offenders.push(format!(
+                    "{crate_name}/src/lib.rs:{line} reads dirty_params after emitting them —                      the flags are already false there"
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "dirty flags read after they are cleared:\n  {}\n\n         Use clap_helpers::begin_block and read its `changed` field instead.",
+        offenders.join("\n  ")
+    );
+}
+
 #[test]
 fn process_bodies_obey_the_rt_rules() {
     let mut violations = Vec::new();

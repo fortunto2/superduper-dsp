@@ -261,18 +261,32 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
         // periodic ticks at the buffer rate. RAII restores host CSR.
         let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+        // begin_block does the four opening steps in the one order that works,
+        // and hands back `changed` sampled BEFORE the dirty flags are consumed.
+        // Reading those flags afterwards is what silently disabled this
+        // plugin's FIR rebuild under host automation.
+        let prelude = superduper_dsp_sdk::clap_helpers::begin_block(
+            superduper_dsp_sdk::clap_helpers::BlockInputs {
+                params: &self.shared.params,
+                dirty: &self.shared.dirty_params,
+                gesture_begin: &self.shared.gesture_begin,
+                gesture_end: &self.shared.gesture_end,
+                bypass: &self.shared.bypass,
+            },
+            events.input,
+            events.output,
+        );
 
         // Designing the FIR means an FFT plan, three Vec allocations and two
         // deallocations — ~30 ms by this crate's own estimate, against a 2.7 ms
         // block budget at 128 frames. It used to run right here, so dragging a
         // band gain dropped audio for the length of the drag. Now the audio
         // thread only notices the change and asks; the main thread designs.
-        let mut curve_moved = self.shared.fir_dirty.swap(false, Ordering::AcqRel);
+        let mut curve_moved =
+            self.shared.fir_dirty.swap(false, Ordering::AcqRel) || prelude.changed;
+        // The snapshot stays as a backstop: `changed` covers params that moved
+        // this block, this covers anything that moved while we were not looking
+        // (state load, preset recall through flush).
         for (i, last) in self.last_params.iter_mut().enumerate() {
             let now = self.shared.params[i].load(Ordering::Relaxed);
             if *last != now {
@@ -294,7 +308,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             }
         }
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        let bypassed = prelude.bypassed;
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
             let mut iter = channel_pairs.into_iter();

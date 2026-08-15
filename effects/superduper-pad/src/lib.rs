@@ -805,29 +805,17 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
                 continue;
             };
-            let mut writers: Vec<_> = channel_pairs
+            // Two channels straight off the iterator. This used to `.collect()`
+            // into a Vec — one heap allocation per block on the audio thread,
+            // in five instruments. `.collect()` does not look like `vec![`, so
+            // the lexical rt_safety scan never saw it; the counting allocator
+            // in sdsp-test-kit did.
+            let mut writers = channel_pairs
                 .into_iter()
-                .filter_map(superduper_dsp_sdk::clap_helpers::output_slice)
-                .collect();
-            if writers.len() < 2 {
-                // Mono output isn't useful for a stereo pad; silence and bail.
-                for w in writers.iter_mut() {
-                    w.fill(0.0);
-                }
+                .filter_map(superduper_dsp_sdk::clap_helpers::output_slice);
+            let (Some(out_l), Some(out_r)) = (writers.next(), writers.next()) else {
                 continue;
-            }
-
-            // The clack `Vec` allocates once per process — this is the
-            // standard pattern in the project's other effects. Acceptable
-            // because it doesn't grow under steady state (one entry per
-            // channel) and clack handles the lifetime correctly.
-            //
-            // To avoid this we'd need to take two &mut into the same Vec
-            // which Rust forbids — keep the simple version and accept the
-            // tiny per-block alloc cost.
-            let (a, b) = writers.split_at_mut(1);
-            let out_l: &mut [f32] = a[0];
-            let out_r: &mut [f32] = b[0];
+            };
             let frames = out_l.len().min(out_r.len());
 
             if bypassed {
@@ -900,10 +888,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             // Quiet any extra output channels (we only render L/R; if the
             // host gave us a surround port, downstream silence is safer than
             // garbage).
-            if writers.len() > 2 {
-                for w in writers.iter_mut().skip(2) {
-                    w.fill(0.0);
-                }
+            // Anything past the first two channels gets silence. The
+            // iterator already sits past them, so no length check is needed.
+            for extra in writers {
+                extra.fill(0.0);
             }
         }
 

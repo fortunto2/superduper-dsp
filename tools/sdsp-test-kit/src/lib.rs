@@ -29,7 +29,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub mod alloc;
 pub mod host;
+pub mod params;
 pub mod probes;
 
 pub use host::{render_effect, render_instrument, PluginUnderTest};

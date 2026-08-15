@@ -46,5 +46,26 @@ fn quality_snapshot() {
             s.record(format!("note{key}_band_{band}"), level);
         }
     }
+    sdsp_test_kit::params::record_table(&mut s, superduper_kubyz::PARAMS);
     s.finish();
+}
+
+#[test]
+fn parameter_table_is_consistent() {
+    // Ids dense and ordered, defaults inside range, names unique, stepped
+    // params actually discrete. The table is hand-maintained and its indices
+    // are duplicated into P_* constants, presets and the GUI.
+    sdsp_test_kit::params::check_table("superduper-kubyz", superduper_kubyz::PARAMS, &[]);
+}
+
+#[global_allocator]
+static ALLOC: sdsp_test_kit::alloc::CountingAllocator = sdsp_test_kit::alloc::CountingAllocator;
+
+#[test]
+fn process_does_not_allocate() {
+    // Note-on, sustain, note-off — voice allocation and stealing are where an
+    // instrument is most likely to reach for the heap.
+    sdsp_test_kit::alloc::reset();
+    let _ = render_instrument::<Target>(SR, 60, 0.3, 0.6);
+    sdsp_test_kit::alloc::assert_rt_clean("superduper-kubyz", 56);
 }

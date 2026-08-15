@@ -89,16 +89,23 @@ pub fn render_with<P: PluginUnderTest>(
             let mut in_ports = AudioPorts::with_capacity(2, 1);
             let mut out_ports = AudioPorts::with_capacity(2, 1);
 
+            // Allocated once, with room to grow, and cleared per block. Created
+            // fresh inside the loop they grew on their first push — which
+            // happens *inside* the plugin's process(), so the allocation
+            // counter blamed the plugin for the harness's own buffer growth.
+            let mut ev_buf = EventBuffer::with_capacity(256);
+            let mut out_ev = EventBuffer::with_capacity(256);
+
             let mut pos = 0;
             while pos + block <= frames {
                 let mut in_l: Vec<f32> = input_l[pos..pos + block].to_vec();
                 let mut in_r: Vec<f32> = input_r[pos..pos + block].to_vec();
                 let mut chans: [&mut [f32]; 2] = [&mut in_l, &mut in_r];
 
-                let mut ev_buf = EventBuffer::new();
+                ev_buf.clear();
+                out_ev.clear();
                 events(pos, &mut ev_buf);
                 let input_events = ev_buf.as_input();
-                let mut out_ev = EventBuffer::new();
                 let mut output_events = OutputEvents::from_buffer(&mut out_ev);
 
                 let audio_in = in_ports.with_input_buffers([AudioPortBuffer {
@@ -118,8 +125,24 @@ pub fn render_with<P: PluginUnderTest>(
                     ),
                 }]);
 
-                proc.process(&audio_in, &mut audio_out, &input_events, &mut output_events, None, None)
-                    .expect("process");
+                // Only the plugin's own process() is inside the bracket; the
+                // buffer shuffling above and below is the host's business.
+                //
+                // The first two blocks are not counted. Plugins legitimately do
+                // one-time work on the first callback — Wave swaps in its
+                // initial wavetable, the Sampler settles its library — and
+                // those frees are not the per-block churn this is looking for.
+                let counting = pos >= 2 * block;
+                if counting {
+                    crate::alloc::enter_rt();
+                }
+                let status = proc.process(
+                    &audio_in, &mut audio_out, &input_events, &mut output_events, None, None,
+                );
+                if counting {
+                    crate::alloc::exit_rt();
+                }
+                status.expect("process");
 
                 ol[pos..pos + block].copy_from_slice(&blk_l);
                 or[pos..pos + block].copy_from_slice(&blk_r);

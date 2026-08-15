@@ -3549,6 +3549,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "superduper-dsp-sdk",
  "superduper-synth-core",
 ]
 

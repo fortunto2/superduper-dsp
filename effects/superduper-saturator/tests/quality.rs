@@ -49,5 +49,29 @@ fn quality_snapshot() {
     s.record("noise_gain_db", probes::gain_db(&noise, &noise_out));
     s.record("noise_max_step", probes::max_step(&noise_out));
 
+    sdsp_test_kit::params::record_table(&mut s, superduper_saturator::PARAMS);
     s.finish();
+}
+
+#[test]
+fn parameter_table_is_consistent() {
+    // Ids dense and ordered, defaults inside range, names unique, stepped
+    // params actually discrete. The table is hand-maintained and its indices
+    // are duplicated into P_* constants, presets and the GUI.
+    sdsp_test_kit::params::check_table("superduper-saturator", superduper_saturator::PARAMS, &[]);
+}
+
+#[global_allocator]
+static ALLOC: sdsp_test_kit::alloc::CountingAllocator = sdsp_test_kit::alloc::CountingAllocator;
+
+#[test]
+fn process_does_not_allocate() {
+    // The real version of sdk/tests/rt_safety.rs: that one reads the text of
+    // process(), this one counts every malloc inside it, helpers included —
+    // which is where the ones found in review actually lived.
+    let frames = 1 << 14;
+    let noise = probes::noise(frames, 0.3);
+    sdsp_test_kit::alloc::reset();
+    let _ = render_effect::<Saturator>(SR, &noise, &noise);
+    sdsp_test_kit::alloc::assert_rt_clean("superduper-saturator", frames / 512);
 }

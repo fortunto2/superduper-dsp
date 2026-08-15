@@ -11,3 +11,4 @@ clack-plugin = "0.1"
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "note-ports", "latency", "clack-host", "clack-plugin"] }
 clack-common = "0.1"
 superduper-synth-core = { path = "../../synth-core" }
+superduper-dsp-sdk = { path = "../../sdk" }

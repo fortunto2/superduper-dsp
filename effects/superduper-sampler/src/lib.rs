@@ -506,15 +506,17 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut writers: Vec<_> = channel_pairs.into_iter()
-                .filter_map(output_slice).collect();
-            if writers.len() < 2 {
-                for w in writers.iter_mut() { w.fill(0.0); }
+            // Two channels straight off the iterator. This used to `.collect()`
+            // into a Vec — one heap allocation per block on the audio thread,
+            // in five instruments. `.collect()` does not look like `vec![`, so
+            // the lexical rt_safety scan never saw it; the counting allocator
+            // in sdsp-test-kit did.
+            let mut writers = channel_pairs
+                .into_iter()
+                .filter_map(superduper_dsp_sdk::clap_helpers::output_slice);
+            let (Some(out_l), Some(out_r)) = (writers.next(), writers.next()) else {
                 continue;
-            }
-            let (a, b) = writers.split_at_mut(1);
-            let out_l = a[0].as_mut();
-            let out_r = b[0].as_mut();
+            };
             let frames = out_l.len().min(out_r.len());
 
             if bypassed {

@@ -76,7 +76,16 @@ pub struct LoudnessMeter {
     /// Total K-weighted power accumulator across the entire program
     /// (for integrated loudness). Gated at -70 LUFS absolute + -10 LU
     /// relative.
-    integrated_blocks: Vec<f64>,
+    /// Integrated loudness as a histogram of block levels, not a list of them.
+    ///
+    /// The list version pushed one f64 per 100 ms block and grew to 288 KB over
+    /// an hour — and every push that hit the Vec's capacity allocated, on the
+    /// audio thread, inside process(). A histogram is what libebur128 and
+    /// ffmpeg use: fixed memory, no allocation, and the gating maths works the
+    /// same because it only ever needs sums and counts.
+    ///
+    /// One bin per 0.1 LU from -70 (the absolute gate) to +5 LUFS.
+    histogram: [u32; HISTOGRAM_BINS],
 }
 
 const ABSOLUTE_GATE_LUFS: f32 = -70.0;
@@ -94,7 +103,7 @@ impl LoudnessMeter {
             block_size,
             block_history: Vec::with_capacity(30),
             valid_blocks: 0,
-            integrated_blocks: Vec::new(),
+            histogram: [0; HISTOGRAM_BINS],
         }
     }
 
@@ -103,7 +112,7 @@ impl LoudnessMeter {
         self.block_samples_remaining = self.block_size;
         self.block_history.clear();
         self.valid_blocks = 0;
-        self.integrated_blocks.clear();
+        self.histogram = [0; HISTOGRAM_BINS];
     }
 
     /// Feed one stereo sample. Returns true when a 100 ms block
@@ -137,10 +146,11 @@ impl LoudnessMeter {
         }
         self.block_history.push(mean_square);
         self.valid_blocks = self.valid_blocks.saturating_add(1).min(30);
-        // Integrated accumulator — keep ALL blocks, gate at read time.
-        // Cap at 1 hour of program (36000 blocks × 8 B = 288 KB).
-        if self.integrated_blocks.len() < 36000 {
-            self.integrated_blocks.push(mean_square);
+        // Integrated accumulator — one histogram bin per block, gated at read
+        // time. Allocation-free and constant-memory however long the transport
+        // runs.
+        if let Some(bin) = histogram_bin(mean_square) {
+            self.histogram[bin] = self.histogram[bin].saturating_add(1);
         }
         self.block_sum = 0.0;
         self.block_samples_remaining = self.block_size;
@@ -175,33 +185,66 @@ impl LoudnessMeter {
     /// absolute gate (-70 LUFS), compute mean, then drop blocks below
     /// `mean - 10 LU`, recompute. Empty / silent inputs → -100.0.
     pub fn integrated_lufs(&self) -> f32 {
-        if self.integrated_blocks.is_empty() {
+        // Stage 1: everything above the absolute gate. Each bin contributes its
+        // centre's mean-square, weighted by how many blocks landed in it.
+        let (sum1, count1) = self.histogram_sum_above(0);
+        if count1 == 0 {
             return -100.0;
         }
-        let abs_gate_ms = lufs_to_mean_square(ABSOLUTE_GATE_LUFS);
-        let stage1: Vec<f64> = self
-            .integrated_blocks
-            .iter()
-            .copied()
-            .filter(|ms| *ms > abs_gate_ms)
-            .collect();
-        if stage1.is_empty() {
-            return -100.0;
-        }
-        let stage1_mean = stage1.iter().sum::<f64>() / stage1.len() as f64;
-        let stage1_lufs = mean_square_to_lufs(stage1_mean);
-        let rel_gate_ms = lufs_to_mean_square(stage1_lufs + RELATIVE_GATE_LU);
-        let stage2: Vec<f64> = stage1
-            .iter()
-            .copied()
-            .filter(|ms| *ms > rel_gate_ms)
-            .collect();
-        if stage2.is_empty() {
+        let stage1_lufs = mean_square_to_lufs(sum1 / count1 as f64);
+
+        // Stage 2: re-gate at 10 LU below that mean.
+        let rel_gate_lufs = stage1_lufs + RELATIVE_GATE_LU;
+        let first_bin = match histogram_bin(lufs_to_mean_square(rel_gate_lufs)) {
+            Some(b) => b,
+            // Gate below the histogram's floor — nothing more to drop.
+            None if rel_gate_lufs < ABSOLUTE_GATE_LUFS => 0,
+            None => return stage1_lufs,
+        };
+        let (sum2, count2) = self.histogram_sum_above(first_bin);
+        if count2 == 0 {
             return stage1_lufs;
         }
-        let stage2_mean = stage2.iter().sum::<f64>() / stage2.len() as f64;
-        mean_square_to_lufs(stage2_mean)
+        mean_square_to_lufs(sum2 / count2 as f64)
     }
+
+    /// (sum of mean-squares, block count) for every bin from `first` up.
+    fn histogram_sum_above(&self, first: usize) -> (f64, u64) {
+        let mut sum = 0.0;
+        let mut count = 0u64;
+        for (bin, &n) in self.histogram.iter().enumerate().skip(first) {
+            if n == 0 {
+                continue;
+            }
+            sum += bin_mean_square(bin) * n as f64;
+            count += n as u64;
+        }
+        (sum, count)
+    }
+}
+
+/// Bin width in LU, and the range covered. -70 LUFS is the absolute gate, so
+/// anything below it is dropped rather than binned.
+const HISTOGRAM_BIN_LU: f64 = 0.1;
+const HISTOGRAM_BINS: usize = 750; // -70 .. +5 LUFS
+
+/// Which bin a block's mean-square falls in, or None if below the gate.
+fn histogram_bin(mean_square: f64) -> Option<usize> {
+    if mean_square <= 0.0 {
+        return None;
+    }
+    let lufs = mean_square_to_lufs(mean_square) as f64;
+    if lufs < ABSOLUTE_GATE_LUFS as f64 {
+        return None;
+    }
+    let idx = ((lufs - ABSOLUTE_GATE_LUFS as f64) / HISTOGRAM_BIN_LU) as usize;
+    Some(idx.min(HISTOGRAM_BINS - 1))
+}
+
+/// The mean-square at the centre of a bin.
+fn bin_mean_square(bin: usize) -> f64 {
+    let lufs = ABSOLUTE_GATE_LUFS as f64 + (bin as f64 + 0.5) * HISTOGRAM_BIN_LU;
+    lufs_to_mean_square(lufs as f32)
 }
 
 #[inline]

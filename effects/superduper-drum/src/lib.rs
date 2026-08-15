@@ -441,17 +441,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // per block is correct + cheap.
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut writers: Vec<_> = channel_pairs
-                .into_iter()
-                .filter_map(output_slice)
-                .collect();
-            if writers.len() < 2 {
-                for w in writers.iter_mut() { w.fill(0.0); }
+            // Take the two channels straight off the iterator. This used to
+            // `.collect()` them into a Vec — one heap allocation per block, in
+            // the audio callback, in five instruments. The lexical rt_safety
+            // scan missed it because `.collect()` does not look like `vec![`.
+            let mut writers = channel_pairs.into_iter().filter_map(output_slice);
+            let (Some(out_l), Some(out_r)) = (writers.next(), writers.next()) else {
                 continue;
-            }
-            let (a, b) = writers.split_at_mut(1);
-            let out_l = a[0].as_mut();
-            let out_r = b[0].as_mut();
+            };
             let frames = out_l.len().min(out_r.len());
 
             if bypassed {

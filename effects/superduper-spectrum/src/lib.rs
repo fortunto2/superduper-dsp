@@ -206,21 +206,35 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             // Collect L (and optional R) slices first so the loudness
             // meter sees true stereo. The spectrum visualiser then
             // pushes L into its own ring.
-            let mut slices: Vec<&[f32]> = Vec::with_capacity(2);
+            // Two fixed slots instead of a Vec: `Vec::with_capacity(2)` still
+            // allocates, once per block, on the audio thread — 84 allocations
+            // over 32 blocks in the counting-allocator test. An analyzer that
+            // mallocs every block is the last plugin that should.
+            let mut slices: [Option<&[f32]>; 2] = [None, None];
+            let mut n_slices = 0;
             for channel_pair in channel_pairs {
-                match channel_pair {
+                let captured = match channel_pair {
                     ChannelPair::InputOutput(input, output) => {
                         output.copy_from_slice(input);
-                        slices.push(input);
+                        Some(&*input)
                     }
-                    ChannelPair::InPlace(buf) => slices.push(buf),
-                    ChannelPair::OutputOnly(buf) => buf.fill(0.0),
-                    ChannelPair::InputOnly(input) => slices.push(input),
+                    ChannelPair::InPlace(buf) => Some(&*buf),
+                    ChannelPair::OutputOnly(buf) => {
+                        buf.fill(0.0);
+                        None
+                    }
+                    ChannelPair::InputOnly(input) => Some(&*input),
+                };
+                if let Some(slice) = captured {
+                    if n_slices < slices.len() {
+                        slices[n_slices] = Some(slice);
+                        n_slices += 1;
+                    }
                 }
             }
             if !bypassed {
-                if let Some(left) = slices.first().copied() {
-                    let right = slices.get(1).copied().unwrap_or(left);
+                if let Some(left) = slices[0] {
+                    let right = slices[1].unwrap_or(left);
                     let mut block_rolled_over = false;
                     let n = left.len().min(right.len());
                     for i in 0..n {

@@ -18,6 +18,10 @@ use std::path::{Path, PathBuf};
 const BANNED: &[(&str, &str, &[&str])] = &[
     ("vec![", "heap allocation — pre-allocate in activate()", &[]),
     (".to_vec()", "heap allocation", &[]),
+    // Added after the counting allocator in sdsp-test-kit found five instruments
+    // collecting their channel list into a Vec every block — invisible to this
+    // scan, because `.collect()` does not look like an allocation.
+    (".collect()", "heap allocation — iterate instead of collecting", &[]),
     ("Vec::new()", "heap allocation", &[]),
     ("Box::new(", "heap allocation", &[]),
     ("format!(", "heap allocation", &[]),

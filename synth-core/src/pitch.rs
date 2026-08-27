@@ -130,6 +130,18 @@ pub fn yin_pitch_window(
             }
         }
     }
+    refine_tau(cmnd, best_tau, min_period, n, sample_rate)
+}
+
+/// Shared tail of both YIN paths: reject a weak/short valley, refine the lag
+/// by parabolic interpolation over the CMND neighbours, convert to Hz.
+fn refine_tau(
+    cmnd: &[f32],
+    best_tau: usize,
+    min_period: usize,
+    n: usize,
+    sample_rate: f32,
+) -> Option<f32> {
     if best_tau < min_period || cmnd[best_tau] > 0.5 {
         return None;
     }
@@ -180,6 +192,21 @@ pub struct YinPitchTracker {
     sample_rate: f32,
     last_hz: f32,
     default_hz: f32,
+    /// Analyses since the last confident estimate — gates the continuity
+    /// pull in the candidate scoring (see `yin_fft`).
+    hold_hops: u32,
+    /// Consecutive analyses where the continuity pull overrode the
+    /// evidence-only candidate — the stubbornness budget (see `yin_fft`).
+    pull_streak: u32,
+    // FFT machinery for the difference function — see `yin_fft`. All
+    // pre-allocated here so `push`/`analyze` stay alloc-free.
+    fft: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
+    ifft: std::sync::Arc<dyn realfft::ComplexToReal<f32>>,
+    fft_in: Box<[f32]>,
+    spec: Box<[realfft::num_complex::Complex<f32>]>,
+    ac: Box<[f32]>,
+    fft_scratch: Box<[realfft::num_complex::Complex<f32>]>,
+    energy: Box<[f64]>,
 }
 
 impl YinPitchTracker {
@@ -202,7 +229,21 @@ impl YinPitchTracker {
         // The window must comfortably contain two periods of the lowest note.
         let window_len = window_len.max(2 * max_period + 2);
         max_period = max_period.min(window_len / 2 - 1);
+        let m = (2 * window_len).next_power_of_two();
+        let mut planner = realfft::RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(m);
+        let ifft = planner.plan_fft_inverse(m);
+        let scratch_len = fft.get_scratch_len().max(ifft.get_scratch_len());
         Self {
+            fft_in: vec![0.0; m].into_boxed_slice(),
+            spec: vec![realfft::num_complex::Complex::new(0.0, 0.0); m / 2 + 1]
+                .into_boxed_slice(),
+            ac: vec![0.0; m].into_boxed_slice(),
+            fft_scratch: vec![realfft::num_complex::Complex::new(0.0, 0.0); scratch_len]
+                .into_boxed_slice(),
+            energy: vec![0.0; window_len + 1].into_boxed_slice(),
+            fft,
+            ifft,
             ring: vec![0.0; window_len].into_boxed_slice(),
             scratch: vec![0.0; window_len].into_boxed_slice(),
             cmnd: vec![1.0; max_period + 1].into_boxed_slice(),
@@ -216,6 +257,8 @@ impl YinPitchTracker {
             sample_rate: sr,
             last_hz: default_hz,
             default_hz,
+            hold_hops: u32::MAX, // no continuity pull before the first lock
+            pull_streak: 0,
         }
     }
 
@@ -251,17 +294,109 @@ impl YinPitchTracker {
             let idx = if idx >= n { idx - n } else { idx };
             self.scratch[i] = self.ring[idx];
         }
-        if let Some(hz) = yin_pitch_window(
-            &self.scratch,
-            self.sample_rate,
-            self.min_period,
-            self.max_period,
-            self.threshold,
-            &mut self.cmnd,
-        ) {
+        if let Some(hz) = self.yin_fft() {
             self.last_hz = hz;
+            self.hold_hops = 0;
+        } else {
+            // Hold last_hz — unvoiced consonant / brief silence.
+            self.hold_hops = self.hold_hops.saturating_add(1);
         }
-        // else: hold last_hz — unvoiced consonant / brief silence.
+    }
+
+    /// FFT-accelerated YIN over `scratch`. The scalar difference function is
+    /// O(max_period · window) per analysis — ~800k f64 mul-adds at a vocal
+    /// range, and it was the whole CPU story of the pitch-tracked plugins
+    /// (Tune runs TWO trackers and burned ~25% of a core). Same estimate,
+    /// same valley logic: d(τ) = Σx²[0..W−τ] + Σx²[τ..W] − 2·autocorr(τ),
+    /// with the autocorrelation from one forward/inverse real-FFT pair over
+    /// the zero-padded window (M ≥ 2W keeps the correlation linear, not
+    /// circular). Float FFT noise perturbs the CMND floor by ~1e-4, far
+    /// below the 0.15 valley threshold.
+    fn yin_fft(&mut self) -> Option<f32> {
+        let w = self.scratch.len();
+        let n = self.max_period + 1;
+        let m = self.fft_in.len();
+        self.fft_in[..w].copy_from_slice(&self.scratch);
+        self.fft_in[w..].fill(0.0);
+        self.fft
+            .process_with_scratch(&mut self.fft_in, &mut self.spec, &mut self.fft_scratch)
+            .ok()?;
+        for c in self.spec.iter_mut() {
+            *c = realfft::num_complex::Complex::new(c.re * c.re + c.im * c.im, 0.0);
+        }
+        self.ifft
+            .process_with_scratch(&mut self.spec, &mut self.ac, &mut self.fft_scratch)
+            .ok()?;
+        let scale = 1.0 / m as f32;
+        self.energy[0] = 0.0;
+        for i in 0..w {
+            let x = self.scratch[i] as f64;
+            self.energy[i + 1] = self.energy[i] + x * x;
+        }
+        let total = self.energy[w];
+        self.cmnd[0] = 1.0;
+        let mut acc = 0.0f64;
+        for tau in 1..n {
+            let p = self.energy[w - tau];
+            let q = total - self.energy[tau];
+            let ac_tau = (self.ac[tau] * scale) as f64;
+            let s = (p + q - 2.0 * ac_tau).max(0.0);
+            acc += s;
+            self.cmnd[tau] = if acc > 0.0 { (s * tau as f64 / acc) as f32 } else { 1.0 };
+        }
+
+        // Praat-style candidate scoring instead of "first valley wins".
+        // Every CMND local minimum under 0.5 is a candidate, scored by its
+        // depth plus a small octave cost (favouring the shorter lag — the
+        // classic YIN disambiguator) plus a CONTINUITY pull toward the
+        // running pitch. The pull is what kills the octave flips hard-tune
+        // turns into audible tearing: during an amplitude dip the true
+        // valley degrades while the 2·T subharmonic stays deep, and depth
+        // alone would flip an octave down for a few hops.
+        //
+        // Continuity cannot be allowed to win forever, though — a signal
+        // that really is 2× periodic gives NO instantaneous evidence
+        // against the old octave, so a genuine octave leap would latch. The
+        // stubbornness budget resolves it by time, the only thing that
+        // distinguishes a dip from a jump: when the evidence-only choice
+        // disagrees with the continuity choice for STREAK consecutive
+        // analyses (~130 ms at hop 256 / 48 kHz), the evidence wins.
+        const OCTAVE_COST: f32 = 0.02;
+        const JUMP_COST: f32 = 0.10;
+        const STREAK: u32 = 25;
+        let recent = self.hold_hops < 12;
+        let prev = self.last_hz;
+        let mut ev_best = (f32::INFINITY, 0usize); // (score, tau) without pull
+        let mut co_best = (f32::INFINITY, 0usize); // with pull
+        for tau in self.min_period..n.saturating_sub(1) {
+            let v = self.cmnd[tau];
+            if v > 0.5 || self.cmnd[tau - 1] < v || self.cmnd[tau + 1] <= v {
+                continue;
+            }
+            let base = v + OCTAVE_COST * (tau as f32 / self.min_period as f32).log2();
+            if base < ev_best.0 {
+                ev_best = (base, tau);
+            }
+            let mut score = base;
+            if recent && prev > 0.0 {
+                let f = self.sample_rate / tau as f32;
+                score += JUMP_COST * (f / prev).log2().abs().min(2.0);
+            }
+            if score < co_best.0 {
+                co_best = (score, tau);
+            }
+        }
+        let best_tau = if co_best.1 == ev_best.1 {
+            self.pull_streak = 0;
+            co_best.1
+        } else if self.pull_streak >= STREAK {
+            self.pull_streak = 0;
+            ev_best.1
+        } else {
+            self.pull_streak += 1;
+            co_best.1
+        };
+        refine_tau(&self.cmnd, best_tau, self.min_period, n, self.sample_rate)
     }
 
     /// Current held fundamental in Hz (last confident estimate, or
@@ -280,7 +415,121 @@ impl YinPitchTracker {
         self.filled = 0;
         self.hop_counter = 0;
         self.last_hz = self.default_hz;
+        self.hold_hops = u32::MAX;
+        self.pull_streak = 0;
     }
+}
+
+/// How sharply defined is the glottal epoch in this signal?
+///
+/// TD-PSOLA reads each grain around a snapped energy peak but writes it to an
+/// unsnapped synthesis mark. That is transparent when the peak IS a glottal
+/// closure — same place in every period — and destructive when there is no
+/// pulse and the "peak" wanders (measured: −66.9 dB of noise becomes −2.6 dB
+/// on a smooth tone). So the question a router has to answer is not "is this
+/// voiced" but "does this have a repeatable epoch", and this is that number.
+///
+/// Two independent factors, multiplied, because there are two independent
+/// ways PSOLA gets hurt:
+/// * **crest excess** — mean per-period peak over the window's RMS, minus the
+///   √2 a pure sine already has. Answers *is there an epoch at all*. A smooth
+///   tone has none, so its grains are continuous waveform and a misplaced
+///   write point scrambles their phase.
+/// * **tonality** — harmonic-to-noise ratio from the normalised
+///   autocorrelation at lag `t0`, `10·log10(r/(1−r))`, clamped to 20 dB.
+///   Answers *is the rest of the period signal or hiss*. Noise hurts PSOLA
+///   for a different reason: overlap-adding grains at period spacing correlates
+///   whatever noise they contain, which combs it into a buzz. 20 dB is the
+///   clinical normal/breathy boundary for a sustained vowel, and the clamp is
+///   load-bearing, not cosmetic — a pure synth tone measures 42.6 dB and would
+///   otherwise be credited its way over the line.
+///
+/// Two cheaper descriptors were tried first and rejected on measurement, not
+/// on taste. Plain peak-to-RMS crest scores a breathy take 1.21 against a
+/// normal sung note's 1.25 — aspiration barely moves the crest, because the
+/// pulse still peaks. Energy concentration around the peak inverts the answer
+/// outright (pulsed 1.50, smooth 1.77): a band-limited sawtooth has a sharper
+/// instantaneous peak than an impulse rung through resonators.
+///
+/// `window` should cover several periods (4·t0 is plenty); only the trailing
+/// whole periods are used, and the last one only as a correlation partner.
+/// Returns 0.0 for silence, for a `t0` under 8 samples, or for a window too
+/// short to hold three periods.
+///
+/// Alloc-free and branch-light — safe to call from `process()`. Cost is one
+/// pass over the window plus a few ops per period.
+///
+/// **Threshold: 0.9** — at or above it PSOLA, below it the phase vocoder. Not
+/// a taste call; it is the midpoint of the only gap in the measurements.
+/// Sharpness measured 2026-08-27 on the reference signals in
+/// `synth-core/tests/common` (median of 40 readings over the steady middle),
+/// paired with what PSOLA does to the same signal at unity shift, from
+/// `superduper-pitch/tests/engine_transparency.rs`:
+///
+/// ```text
+/// source              sharpness   PSOLA at unity shift        verdict
+/// pulsed voice            2.65    -23.9 dB -> -24.2 dB   transparent
+/// voiced (glottal)        1.25    -20.5 dB -> -20.8 dB   transparent
+/// ---- 0.9 -------------------------------------------------------------
+/// breathy take            0.58     -9.1 dB ->  -1.4 dB   7.7 dB worse
+/// smooth tone             0.46    -66.9 dB ->  -2.6 dB   64 dB worse
+/// ```
+///
+/// 0.9 sits 1.4× under the worst source PSOLA handles and 1.6× over the best
+/// one it damages; end to end the two classes are 2.2× apart, and the pair
+/// the plan named — pulsed against smooth — is 5.8× apart. Note where the
+/// breathy take lands: it is unambiguously a voice and still belongs on the
+/// phase-vocoder side, which is the whole reason this measures the epoch
+/// instead of voicedness.
+///
+/// The gap is narrowest around a breathy voice, so a router must not act on a
+/// single reading — hold the decision for several analyses and hysteresise it
+/// (`PitchEngine` does).
+pub fn epoch_sharpness(window: &[f32], t0: usize) -> f32 {
+    if t0 < 8 || window.len() < 3 * t0 {
+        return 0.0;
+    }
+    // One period is spent as the last correlation partner, so `pairs` cycles
+    // are scored and `pairs + 1` are read.
+    let pairs = (window.len() / t0 - 1).min(8);
+    let seg = &window[window.len() - (pairs + 1) * t0..];
+
+    let mut sum_sq = 0.0f32;
+    for &v in &seg[..pairs * t0] {
+        sum_sq += v * v;
+    }
+    let rms = (sum_sq / (pairs * t0) as f32).sqrt();
+    if rms < 1e-6 {
+        return 0.0;
+    }
+
+    let mut peak_sum = 0.0f32;
+    let mut r_sum = 0.0f32;
+    for p in 0..pairs {
+        let this = &seg[p * t0..(p + 1) * t0];
+        let next = &seg[(p + 1) * t0..(p + 2) * t0];
+        let mut peak = 0.0f32;
+        let (mut num, mut ea, mut eb) = (0.0f32, 0.0f32, 0.0f32);
+        for i in 0..t0 {
+            let (a, b) = (this[i], next[i]);
+            peak = peak.max(a.abs());
+            num += a * b;
+            ea += a * a;
+            eb += b * b;
+        }
+        peak_sum += peak;
+        // Normalised cross-correlation of consecutive periods. Anything that
+        // repeats exactly (harmonics, ringing formants) scores 1; anything
+        // that does not (aspiration, hiss, a mistracked t0) drags it down.
+        r_sum += num / (ea * eb).sqrt().max(1e-20);
+    }
+    let n = pairs as f32;
+    let crest_excess = ((peak_sum / n) / rms - core::f32::consts::SQRT_2).max(0.0);
+    let r = (r_sum / n).clamp(0.0, 0.999_99);
+    let hnr_db = 10.0 * (r / (1.0 - r)).log10();
+    let tonality = (hnr_db / 20.0).clamp(0.0, 1.0);
+
+    crest_excess * tonality
 }
 
 /// Find the loudest contiguous `probe`-sample window in `mono` and

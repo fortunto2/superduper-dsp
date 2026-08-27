@@ -387,3 +387,236 @@ fn formant_tracker_freezes_below_gate() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// YinPitchTracker — candidate scoring (octave stability + jump following)
+// ---------------------------------------------------------------------------
+
+fn saw(f0: f32, sr: f32, n: usize, amp: impl Fn(usize) -> f32) -> Vec<f32> {
+    let mut phase = 0.0f32;
+    (0..n)
+        .map(|i| {
+            phase = (phase + f0 / sr).fract();
+            amp(i) * (2.0 * phase - 1.0)
+        })
+        .collect()
+}
+
+#[test]
+fn pitch_tracker_holds_octave_through_tremolo() {
+    use superduper_synth_core::pitch::YinPitchTracker;
+    let sr = 48_000.0;
+    let f0 = 200.0;
+    // Amplitude tremolo is the classic octave-flip provocation: the AM
+    // sidebands make the 2·T valley competitive with the true period.
+    let sig = saw(f0, sr, 2 * 48_000, |i| {
+        0.55 + 0.45 * (i as f32 * 6.0 / sr * core::f32::consts::TAU).sin()
+    });
+    let mut tr = YinPitchTracker::new(sr, 70.0, 1000.0, 1536, 256, 150.0);
+    let mut estimates = Vec::new();
+    for (i, &x) in sig.iter().enumerate() {
+        if tr.push(x) && i > 24_000 {
+            estimates.push(tr.current_hz());
+        }
+    }
+    assert!(estimates.len() > 100, "tracker produced too few estimates");
+    for hz in estimates {
+        let st = (hz / f0).log2().abs() * 12.0;
+        assert!(st < 0.8, "octave/step error: {hz:.1} Hz vs {f0} Hz ({st:.2} st)");
+    }
+}
+
+#[test]
+fn pitch_tracker_follows_a_real_jump() {
+    use superduper_synth_core::pitch::YinPitchTracker;
+    let sr = 48_000.0;
+    let a = saw(220.0, sr, 48_000, |_| 0.8);
+    let b = saw(330.0, sr, 48_000, |_| 0.8);
+    let mut tr = YinPitchTracker::new(sr, 70.0, 1000.0, 1536, 256, 150.0);
+    for &x in &a {
+        tr.push(x);
+    }
+    // The continuity pull must slow a legitimate jump by hops, not block it.
+    let mut caught_after = None;
+    let mut hops = 0;
+    for &x in &b {
+        if tr.push(x) {
+            hops += 1;
+            if caught_after.is_none() && (tr.current_hz() / 330.0).log2().abs() * 12.0 < 0.6 {
+                caught_after = Some(hops);
+            }
+        }
+    }
+    let caught = caught_after.expect("tracker never reached the new pitch");
+    assert!(caught <= 30, "took {caught} hops (>160 ms) to follow a fifth up");
+    let final_hz = tr.current_hz();
+    assert!(
+        ((final_hz / 330.0).log2().abs() * 12.0) < 0.6,
+        "settled at {final_hz:.1} Hz instead of 330"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SwiftF0 — streaming Rust inference vs the reference ONNX model (golden)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn swiftf0_streaming_matches_reference_model() {
+    use superduper_synth_core::swiftf0::SwiftF0Tracker;
+    let load = |b: &'static [u8]| -> Vec<f32> {
+        b.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    };
+    let audio = load(include_bytes!("data/swiftf0_golden_audio.bin"));
+    let ref_hz = load(include_bytes!("data/swiftf0_golden_hz.bin"));
+    let ref_conf = load(include_bytes!("data/swiftf0_golden_conf.bin"));
+
+    let mut tr = SwiftF0Tracker::new(16_000.0, 150.0);
+    let mut hz = Vec::new();
+    let mut conf = Vec::new();
+    let t0 = std::time::Instant::now();
+    for &x in &audio {
+        if tr.push(x) {
+            hz.push(tr.current_hz());
+            conf.push(tr.confidence());
+        }
+    }
+    let el = t0.elapsed().as_secs_f64();
+    let dur = audio.len() as f64 / 16_000.0;
+    println!("swiftf0 rust inference: {:.1}x realtime ({:.2} ms per s of audio)",
+             dur / el, el / dur * 1000.0);
+    assert!(hz.len() + 2 >= ref_hz.len(), "frame count: {} vs {}", hz.len(), ref_hz.len());
+
+    // Streaming computes every column with the future taps zeroed, so it is
+    // CAUSAL where the reference is zero-phase (its conv context reaches ±10
+    // frames into the future) — on a sweeping pitch that reads as a constant
+    // group delay, not an error. Align by the best constant lag (bounded),
+    // then bound the residual in cents where the reference is voiced.
+    let n = hz.len().min(ref_hz.len());
+    let stats = |lag: usize| -> (f32, f32) {
+        let mut cents: Vec<f32> = (lag..n)
+            .filter(|&i| ref_conf[i - lag] > 0.6)
+            .map(|i| ((hz[i] / ref_hz[i - lag]).log2() * 1200.0).abs())
+            .collect();
+        cents.sort_by(f32::total_cmp);
+        (cents[cents.len() / 2], cents[cents.len() * 95 / 100])
+    };
+    let (lag, (med, p95)) = (0..6usize)
+        .map(|l| (l, stats(l)))
+        .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+        .unwrap();
+    // Steady-pitch frames are the ones a correction decision hangs on; the
+    // sweep residual is delay semantics, not accuracy.
+    let mut steady: Vec<f32> = (lag..n)
+        .filter(|&i| {
+            i >= lag + 1
+                && ref_conf[i - lag] > 0.6
+                && (ref_hz[i - lag] - ref_hz[i - lag - 1]).abs() < 1.0
+        })
+        .map(|i| ((hz[i] / ref_hz[i - lag]).log2() * 1200.0).abs())
+        .collect();
+    steady.sort_by(f32::total_cmp);
+    let smed = steady[steady.len() / 2];
+    let sp95 = steady[steady.len() * 95 / 100];
+    println!(
+        "swiftf0 golden: lag {lag}, overall median {med:.2} / p95 {p95:.2} cents,          steady ({}) median {smed:.2} / p95 {sp95:.2} cents",
+        steady.len()
+    );
+    // Thresholds are the measured causal-streaming characteristic plus
+    // headroom, not an aspiration: the offline reference sees ±10 frames of
+    // future context (5 layers × ±2), so matching it exactly would cost
+    // 160 ms of latency. ~6 cents on steady notes is the price of running
+    // live, and it sits at the edge of pitch JND — a regression past these
+    // numbers means the port broke, not that streaming got worse.
+    assert!(lag <= 4, "group delay too large: {lag} frames");
+    assert!(smed < 10.0, "steady median {smed:.2} cents");
+    assert!(sp95 < 40.0, "steady p95 {sp95:.2} cents");
+    assert!(med < 30.0, "overall median {med:.2} cents at lag {lag}");
+
+    let dconf: f32 = (lag..n)
+        .map(|i| (conf[i] - ref_conf[i - lag]).abs())
+        .sum::<f32>()
+        / (n - lag) as f32;
+    println!("swiftf0 golden: mean |dConf| {dconf:.3}");
+    assert!(dconf < 0.15, "confidence drifted: {dconf:.3}");
+}
+
+#[test]
+fn swiftf0_resampler_tracks_a_saw_at_48k() {
+    use superduper_synth_core::swiftf0::SwiftF0Tracker;
+    let sr = 48_000.0;
+    let mut tr = SwiftF0Tracker::new(sr, 150.0);
+    let mut phase = 0.0f32;
+    let mut est = Vec::new();
+    for _ in 0..(2 * 48_000) {
+        phase = (phase + 220.0 / sr).fract();
+        if tr.push(0.6 * (2.0 * phase - 1.0)) && tr.confidence() > 0.5 {
+            est.push(tr.current_hz());
+        }
+    }
+    assert!(est.len() > 60, "too few voiced estimates: {}", est.len());
+    est.sort_by(f32::total_cmp);
+    let med = est[est.len() / 2];
+    assert!((med - 220.0).abs() < 1.5, "median {med:.2} Hz, want 220");
+}
+
+// ---------------------------------------------------------------------------
+// epoch_sharpness — the descriptor that decides which pitch engine runs
+// ---------------------------------------------------------------------------
+
+mod common;
+
+/// The number itself. Printed so the doc-comment table in `pitch.rs` can be
+/// checked against reality without re-deriving it by hand.
+fn sharpness_of(x: &[f32]) -> f32 {
+    use superduper_synth_core::pitch::epoch_sharpness;
+    let t0 = (common::SR / common::F0).round() as usize;
+    // Measure over the steady middle, the way a running tracker would see it:
+    // one reading per period, take the median so a single odd window can't
+    // decide an engine.
+    let mut vals: Vec<f32> = (0..40)
+        .map(|k| {
+            let end = (0.8 * common::SR) as usize + k * t0;
+            epoch_sharpness(&x[end - 6 * t0..end], t0)
+        })
+        .collect();
+    vals.sort_by(f32::total_cmp);
+    vals[vals.len() / 2]
+}
+
+#[test]
+fn epoch_sharpness_separates_pulsed_from_smooth() {
+    let pulsed = sharpness_of(&common::pulsed(2.0));
+    let smooth = sharpness_of(&common::smooth(2.0));
+    println!("epoch sharpness: pulsed {pulsed:.2}, smooth {smooth:.2}");
+    // The plan's bar. PSOLA is transparent on the first and 64 dB worse on
+    // the second, so a descriptor that cannot tell them apart is useless.
+    assert!(
+        pulsed > 2.0 * smooth.max(0.05),
+        "need a clear margin, got pulsed {pulsed:.2} vs smooth {smooth:.2}"
+    );
+}
+
+/// The finding that shaped the threshold: a breathy voice is unambiguously
+/// voiced and still has no epoch worth snapping to, so it must land on the
+/// pvoc side of the line with the synth tone, not on the PSOLA side with the
+/// other voice.
+#[test]
+fn epoch_sharpness_puts_a_breathy_voice_with_the_smooth_tone() {
+    let normal = sharpness_of(&common::voiced(2.0, 0.02, 0.4));
+    let breathy = sharpness_of(&common::voiced(2.0, 0.5, 0.62));
+    println!("epoch sharpness: voiced {normal:.2}, breathy {breathy:.2}");
+    assert!(normal > 0.9, "a normal sung note must read as pulsed: {normal:.2}");
+    assert!(breathy < 0.9, "a breathy take must read as smooth: {breathy:.2}");
+    assert!(normal > 1.9 * breathy, "margin too thin: {normal:.2} vs {breathy:.2}");
+}
+
+#[test]
+fn epoch_sharpness_is_zero_on_nothing_to_measure() {
+    use superduper_synth_core::pitch::epoch_sharpness;
+    let x = common::pulsed(0.5);
+    assert_eq!(epoch_sharpness(&x, 0), 0.0, "t0 = 0 must not divide by zero");
+    assert_eq!(epoch_sharpness(&x[..100], 218), 0.0, "window shorter than 3 periods");
+    assert_eq!(epoch_sharpness(&vec![0.0; 2048], 218), 0.0, "silence has no epoch");
+}

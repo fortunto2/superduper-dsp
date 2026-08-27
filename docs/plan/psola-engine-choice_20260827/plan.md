@@ -38,24 +38,24 @@ One place decides which engine runs, so both plugins get identical behaviour.
 
 ### Verification
 - [x] `cargo test --release -p superduper-synth-core` green (93: 58 + 26 + 8 pitch_engine + 1)
-- [ ] Allocation-free: the sdsp-test-kit counting allocator reports zero allocations in `process()`
+- [x] Allocation-free: the sdsp-test-kit counting allocator reports zero allocations in `process()` (`process_does_not_allocate` green in both plugins)
 
-## Phase 3: Wire the plugins
+## Phase 3: Wire the plugins <!-- checkpoint:a877cc7 -->
 
 ### Tasks
-- [~] Task 3.1: `superduper-pitch` — swap its two engine fields for `PitchEngine`, extend the `Mode` param to `Voice | Track | Auto` (append the new value, keep 0/1 as they are), update `value_to_text` and `gui.rs`'s mode row, and re-record `tests/quality.snap` with `SDSP_UPDATE_SNAPSHOTS=1`.
-- [ ] Task 3.2: `superduper-tune` — replace its direct `PitchShifter` with `PitchEngine` in `src/dsp.rs`, append an `Engine` stepped param (`Auto | PSOLA | Phase`) next to the existing `Model` param, and re-record its snapshot.
-- [ ] Task 3.3: Closed-loop check via `tools/sdsp-tune`-style measurement: correct a smooth synthetic tone and a real vocal take through the Tune plugin (drive it with `sdsp-chain`), re-analyse, and assert median error under 10 cents with no rise in noise floor.
+- [x] Task 3.1: `superduper-pitch` — swap its two engine fields for `PitchEngine`, extend the `Mode` param to `Voice | Track | Auto` (append the new value, keep 0/1 as they are), update `value_to_text` and `gui.rs`'s mode row, and re-record `tests/quality.snap` with `SDSP_UPDATE_SNAPSHOTS=1`. <!-- sha:d9d83c2 -->
+- [x] Task 3.2: `superduper-tune` — replace its direct `PitchShifter` with `PitchEngine` in `src/dsp.rs`, append an `Engine` stepped param (`Auto | PSOLA | Phase`) next to the existing `Model` param, and re-record its snapshot. <!-- sha:a12cf79 -->
+- [x] Task 3.3: Closed-loop check via `tools/sdsp-tune`-style measurement: correct a smooth synthetic tone and a real vocal take through the Tune plugin (drive it with `sdsp-chain`), re-analyse, and assert median error under 10 cents with no rise in noise floor. <!-- sha:a877cc7 -->
 
 ### Verification
-- [ ] `cargo test --release -p superduper-pitch -p superduper-tune` green (25 + 7 + new)
-- [ ] `cargo run --release -p sdsp-chain -- --params pitch` / `--params tune` show the new params with correct names
-- [ ] Bundles rebuild and load in REAPER: `./scripts/build_pitch_bundle.sh && ./scripts/build_tune_bundle.sh`, then restart REAPER
+- [x] `cargo test --release -p superduper-pitch -p superduper-tune` green (27 + 10)
+- [x] `cargo run --release -p sdsp-chain -- --params pitch` / `--params tune` show the new params with correct names (Mode 0..2, Engine 0..2)
+- [~] Bundles rebuild and install: `./scripts/build_pitch_bundle.sh && ./scripts/build_tune_bundle.sh` done. **REAPER restart left to the user** — it caches CLAP dylibs per session and restarting would drop an open project.
 
 ## Phase 4: Docs & Cleanup
 
 ### Tasks
-- [ ] Task 4.1: Rewrite lesson 24 in `CLAUDE.md` from "open defect" to the shipped rule (Auto routing + the measured numbers), and update the `superduper-pitch` / `superduper-tune` entries with the new params.
+- [~] Task 4.1: Rewrite lesson 24 in `CLAUDE.md` from "open defect" to the shipped rule (Auto routing + the measured numbers), and update the `superduper-pitch` / `superduper-tune` entries with the new params.
 - [ ] Task 4.2: Update `synth-core/CLAUDE.md` for the moved `pvoc` module and the new `pitch_engine`, including the "test do-nothing on both a pulsed and a smooth source" rule.
 - [ ] Task 4.3: Point `tools/sdsp-tune` at `PitchEngine` (it hardcodes pvoc today) and delete the now-duplicated engine comment there.
 

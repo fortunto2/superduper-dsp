@@ -14,6 +14,7 @@ pub mod presets;
 /// reach it too (the `wave_osc` precedent). Re-exported here so nothing
 /// outside this crate had to change.
 pub use superduper_synth_core::pvoc;
+pub use superduper_synth_core::pitch_engine::{Mode as EngineMode, PitchEngine};
 
 pub use dsp::{PitchParams, PitchShifter};
 pub use keydetect::KeyDetector;
@@ -22,6 +23,29 @@ pub use pvoc::PhaseVocoder;
 /// `Mode` enum values.
 pub const MODE_VOICE: u32 = 0;
 pub const MODE_TRACK: u32 = 1;
+/// Measure the material and pick. Appended after the existing two, never
+/// inserted — REAPER caches param layouts per (plugin id, FX slot), so a
+/// saved project that stored `1` must still mean Track (lesson 10).
+pub const MODE_AUTO: u32 = 2;
+
+/// The `Mode` param as the router's enum. Anything unrecognised falls back to
+/// Voice, which is the plugin's historic behaviour.
+pub fn mode_from_param(v: f32) -> EngineMode {
+    match v.round() as u32 {
+        MODE_TRACK => EngineMode::Pvoc,
+        MODE_AUTO => EngineMode::Auto,
+        _ => EngineMode::Psola,
+    }
+}
+
+/// Display name for a `Mode` value.
+pub fn mode_name(v: f32) -> &'static str {
+    match v.round() as u32 {
+        MODE_TRACK => "Track",
+        MODE_AUTO => "Auto",
+        _ => "Voice",
+    }
+}
 
 use atomic_float::AtomicF32;
 use clack_common::utils::ClapId;
@@ -57,8 +81,9 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 2, name: b"Mix",     min: 0.0,   max: 1.0,  default: 1.0, unit: ""   },
     ParamDef { id: 3, name: b"Output",  min: -24.0, max: 24.0, default: 0.0, unit: "dB" },
     // 0 = Voice (TD-PSOLA, mono voice, best quality + independent formant),
-    // 1 = Track (phase vocoder, transposes polyphony / whole mixes).
-    ParamDef { id: 4, name: b"Mode",    min: 0.0,   max: 1.0,  default: 0.0, unit: ""   },
+    // 1 = Track (phase vocoder, transposes polyphony / whole mixes),
+    // 2 = Auto (measure the epoch sharpness and route — see synth_core::pitch_engine).
+    ParamDef { id: 4, name: b"Mode",    min: 0.0,   max: 2.0,  default: 0.0, unit: ""   },
     // Target key for Match: 0 = None, 1..24 = C major..B minor (key index + 1).
     ParamDef { id: 5, name: b"Target",  min: 0.0,   max: 24.0, default: 0.0, unit: ""   },
 ];
@@ -155,11 +180,11 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
-    /// Voice mode — TD-PSOLA (mono voice, independent formant).
-    shifter: Box<PitchShifter>,
-    /// Track mode — phase vocoder (polyphony / whole mixes).
-    pvoc: Box<PhaseVocoder>,
-    /// Musical key detector (runs in both modes).
+    /// Both engines plus the router that picks between them. `Mode` selects
+    /// Voice / Track / Auto; the crossfade and the fixed latency are its job,
+    /// not this file's.
+    engine: Box<PitchEngine>,
+    /// Musical key detector (runs in every mode).
     keydet: Box<KeyDetector>,
 }
 
@@ -178,19 +203,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
         let max_frames = audio_config.max_frames_count as usize;
-        // Both engines report the SAME latency so switching Mode never changes
-        // the host-reported PDC — pad each up to the larger of the two needs.
-        let fixed = PitchShifter::natural_latency(sr).max(pvoc::LATENCY);
-        let mut shifter = Box::new(PitchShifter::with_latency(sr, max_frames, fixed));
-        let pvoc = Box::new(PhaseVocoder::new(sr, fixed));
+        // One latency for both engines, fixed here, so switching Mode never
+        // moves the host-reported PDC.
+        let mut engine = Box::new(PitchEngine::new(sr, max_frames));
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let out_lin = 10f32.powf(load(P_OUTPUT) / 20.0);
-        shifter.prime(load(P_MIX), out_lin);
-        let latency = shifter.latency_samples().max(pvoc.latency() as u32);
+        engine.prime(load(P_MIX), out_lin);
+        engine.set_mode(mode_from_param(load(P_MODE)));
+        let latency = engine.latency_samples();
         shared.latency_samples.store(latency, Ordering::Relaxed);
         let keydet = Box::new(KeyDetector::new(sr));
         slog!("activate: sr={} latency={}", sr, latency);
-        Ok(Self { shared, shifter, pvoc, keydet })
+        Ok(Self { shared, engine, keydet })
     }
 
     fn process(
@@ -220,7 +244,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
             bypassed: self.shared.bypass.load(Ordering::Relaxed),
         };
-        let track = load(P_MODE).round() as u32 == MODE_TRACK;
+        self.engine.set_mode(mode_from_param(load(P_MODE)));
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
@@ -247,11 +271,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             }
 
             let empty: &mut [f32] = &mut [];
-            match (track, write_r) {
-                (true, Some(w)) => self.pvoc.process(read_l, read_r, write_l, w, &params),
-                (true, None) => self.pvoc.process(read_l, read_r, write_l, empty, &params),
-                (false, Some(w)) => self.shifter.process(read_l, read_r, write_l, w, &params),
-                (false, None) => self.shifter.process(read_l, read_r, write_l, empty, &params),
+            match write_r {
+                Some(w) => self.engine.process(read_l, read_r, write_l, w, &params),
+                None => self.engine.process(read_l, read_r, write_l, empty, &params),
             }
             for &s in write_l.iter() {
                 self.shared.scope.push(s);
@@ -308,7 +330,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     ) -> core::fmt::Result {
         use core::fmt::Write;
         if id.get() as usize == P_MODE {
-            return write!(writer, "{}", if value < 0.5 { "Voice" } else { "Track" });
+            return write!(writer, "{}", mode_name(value as f32));
         }
         if id.get() as usize == P_TARGET_KEY {
             let v = value.round() as usize;

@@ -9,7 +9,7 @@ use crate::keydetect::{key_name, KEY_NONE};
 use crate::presets::PRESETS;
 use crate::{P_FORMANT, P_MIX, P_MODE, P_OUTPUT, P_PITCH, P_TARGET_KEY, PARAMS, SharedParams};
 
-const MODE_NAMES: [&str; 2] = ["Voice", "Track"];
+const MODE_NAMES: [&str; 3] = ["Voice", "Track", "Auto"];
 
 /// Target-key selector label: 0 = None, 1..24 = C major..B minor.
 fn target_name(v: usize) -> &'static str {
@@ -152,12 +152,18 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 "pitch_help",
                 &[
                     (
-                        "Voice vs Track mode",
+                        "Voice vs Track vs Auto",
                         "Voice = TD-PSOLA, best quality on a solo monophonic voice, with fully \
                          independent Formant (Masyanya / bass / gender-flip). Track = phase \
                          vocoder — transposes POLYPHONIC material: whole mixes, chords, drums, a \
                          full song. Use Track to change the key of a track (Key +2 etc.); use \
-                         Voice for a single voice.",
+                         Voice for a single voice.\n\n\
+                         Auto measures the material and picks. Voice mode needs real glottal \
+                         pulses to cut its grains on; a synth, a sustained kubyz or a breathy \
+                         take has none, and on those it adds broadband noise instead of shifting \
+                         cleanly. Auto detects that and hands over to Track, crossfading so you \
+                         never hear the swap. Pick Voice or Track by hand when you know better \
+                         than the meter — a forced mode is never overridden.",
                     ),
                     (
                         "Pitch vs Formant",

@@ -1133,6 +1133,17 @@ and the CFBundleIdentifier. The script also installs to
     `synth_core::pitch_engine`; the diagnosis below is kept because it is the
     reason the rule exists.)*
 
+    **Update (same day, from the cleanup review):** the snap is now **gated**
+    by the same descriptor, one level below the router. Neither fixed setting
+    was right — measured on the real engine at +25 cents, the snap is worth
+    2.5 dB on pulsed material and costs 33 dB on smooth, and gating lands on
+    the better of the two everywhere. Effects: Pitch's default Voice mode
+    moved from −61.7 to **−81.5 dB** THD on the quality tone, and forcing
+    Voice on a synth pad went from +2.7 to **−33.4 dB**. The phase vocoder
+    still wins on smooth mono, but by ~11 dB rather than by a collapse — if
+    that margin ever closes, the mono half of the router stops paying for
+    itself. Tracked by `superduper-tune/tests/closed_loop.rs`.
+
     **The rule:** never hand audio to PSOLA without knowing it has epochs.
     `synth_core::pitch::epoch_sharpness(window, t0)` is the measurement —
     RT-safe, alloc-free, no FFT — and `PitchEngine` is the router. Route to

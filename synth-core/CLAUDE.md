@@ -94,6 +94,9 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
     correlate at r = 0.13 on a pulsed source, so they sum in power.
   The PSOLA floor is 70 Hz here rather than the engine's 95 Hz default, which
   is what finally locks an 87 Hz voice, at 42 → 57 ms of latency.
+  The descriptor is measured in EVERY mode, not just Auto: besides picking the
+  engine it gates PSOLA's per-grain epoch snap, and that matters most exactly
+  where routing is switched off (forced Voice on a synth pad: +2.7 → −33.4 dB).
 - **`melody`** — offline note model: cut a pitch curve into `Note`s (unvoiced
   gaps, held pitch jumps, minimum duration), pick a target per note, and emit
   a per-frame shift curve. The point is that a note is corrected **as one

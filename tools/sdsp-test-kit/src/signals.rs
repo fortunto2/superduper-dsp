@@ -198,3 +198,138 @@ pub fn take_from_env(var: &str, secs: f32) -> Option<Vec<f32>> {
         .unwrap_or(0);
     Some(all[best..best + want].to_vec())
 }
+
+// ---------------------------------------------------------------------------
+// Moving pitch — the case a stationary probe cannot judge
+// ---------------------------------------------------------------------------
+
+/// A glottal voice whose pitch slides over `span` semitones across the take.
+///
+/// This is the material the epoch snap might exist for: the engine tracks a
+/// smoothed `cur_t0` out of YIN, so on a moving pitch the nominal mark drifts
+/// against the real pulse, and snapping could be compensating that error.
+/// Nothing measured so far tests it, because [`noise_to_harmonic`] needs one
+/// stationary f0.
+pub fn glide(secs: f32, span_st: f32) -> Vec<f32> {
+    modulated(secs, |t| F0 * (span_st * t / secs / 12.0).exp2())
+}
+
+/// A glottal voice with `depth` cents of vibrato at `rate` Hz — the ordinary
+/// case of a sung note, and the one a stationary source silently omits.
+pub fn vibrato(secs: f32, rate: f32, depth_cents: f32) -> Vec<f32> {
+    modulated(secs, |t| {
+        F0 * ((depth_cents / 1200.0) * (core::f32::consts::TAU * rate * t).sin()).exp2()
+    })
+}
+
+/// Shared engine for the moving-pitch sources: the same Rosenberg glottal
+/// pulse train as [`voiced_at`], with the period recomputed from `f0_at`
+/// every cycle.
+fn modulated(secs: f32, f0_at: impl Fn(f32) -> f32) -> Vec<f32> {
+    let n = (secs * SR) as usize;
+    let mut rng = Xorshift::new(0x5EED_1234);
+    let mut bank: Vec<Biquad> = [(730.0, 9.0), (1090.0, 11.0), (2440.0, 13.0)]
+        .iter()
+        .map(|&(hz, q)| {
+            let mut b = Biquad::default();
+            b.set_bandpass(SR, hz, q);
+            b
+        })
+        .collect();
+    let (open, breath) = (0.4f32, 0.02f32);
+    let mut air = Biquad::default();
+    air.set_bandpass(SR, 2600.0, 0.8);
+
+    let mut ph = 0.0f32;
+    let mut period = SR / f0_at(0.0);
+    let mut amp = 1.0f32;
+    let mut prev_g = 0.0f32;
+    (0..n)
+        .map(|i| {
+            ph += 1.0;
+            if ph >= period {
+                ph -= period;
+                let t = i as f32 / SR;
+                period = SR / f0_at(t) * (1.0 + 0.004 * rng.next_bipolar());
+                amp = 1.0 + 0.06 * rng.next_bipolar();
+            }
+            let t = ph / period;
+            let (t1, t2) = (open, open * 0.4);
+            let g = amp
+                * if t < t1 {
+                    0.5 * (1.0 - (core::f32::consts::PI * t / t1).cos())
+                } else if t < t1 + t2 {
+                    (core::f32::consts::FRAC_PI_2 * (t - t1) / t2).cos()
+                } else {
+                    0.0
+                };
+            let exc = (g - prev_g) * 40.0;
+            prev_g = g;
+            let noise = air.process(rng.next_bipolar()) * breath;
+            let out: f32 = bank.iter_mut().map(|b| b.process(exc + noise)).sum();
+            out * 0.5
+        })
+        .collect()
+}
+
+/// How far the output is from a latency-aligned copy of the input, in dB
+/// (residual energy over input energy). Lower is more transparent. Returns
+/// the residual and the lag it was measured at.
+///
+/// The lag is FOUND, not assumed. An engine's real group delay is not
+/// necessarily the latency it reports — PSOLA at a 70 Hz floor reports 2744
+/// samples and actually delays by 2706, and 38 samples is 63 degrees of phase
+/// at 220 Hz, enough to turn a −40 dB residual into +3 dB. A scalar gain is
+/// least-squares fitted too, so this measures waveform difference rather than
+/// level trim.
+///
+/// Unlike [`noise_to_harmonic`] this assumes nothing about the signal, so it
+/// is the only transparency figure comparable across a held note, a glide and
+/// a real sung phrase. Only valid at UNITY shift, where the ideal output is
+/// the input itself.
+pub fn unity_residual_db(
+    input: &[f32],
+    output: &[f32],
+    nominal_lag: usize,
+    skip: f32,
+) -> (f32, usize) {
+    let from = (skip * SR) as usize;
+    let lo = nominal_lag.saturating_sub(400);
+    let hi = nominal_lag + 400;
+    let n = output.len().saturating_sub(from + hi).min((1.0 * SR) as usize);
+    if n == 0 {
+        return (f32::INFINITY, nominal_lag);
+    }
+    let mut best = (nominal_lag, -1.0f64);
+    for lag in lo..=hi {
+        let (mut num, mut ea, mut eb) = (0.0f64, 0.0f64, 0.0f64);
+        for i in 0..n {
+            let a = input[from + i] as f64;
+            let b = output[from + i + lag] as f64;
+            num += a * b;
+            ea += a * a;
+            eb += b * b;
+        }
+        let r = num / (ea * eb).sqrt().max(1e-30);
+        if r > best.1 {
+            best = (lag, r);
+        }
+    }
+    let lag = best.0;
+    // Least-squares gain, so a level trim does not read as distortion.
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let a = input[from + i] as f64;
+        num += a * output[from + i + lag] as f64;
+        den += a * a;
+    }
+    let g = if den > 0.0 { num / den } else { 1.0 };
+    let (mut resid, mut energy) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        let a = input[from + i] as f64;
+        let d = output[from + i + lag] as f64 - g * a;
+        resid += d * d;
+        energy += (g * a) * (g * a);
+    }
+    (10.0 * (resid / energy.max(1e-30)).log10() as f32, lag)
+}

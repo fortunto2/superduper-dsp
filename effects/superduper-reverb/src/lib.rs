@@ -45,7 +45,7 @@ use std::sync::atomic::Ordering;
 // REAPER's UI cache work correctly).
 // ===========================================================================
 
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 
 pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"Size",          min: 0.1, max: 1.5, default: 0.7,  unit: ""   },
@@ -188,10 +188,9 @@ pub struct PluginAudioProcessor<'a> {
     smooth_damp: SmoothedParam,
     smooth_predelay: SmoothedParam,
     smooth_mod: SmoothedParam,
-    // Scratch buffers for sidechain (port index 1). Pre-allocated at
+    // Sidechain scratch + routed latch (port index 1). Pre-allocated at
     // `activate` so the audio thread never touches the allocator.
-    sc_l: Box<[f32]>,
-    sc_r: Box<[f32]>,
+    sc: SidechainSnapshot,
     sample_rate: f32,
 }
 
@@ -410,8 +409,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_damp: SmoothedParam::new(init_damp),
             smooth_predelay: SmoothedParam::new(init_predelay),
             smooth_mod: SmoothedParam::new(init_mod),
-            sc_l: vec![0.0; max_frames].into_boxed_slice(),
-            sc_r: vec![0.0; max_frames].into_boxed_slice(),
+            sc: SidechainSnapshot::new(max_frames),
             sample_rate: audio_config.sample_rate as f32,
         })
     }
@@ -477,33 +475,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
-        // ---- Step 1: snapshot sidechain (port 1) into our scratch buffers.
-        // If the host left it unrouted, both channels will be all-zero and
-        // we'll fall back to dry input as the key signal further down.
-        let frames = audio.frames_count() as usize;
-        let n_frames = frames.min(self.sc_l.len());
-        let mut sc_present = false;
-        if let Some(sc_port) = audio.input_port(1) {
-            if let Some(chans) = sc_port.channels()?.into_f32() {
-                if let Some(l) = chans.channel(0) {
-                    let n = n_frames.min(l.len());
-                    self.sc_l[..n].copy_from_slice(&l[..n]);
-                    if l.iter().take(n).any(|&x| x != 0.0) {
-                        sc_present = true;
-                    }
-                }
-                if let Some(r) = chans.channel(1) {
-                    let n = n_frames.min(r.len());
-                    self.sc_r[..n].copy_from_slice(&r[..n]);
-                    if r.iter().take(n).any(|&x| x != 0.0) {
-                        sc_present = true;
-                    }
-                } else {
-                    // Mono sidechain → mirror L into R.
-                    self.sc_r[..n_frames].copy_from_slice(&self.sc_l[..n_frames]);
-                }
-            }
-        }
+        // ---- Step 1: snapshot sidechain (port 1). Never routed → fall back
+        // to dry input as the key further down; once routed, silence in the
+        // key means "no duck", never "re-key off dry".
+        let n_frames = (audio.frames_count() as usize).min(self.sc.l.len());
+        let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Step 2: process main port (index 0). Key signal is sidechain
         // if it carries audio, otherwise the dry input itself.
@@ -517,7 +493,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             };
             let ch_r = iter.next();
             let sc_slice = if sc_present {
-                Some((&self.sc_l[..n_frames], &self.sc_r[..n_frames]))
+                Some((&self.sc.l[..n_frames], &self.sc.r[..n_frames]))
             } else {
                 None
             };

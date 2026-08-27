@@ -288,9 +288,12 @@ impl PitchEngine {
             return;
         }
 
-        if self.mode == Mode::Auto {
-            self.route(in_l, in_r, n);
-        }
+        // Measured in EVERY mode, not just Auto. The reading does two jobs:
+        // it picks the engine (Auto only), and it gates PSOLA's per-grain
+        // epoch snap (always). The second matters most exactly where the
+        // first is switched off — a user who forces Voice on a synth pad gets
+        // +2.7 dB of noise with the snap and −33.4 dB without it.
+        self.route(in_l, in_r, n);
 
         // Where the fade will be by the end of this block decides whether the
         // second engine has to run at all. The `warmup` disjunct is not
@@ -383,7 +386,15 @@ impl PitchEngine {
         self.sharpness = epoch_sharpness(&self.hist[end - need..end], t0);
         let s = self.sharpness;
 
+        // Same number, one level down: snap the grain read point only where
+        // there is a real epoch to snap to. Measured across sources and
+        // shifts, gating lands on the better of always/never every time
+        // (`synth-core/tests/epoch_snap.rs`).
         let argues_psola = s >= ROUTE_THRESHOLD;
+        self.psola.set_epoch_snap(argues_psola);
+        if self.mode != Mode::Auto {
+            return;
+        }
         if argues_psola == self.want_psola {
             self.votes = 0;
             return;

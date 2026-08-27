@@ -35,12 +35,24 @@
 //! RT-safe: every buffer is pre-allocated in [`PitchShifter::new`]; `process`
 //! never allocates.
 
-// NOTE (measured 2026-08-27): this engine is transparent on material with
-// real glottal epochs (impulse-train voice: −23.9 dB noise-to-harmonic in,
-// −24.2 dB out at unity shift) and NOT on smooth harmonic tones (−66.9 dB in
-// → −2.6 dB out), where no pulse exists for `refine_epoch` to lock onto. Use
-// the phase vocoder for those. See lesson 24 in CLAUDE.md and
-// `superduper-pitch/tests/engine_transparency.rs`.
+// NOTE (measured 2026-08-27): what made this engine destroy smooth material
+// was `refine_epoch` — a per-grain argmax with nothing to lock onto. It is now
+// GATED, and the gate is the difference between a scope defect and a bug.
+//
+// Measured on the real engine, noise-to-harmonic at a +25 cent shift:
+//
+//   source    snap always   snap never   gated
+//   pulsed         −24.9       −22.3     −24.9
+//   voiced         −22.4       −20.2     −22.4
+//   breathy         −8.3        −9.1      −9.1
+//   smooth          −2.6       −35.9     −35.9
+//
+// So neither fixed setting is right: the snap is worth 2.5 dB on material
+// that HAS epochs and costs 33 dB on material that does not. Gating on
+// `pitch::epoch_sharpness` lands on the better column every time, at every
+// shift tested. `PitchEngine` drives the gate (it measures the descriptor
+// anyway); a bare `PitchShifter` keeps the snap on, which is what shipped.
+// Experiment and pre-registered bars: `synth-core/tests/epoch_snap.rs`.
 use crate::dsp_blocks::SmoothedParam;
 use crate::pitch::YinPitchTracker;
 
@@ -87,6 +99,15 @@ pub struct PitchShifter {
     sm_formant: SmoothedParam,
     sm_mix: SmoothedParam,
     sm_out: SmoothedParam,
+    /// Snap each grain's READ point to the nearest energy peak within ±T0/2.
+    ///
+    /// On by default because that is what has shipped. It is under
+    /// investigation: the snap is an independent per-grain argmax, so on
+    /// material with no real glottal pulse the chosen point wanders and the
+    /// grains overlap-add at scrambled phase — which is the whole reason
+    /// `pitch_engine` exists. See `synth-core/tests/epoch_snap.rs` for the A/B
+    /// that will decide whether it stays.
+    snap: bool,
 }
 
 impl PitchShifter {
@@ -153,12 +174,18 @@ impl PitchShifter {
             sm_formant: SmoothedParam::new(0.0),
             sm_mix: SmoothedParam::new(1.0),
             sm_out: SmoothedParam::new(1.0),
+            snap: true,
         }
     }
 
     /// Latency to report to the host (samples).
     pub fn latency_samples(&self) -> u32 {
         self.latency as u32
+    }
+
+    /// Turn the per-grain epoch snap off. See the `snap` field.
+    pub fn set_epoch_snap(&mut self, on: bool) {
+        self.snap = on;
     }
 
     /// How long this engine needs from cold before its output is worth
@@ -190,7 +217,7 @@ impl PitchShifter {
     #[inline]
     fn refine_epoch(&self, nominal: f64, t0: f32) -> f64 {
         let search = (t0 * 0.5) as i64;
-        if search < 1 {
+        if !self.snap || search < 1 {
             return nominal;
         }
         let c0 = nominal.round() as i64;

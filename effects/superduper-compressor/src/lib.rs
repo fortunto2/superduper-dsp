@@ -48,7 +48,7 @@ use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
 use std::sync::atomic::Ordering;
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
     compressor_gain_db, compressor_gain_db_curve, oversample_apply, CompressorCurve, DelayLine,
@@ -301,11 +301,11 @@ pub struct PluginAudioProcessor<'a> {
     look_l: DelayLine,
     look_r: DelayLine,
     lookahead_samples: f32,
-    /// Scratch for the external sidechain port. When routed (host sends
-    /// non-zero audio into port 1), this replaces |L|·|R| as the detector
-    /// source — classic "kick triggers bass duck" pattern.
-    sc_buf_l: Box<[f32]>,
-    sc_buf_r: Box<[f32]>,
+    /// External sidechain scratch + routed latch. Once routed, the key
+    /// replaces |L|·|R| as the detector source — classic "kick triggers bass
+    /// duck" — and silence in it means "release", never "re-key off the
+    /// bass" (see `SidechainSnapshot` in the sdk for the full story).
+    sc: SidechainSnapshot,
     smooth_threshold: SmoothedParam,
     smooth_ratio: SmoothedParam,
     smooth_attack: SmoothedParam,
@@ -383,8 +383,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             look_l: DelayLine::new(cap),
             look_r: DelayLine::new(cap),
             lookahead_samples: initial_look_samples,
-            sc_buf_l: vec![0.0; max_frames].into_boxed_slice(),
-            sc_buf_r: vec![0.0; max_frames].into_boxed_slice(),
+            sc: SidechainSnapshot::new(max_frames),
             smooth_threshold: SmoothedParam::new(load(P_THRESHOLD)),
             smooth_ratio: SmoothedParam::new(load(P_RATIO)),
             smooth_attack: SmoothedParam::new(load(P_ATTACK)),
@@ -472,25 +471,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let mut max_gr_db: f32 = 0.0;
 
         // ---- Snapshot the sidechain port (index 1) before touching main ----
-        let frames = audio.frames_count() as usize;
-        let n_frames = frames.min(self.sc_buf_l.len());
-        let mut sc_present = false;
-        if let Some(sc_port) = audio.input_port(1) {
-            if let Some(chans) = sc_port.channels()?.into_f32() {
-                if let Some(l) = chans.channel(0) {
-                    let n = n_frames.min(l.len());
-                    self.sc_buf_l[..n].copy_from_slice(&l[..n]);
-                    if l.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                }
-                if let Some(r) = chans.channel(1) {
-                    let n = n_frames.min(r.len());
-                    self.sc_buf_r[..n].copy_from_slice(&r[..n]);
-                    if r.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                } else {
-                    self.sc_buf_r[..n_frames].copy_from_slice(&self.sc_buf_l[..n_frames]);
-                }
-            }
-        }
+        // AI-TODO: two-port clack-host e2e in sdsp-test-kit asserting GR
+        // releases while a routed key is silent (the bug the latch fixes);
+        // verified via sdsp-chain render + envelope measurement only.
+        let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Process main port (index 0) ----
         if let Some(mut main_pair) = audio.port_pair(0) {
@@ -617,8 +601,8 @@ fn process_stereo_block(
 
         let (mut key_l, mut key_r) = if sc_present {
             (
-                p.sc_buf_l.get(i).copied().unwrap_or(0.0),
-                p.sc_buf_r.get(i).copied().unwrap_or(0.0),
+                p.sc.l.get(i).copied().unwrap_or(0.0),
+                p.sc.r.get(i).copied().unwrap_or(0.0),
             )
         } else {
             (dry_l, dry_r)

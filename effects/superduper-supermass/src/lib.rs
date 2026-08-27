@@ -53,7 +53,7 @@ use superduper_dsp_sdk::slog;
 // Parameter table.
 // ---------------------------------------------------------------------------
 
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 
 pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"Mix",          min: 0.0, max: 1.0,  default: 0.3,  unit: ""   },
@@ -156,8 +156,7 @@ pub struct PluginAudioProcessor<'a> {
     smooth_drive: SmoothedParam,
     smooth_tilt: SmoothedParam,
     smooth_duck: SmoothedParam,
-    sc_l: Box<[f32]>,
-    sc_r: Box<[f32]>,
+    sc: SidechainSnapshot,
     sample_rate: f32,
 }
 
@@ -200,8 +199,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_drive: SmoothedParam::new(load(P_DRIVE)),
             smooth_tilt: SmoothedParam::new(load(P_TILT)),
             smooth_duck: SmoothedParam::new(load(P_DUCK_AMOUNT)),
-            sc_l: vec![0.0; max_frames].into_boxed_slice(),
-            sc_r: vec![0.0; max_frames].into_boxed_slice(),
+            sc: SidechainSnapshot::new(max_frames),
             sample_rate: audio_config.sample_rate as f32,
         })
     }
@@ -235,27 +233,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        let frames = audio.frames_count() as usize;
-        let n_frames = frames.min(self.sc_l.len());
-
-        // ---- Step 1: snapshot sidechain (port 1) ----
-        let mut sc_present = false;
-        if let Some(sc_port) = audio.input_port(1) {
-            if let Some(chans) = sc_port.channels()?.into_f32() {
-                if let Some(l) = chans.channel(0) {
-                    let n = n_frames.min(l.len());
-                    self.sc_l[..n].copy_from_slice(&l[..n]);
-                    if l.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                }
-                if let Some(r) = chans.channel(1) {
-                    let n = n_frames.min(r.len());
-                    self.sc_r[..n].copy_from_slice(&r[..n]);
-                    if r.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                } else {
-                    self.sc_r[..n_frames].copy_from_slice(&self.sc_l[..n_frames]);
-                }
-            }
-        }
+        // ---- Step 1: snapshot sidechain (port 1). Never routed → dry key
+        // fallback below; once routed, key silence means "no duck".
+        let n_frames = (audio.frames_count() as usize).min(self.sc.l.len());
+        let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Step 2: process main port ----
         if let Some(mut main_pair) = audio.port_pair(0) {
@@ -267,7 +248,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             let ch_r = iter.next();
 
             let sc = if sc_present {
-                Some((&self.sc_l[..n_frames], &self.sc_r[..n_frames]))
+                Some((&self.sc.l[..n_frames], &self.sc.r[..n_frames]))
             } else {
                 None
             };

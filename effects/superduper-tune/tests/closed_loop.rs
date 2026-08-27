@@ -111,19 +111,36 @@ fn a_smooth_tone_is_corrected_and_stays_clean() {
     assert!(nout < -40.0, "corrected tone is not clean: {nout:.1} dB (input {nin:.1})");
 }
 
-/// The same take through forced PSOLA, to keep the reason for the router
-/// visible in the test suite rather than only in a commit message. The pitch
-/// still lands; it is the noise floor that collapses.
+/// How much the router is still worth on smooth material, tracked as a number
+/// rather than asserted as a slogan.
+///
+/// It used to be 45 dB: forced PSOLA left this tone at −2.7 dB against Auto's
+/// −47.4. Then the epoch snap was gated by the same descriptor that picks the
+/// engine, PSOLA stopped destroying material it has no pulses for, and forced
+/// PSOLA came up to −36.5 dB. The phase vocoder still wins here, but by about
+/// 11 dB rather than by a collapse.
+///
+/// That is worth watching. If the margin ever falls to a few dB, two engines
+/// and a crossfade stop paying for themselves on MONO material and the router
+/// is left justified only by polyphony, which PSOLA genuinely cannot do.
 #[test]
-fn the_same_tone_through_forced_psola_is_why_auto_exists() {
+fn how_much_the_router_is_still_worth() {
     let x = smooth_at(3.0, detuned());
     let auto = noise_to_harmonic(&render(&x, &hard_tune(EngineMode::Auto)), NOTE_HZ, 1.5);
     let psola = noise_to_harmonic(&render(&x, &hard_tune(EngineMode::Psola)), NOTE_HZ, 1.5);
-    println!("smooth tone corrected: Auto {auto:.1} dB vs forced PSOLA {psola:.1} dB");
+    let margin = psola - auto;
+    println!(
+        "smooth tone corrected: Auto {auto:.1} dB vs forced PSOLA {psola:.1} dB \
+         -> the vocoder is worth {margin:.1} dB here"
+    );
     assert!(
-        psola - auto > 30.0,
-        "forced PSOLA should be far worse here; if it is not, the router is solving a \
-         problem that no longer exists ({psola:.1} vs {auto:.1} dB)"
+        margin > 5.0,
+        "the phase vocoder no longer beats gated PSOLA on smooth material ({margin:.1} dB); \
+         if that is real, the mono half of the router should be reconsidered"
+    );
+    assert!(
+        psola < -25.0,
+        "gated PSOLA regressed on smooth material: {psola:.1} dB"
     );
 }
 

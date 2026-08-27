@@ -60,7 +60,7 @@ use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
 use std::sync::atomic::Ordering;
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
     tape_clip, DcBlocker, DelayLine, Ducker, OnePoleLp, SlewLimiter2Pole, SmoothedParam,
@@ -207,10 +207,10 @@ pub struct PluginAudioProcessor<'a> {
     smooth_mix: SmoothedParam,
     smooth_duck: SmoothedParam,
     ducker: Ducker,
-    /// Sidechain scratch (port 1). Empty / all-zero → fall back to dry as
-    /// the ducking key signal (works on plain insert use).
-    sc_l: Box<[f32]>,
-    sc_r: Box<[f32]>,
+    /// Sidechain scratch + routed latch (port 1). Never routed → fall back
+    /// to dry as the ducking key (works on plain insert use); once routed,
+    /// silence in the key means "no duck", never "re-key off dry".
+    sc: SidechainSnapshot,
     sample_rate: f32,
 }
 
@@ -263,8 +263,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_mix: SmoothedParam::new(load(P_MIX)),
             smooth_duck: SmoothedParam::new(load(P_DUCK_AMOUNT)),
             ducker: Ducker::default(),
-            sc_l: vec![0.0; max_frames].into_boxed_slice(),
-            sc_r: vec![0.0; max_frames].into_boxed_slice(),
+            sc: SidechainSnapshot::new(max_frames),
             sample_rate: sr,
         })
     }
@@ -320,25 +319,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
 
         // ---- Snapshot the sidechain (port 1) ----
-        let frames = audio.frames_count() as usize;
-        let n_frames = frames.min(self.sc_l.len());
-        let mut sc_present = false;
-        if let Some(sc_port) = audio.input_port(1) {
-            if let Some(chans) = sc_port.channels()?.into_f32() {
-                if let Some(l) = chans.channel(0) {
-                    let n = n_frames.min(l.len());
-                    self.sc_l[..n].copy_from_slice(&l[..n]);
-                    if l.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                }
-                if let Some(r) = chans.channel(1) {
-                    let n = n_frames.min(r.len());
-                    self.sc_r[..n].copy_from_slice(&r[..n]);
-                    if r.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                } else {
-                    self.sc_r[..n_frames].copy_from_slice(&self.sc_l[..n_frames]);
-                }
-            }
-        }
+        let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Process main port ----
         if let Some(mut main_pair) = audio.port_pair(0) {
@@ -408,7 +389,7 @@ fn stereo_process(
 
             // Ducking key: external sidechain if routed, otherwise dry.
             let key = if sc_present {
-                p.sc_l.get(i).copied().unwrap_or(0.0)
+                p.sc.l.get(i).copied().unwrap_or(0.0)
             } else { dry };
             let duck_gain = p.ducker.process(key, key, sr, duck_amount, duck_attack, duck_release);
 
@@ -445,8 +426,8 @@ fn stereo_process(
         // Ducking key — sidechain if routed, else dry stereo.
         let (key_l, key_r) = if sc_present {
             (
-                p.sc_l.get(i).copied().unwrap_or(0.0),
-                p.sc_r.get(i).copied().unwrap_or(0.0),
+                p.sc.l.get(i).copied().unwrap_or(0.0),
+                p.sc.r.get(i).copied().unwrap_or(0.0),
             )
         } else {
             (dry_l, dry_r)

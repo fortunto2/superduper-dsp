@@ -61,7 +61,7 @@ use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
 use std::sync::atomic::Ordering;
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{Biquad, EnvelopeDetector, SmoothedParam};
 
@@ -254,9 +254,8 @@ pub struct PluginAudioProcessor<'a> {
     smooth_lo_thr: SmoothedParam,
     smooth_lo_freq: SmoothedParam,
     smooth_lo_amt: SmoothedParam,
-    // External-key scratch buffer (sized at activate to max_frames_count).
-    sc_l: Vec<f32>,
-    sc_r: Vec<f32>,
+    // External-key scratch + routed latch (sized at activate).
+    sc: SidechainSnapshot,
     // De-Click — two envelopes per channel + one shared duck-gain state
     click_fast_l: EnvelopeDetector,
     click_fast_r: EnvelopeDetector,
@@ -378,8 +377,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_lo_thr: SmoothedParam::new(load(P_LO_THR)),
             smooth_lo_freq: SmoothedParam::new(load(P_LO_FREQ)),
             smooth_lo_amt: SmoothedParam::new(load(P_LO_AMT)),
-            sc_l: vec![0.0; buf_cap],
-            sc_r: vec![0.0; buf_cap],
+            sc: SidechainSnapshot::new(buf_cap),
             click_fast_l: EnvelopeDetector::default(),
             click_fast_r: EnvelopeDetector::default(),
             click_slow_l: EnvelopeDetector::default(),
@@ -498,34 +496,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             (plos_on, hum_on, lo_amt_t, clk_amt_t)
         };
 
-        // Snapshot the sidechain (port 1) into our scratch buffers if
-        // the user wants external keying. If the SC port is unrouted
-        // we'll fall back to the dry signal inside step_sample.
-        let frames = audio.frames_count() as usize;
-        let n_frames = frames.min(self.sc_l.len());
-        let mut sc_present = false;
-        if ext_key_on {
-            if let Some(sc_port) = audio.input_port(1) {
-                if let Some(chans) = sc_port.channels()?.into_f32() {
-                    if let Some(l) = chans.channel(0) {
-                        let n = n_frames.min(l.len());
-                        self.sc_l[..n].copy_from_slice(&l[..n]);
-                        if l.iter().take(n).any(|&x| x != 0.0) { sc_present = true; }
-                    }
-                    if let Some(r) = chans.channel(1) {
-                        let n = n_frames.min(r.len());
-                        self.sc_r[..n].copy_from_slice(&r[..n]);
-                    } else {
-                        // Mono sidechain: mirror L into R. The temporary Vec
-                        // this used to build was a heap allocation per block in
-                        // the audio callback — and unnecessary, since sc_l and
-                        // sc_r are separate fields and borrow independently.
-                        let (src, dst) = (&self.sc_l, &mut self.sc_r);
-                        dst[..n_frames].copy_from_slice(&src[..n_frames]);
-                    }
-                }
-            }
-        }
+        // Snapshot the sidechain (port 1) if the user wants external
+        // keying. Never routed → fall back to the dry signal inside
+        // step_sample; once routed, key silence means "no keying", never a
+        // silent mid-song revert to dry.
+        let n_frames = (audio.frames_count() as usize).min(self.sc.l.len());
+        let sc_present = if ext_key_on {
+            self.sc.capture(&mut audio, 1)?
+        } else {
+            self.sc.routed()
+        };
         let use_ext = ext_key_on && sc_present;
 
         let mut max_ess_gr_db: f32 = 0.0;
@@ -552,7 +532,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             // Carve out the SC scratch slices outside the &mut self
             // borrow so we don't tangle the borrow checker.
             let sc_slice: Option<(&[f32], &[f32])> = if use_ext {
-                Some((&self.sc_l[..n_frames], &self.sc_r[..n_frames]))
+                Some((&self.sc.l[..n_frames], &self.sc.r[..n_frames]))
             } else {
                 None
             };

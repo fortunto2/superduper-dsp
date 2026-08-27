@@ -55,9 +55,9 @@ One place decides which engine runs, so both plugins get identical behaviour.
 ## Phase 4: Docs & Cleanup
 
 ### Tasks
-- [~] Task 4.1: Rewrite lesson 24 in `CLAUDE.md` from "open defect" to the shipped rule (Auto routing + the measured numbers), and update the `superduper-pitch` / `superduper-tune` entries with the new params.
-- [ ] Task 4.2: Update `synth-core/CLAUDE.md` for the moved `pvoc` module and the new `pitch_engine`, including the "test do-nothing on both a pulsed and a smooth source" rule.
-- [ ] Task 4.3: Point `tools/sdsp-tune` at `PitchEngine` (it hardcodes pvoc today) and delete the now-duplicated engine comment there.
+- [x] Task 4.1: Rewrite lesson 24 in `CLAUDE.md` from "open defect" to the shipped rule (Auto routing + the measured numbers), and update the `superduper-pitch` / `superduper-tune` entries with the new params. <!-- sha:369d4ac -->
+- [x] Task 4.2: Update `synth-core/CLAUDE.md` for the moved `pvoc` module and the new `pitch_engine`, including the "test do-nothing on both a pulsed and a smooth source" rule. <!-- sha:369d4ac -->
+- [x] Task 4.3: Point `tools/sdsp-tune` at `PitchEngine` (it hardcodes pvoc today) and delete the now-duplicated engine comment there. <!-- sha:3c6533e -->
 
 ### Verification
 - [ ] `cargo test --release --workspace` green

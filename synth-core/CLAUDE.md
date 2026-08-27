@@ -73,8 +73,9 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
   bins moved to `k·α`, phase re-accumulated, iFFT + OLA). Moved here from
   `effects/superduper-pitch` so **Tune** and the iOS staticlib can reach it —
   an effect crate depending on another effect crate would have been a new and
-  wrong direction. Still re-exported as `superduper_pitch::pvoc`, so nothing
-  outside that crate needed editing. Handles polyphony, and is the fallback
+  wrong direction. The compatibility re-export under `superduper_pitch::pvoc`
+  has since been removed along with that crate's `dsp` shim — everything now
+  names `synth_core::pvoc` directly. Handles polyphony, and is the fallback
   whenever PSOLA's assumptions do not hold.
 - **`pitch_engine`** — owns a `PitchShifter` and a `PhaseVocoder` and decides
   which one runs, so Pitch and Tune cannot drift apart. `Mode::Auto` measures

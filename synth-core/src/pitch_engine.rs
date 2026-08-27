@@ -88,6 +88,20 @@ pub const VOICE_FLOOR_HZ: f32 = 70.0;
 
 /// Crossfade length when the route changes, in milliseconds.
 const FADE_MS: f32 = 20.0;
+/// Floor on the mixing scratch, in frames.
+///
+/// This is the only stage that needs a scratch buffer at all — PSOLA masks its
+/// indices, the vocoder is per-sample — so it was the only one a host could
+/// panic by handing over more frames than it declared. Chunking handles that.
+/// The floor exists for the other end: `PitchEngine::new(sr, 0)` is an easy
+/// mistake to copy (`PhaseVocoder::new(sr, 0)` is an established idiom in this
+/// repo) and would otherwise chunk one sample at a time.
+///
+/// Deliberately NOT a fixed chunk size. Capping the scratch would make the
+/// analysis cadence independent of the host's block, which is arguably
+/// tidier — and it moves the rendered output, so it is a decision for someone
+/// changing behaviour on purpose, not for a cleanup pass.
+const MIN_SCRATCH: usize = 64;
 /// How often the router re-measures the material, in milliseconds.
 const ANALYSIS_MS: f32 = 5.33;
 /// How long the descriptor must keep disagreeing with the current route
@@ -150,6 +164,13 @@ pub struct PitchEngine {
     /// does prevent is the forced Psola → Pvoc one, covered by
     /// `the_crossfade_holds_its_level`.
     warm_samples: usize,
+    /// The debounced answer to "does this material have epochs?". BOTH
+    /// consumers read it — the route and PSOLA's snap gate — so neither acts
+    /// on a single reading. The gate used to take the raw value while only
+    /// the route was debounced, which is backwards: the descriptor is
+    /// noisiest right at the threshold, and every snap toggle jumps the grain
+    /// read point by up to T0/2.
+    has_epochs: bool,
     votes: i32,
     /// Last measured sharpness, for meters and tests.
     sharpness: f32,
@@ -193,10 +214,11 @@ impl PitchEngine {
             since_analysis: 0,
             analysis_hop,
             votes_to_switch,
-            scratch_l: vec![0.0; max_frames.max(1)].into_boxed_slice(),
-            scratch_r: vec![0.0; max_frames.max(1)].into_boxed_slice(),
+            scratch_l: vec![0.0; max_frames.max(MIN_SCRATCH)].into_boxed_slice(),
+            scratch_r: vec![0.0; max_frames.max(MIN_SCRATCH)].into_boxed_slice(),
             // Start on PSOLA: it is the engine with the independent formant
             // axis, so it is what a user gets unless the material argues.
+            has_epochs: true,
             want_psola: true,
             fade_pos: 1.0,
             fade_step: 1.0 / fade_len,
@@ -317,13 +339,13 @@ impl PitchEngine {
                 let k = cap.min(n - at);
                 let il = &in_l[at..at + k];
                 let ir = in_r.get(at..at + k).unwrap_or(il);
-                let (_, out_l_tail) = out_l.split_at_mut(at);
-                if out_r.len() >= at + k {
-                    let (_, out_r_tail) = out_r.split_at_mut(at);
-                    self.process(il, ir, &mut out_l_tail[..k], &mut out_r_tail[..k], p);
-                } else {
-                    self.process(il, ir, &mut out_l_tail[..k], &mut [], p);
-                }
+                // A short right channel keeps whatever tail it has, matching
+                // what the non-chunked path does rather than dropping the
+                // whole chunk's R output.
+                let lo = at.min(out_r.len());
+                let hi = (at + k).min(out_r.len());
+                let (or, ol) = (&mut out_r[lo..hi], &mut out_l[at..at + k]);
+                self.process(il, ir, ol, or, p);
                 at += k;
             }
             return;
@@ -352,6 +374,11 @@ impl PitchEngine {
                 self.psola.process(in_l, in_r, out_l, out_r, p);
             } else {
                 self.pvoc.process(in_l, in_r, out_l, out_r, p);
+                // PSOLA is idle, but its tracker is the one every reading in
+                // here is taken from: `tracked_hz` for the caller, and the
+                // period `route` measures sharpness at. Left unfed it freezes
+                // silently, which reads as a held note rather than as no data.
+                self.psola.observe(in_l, in_r);
             }
             return;
         }
@@ -376,11 +403,13 @@ impl PitchEngine {
         // when parked: at `fade_pos = 1.0` the other engine comes in at
         // cos(π/2) = −4.4e−8, i.e. −147 dB. That is inaudible but not zero, and
         // skipping it would change the rendered output.
-        let settled = !warm || self.fade_pos == target;
+        // Named for what it is: the gains only move while the incoming engine
+        // is warm AND the fade has somewhere to go.
+        let fade_moving = warm && self.fade_pos != target;
         let (mut a, mut b) = equal_power(self.fade_pos);
         let n_r = n.min(out_r.len());
         for i in 0..n {
-            if !settled {
+            if fade_moving {
                 if self.fade_pos < target {
                     self.fade_pos = (self.fade_pos + self.fade_step).min(target);
                 } else if self.fade_pos > target {
@@ -425,25 +454,30 @@ impl PitchEngine {
         }
         let end = self.hist_pos + l;
         self.sharpness = epoch_sharpness(&self.hist[end - need..end], t0);
-        let s = self.sharpness;
 
-        // Same number, one level down: snap the grain read point only where
-        // there is a real epoch to snap to. Measured across sources and
-        // shifts, gating lands on the better of always/never every time
-        // (`synth-core/tests/epoch_snap.rs`).
-        let argues_psola = s >= ROUTE_THRESHOLD;
-        self.psola.set_epoch_snap(argues_psola);
-        if self.mode != Mode::Auto {
-            return;
-        }
-        if argues_psola == self.want_psola {
+        // Debounce the DESCRIPTOR once, then let both consumers read the held
+        // state. Same number for both, and the doc is honest that this is one
+        // threshold serving two decisions rather than two measured optima:
+        // the reference set has nothing between breathy 0.58 and voiced 1.25,
+        // so the true thresholds could differ inside that gap and no test
+        // here would notice.
+        let argues = self.sharpness >= ROUTE_THRESHOLD;
+        if argues == self.has_epochs {
             self.votes = 0;
-            return;
+        } else {
+            self.votes += 1;
+            if self.votes >= self.votes_to_switch {
+                self.votes = 0;
+                self.has_epochs = argues;
+            }
         }
-        self.votes += 1;
-        if self.votes >= self.votes_to_switch {
-            self.votes = 0;
-            self.want_psola = argues_psola;
+
+        // Consumer 1, in every mode: snap the grain read point only where
+        // there is a real epoch to snap to (`synth-core/tests/epoch_snap.rs`).
+        self.psola.set_epoch_snap(self.has_epochs);
+        // Consumer 2, Auto only: pick the engine.
+        if self.mode == Mode::Auto {
+            self.want_psola = self.has_epochs;
         }
     }
 }

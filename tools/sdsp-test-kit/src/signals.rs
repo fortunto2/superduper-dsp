@@ -83,6 +83,18 @@ pub fn breathy(secs: f32) -> Vec<f32> {
 /// `f0` below 95 Hz is the case that never locked before the engine's floor
 /// moved — a bass at 87 Hz.
 pub fn voiced_at(secs: f32, f0: f32, breath: f32, open: f32) -> Vec<f32> {
+    glottal(secs, breath, open, |_| f0)
+}
+
+/// The one glottal source. `f0_at(t)` is evaluated once per cycle, so a
+/// constant closure gives a held note and a varying one gives a glide or a
+/// vibrato — the period rule was the only thing that ever differed.
+///
+/// It is one function on purpose: this module exists because three private
+/// copies of these generators drifted, and a fork in here would be the same
+/// failure one level in. The constants below are the source of truth for
+/// every voice in the suite.
+fn glottal(secs: f32, breath: f32, open: f32, f0_at: impl Fn(f32) -> f32) -> Vec<f32> {
     let n = (secs * SR) as usize;
     let mut rng = Xorshift::new(0x5EED_1234);
     let mut bank: Vec<Biquad> = [(730.0, 9.0), (1090.0, 11.0), (2440.0, 13.0)]
@@ -99,17 +111,17 @@ pub fn voiced_at(secs: f32, f0: f32, breath: f32, open: f32) -> Vec<f32> {
     air.set_bandpass(SR, 2600.0, 0.8);
 
     let mut ph = 0.0f32;
-    let mut period = SR / f0;
+    let mut period = SR / f0_at(0.0);
     let mut amp = 1.0f32;
     let mut prev_g = 0.0f32;
     (0..n)
-        .map(|_| {
+        .map(|i| {
             ph += 1.0;
             if ph >= period {
                 ph -= period;
                 // jitter ±0.4 %, shimmer ±6 % — enough to be a voice, not
                 // enough to blur the harmonic grid the metric measures on.
-                period = SR / f0 * (1.0 + 0.004 * rng.next_bipolar());
+                period = SR / f0_at(i as f32 / SR) * (1.0 + 0.004 * rng.next_bipolar());
                 amp = 1.0 + 0.06 * rng.next_bipolar();
             }
             let t = ph / period;
@@ -169,6 +181,28 @@ pub fn noise_to_harmonic(x: &[f32], f0: f32, skip: f32) -> f32 {
     10.0 * ((noise / harm.max(1e-30)) as f32).log10()
 }
 
+/// Drive `f` over `x` in `block`-sized chunks and collect the output.
+///
+/// Every DSP test in the workspace grew its own version of this loop, and the
+/// copies had already diverged in three ways: some dropped the final partial
+/// block, some allocated a fresh scratch buffer inside the loop, and the
+/// per-block hook existed in only two of them. `at` is the block's start
+/// frame, which is what a test needs to change a parameter mid-render.
+pub fn render_blocks(
+    x: &[f32],
+    block: usize,
+    mut f: impl FnMut(usize, &[f32], &mut [f32]),
+) -> Vec<f32> {
+    let mut out = vec![0.0; x.len()];
+    let mut at = 0;
+    while at < x.len() {
+        let n = block.min(x.len() - at);
+        f(at, &x[at..at + n], &mut out[at..at + n]);
+        at += n;
+    }
+    out
+}
+
 /// Load a real recording, mono-summed and naively resampled to [`SR`], taking
 /// the loudest `secs` so a leading silence does not dominate the window.
 ///
@@ -211,65 +245,15 @@ pub fn take_from_env(var: &str, secs: f32) -> Option<Vec<f32>> {
 /// Nothing measured so far tests it, because [`noise_to_harmonic`] needs one
 /// stationary f0.
 pub fn glide(secs: f32, span_st: f32) -> Vec<f32> {
-    modulated(secs, |t| F0 * (span_st * t / secs / 12.0).exp2())
+    glottal(secs, 0.02, 0.4, |t| F0 * (span_st * t / secs / 12.0).exp2())
 }
 
 /// A glottal voice with `depth` cents of vibrato at `rate` Hz — the ordinary
 /// case of a sung note, and the one a stationary source silently omits.
 pub fn vibrato(secs: f32, rate: f32, depth_cents: f32) -> Vec<f32> {
-    modulated(secs, |t| {
+    glottal(secs, 0.02, 0.4, |t| {
         F0 * ((depth_cents / 1200.0) * (core::f32::consts::TAU * rate * t).sin()).exp2()
     })
-}
-
-/// Shared engine for the moving-pitch sources: the same Rosenberg glottal
-/// pulse train as [`voiced_at`], with the period recomputed from `f0_at`
-/// every cycle.
-fn modulated(secs: f32, f0_at: impl Fn(f32) -> f32) -> Vec<f32> {
-    let n = (secs * SR) as usize;
-    let mut rng = Xorshift::new(0x5EED_1234);
-    let mut bank: Vec<Biquad> = [(730.0, 9.0), (1090.0, 11.0), (2440.0, 13.0)]
-        .iter()
-        .map(|&(hz, q)| {
-            let mut b = Biquad::default();
-            b.set_bandpass(SR, hz, q);
-            b
-        })
-        .collect();
-    let (open, breath) = (0.4f32, 0.02f32);
-    let mut air = Biquad::default();
-    air.set_bandpass(SR, 2600.0, 0.8);
-
-    let mut ph = 0.0f32;
-    let mut period = SR / f0_at(0.0);
-    let mut amp = 1.0f32;
-    let mut prev_g = 0.0f32;
-    (0..n)
-        .map(|i| {
-            ph += 1.0;
-            if ph >= period {
-                ph -= period;
-                let t = i as f32 / SR;
-                period = SR / f0_at(t) * (1.0 + 0.004 * rng.next_bipolar());
-                amp = 1.0 + 0.06 * rng.next_bipolar();
-            }
-            let t = ph / period;
-            let (t1, t2) = (open, open * 0.4);
-            let g = amp
-                * if t < t1 {
-                    0.5 * (1.0 - (core::f32::consts::PI * t / t1).cos())
-                } else if t < t1 + t2 {
-                    (core::f32::consts::FRAC_PI_2 * (t - t1) / t2).cos()
-                } else {
-                    0.0
-                };
-            let exc = (g - prev_g) * 40.0;
-            prev_g = g;
-            let noise = air.process(rng.next_bipolar()) * breath;
-            let out: f32 = bank.iter_mut().map(|b| b.process(exc + noise)).sum();
-            out * 0.5
-        })
-        .collect()
 }
 
 /// How far the output is from a latency-aligned copy of the input, in dB
@@ -300,14 +284,16 @@ pub fn unity_residual_db(
     if n == 0 {
         return (f32::INFINITY, nominal_lag);
     }
+    // Input energy does not depend on the lag, so it is computed once rather
+    // than 801 times.
+    let ea: f64 = (0..n).map(|i| (input[from + i] as f64).powi(2)).sum();
     let mut best = (nominal_lag, -1.0f64);
     for lag in lo..=hi {
-        let (mut num, mut ea, mut eb) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut num, mut eb) = (0.0f64, 0.0f64);
         for i in 0..n {
             let a = input[from + i] as f64;
             let b = output[from + i + lag] as f64;
             num += a * b;
-            ea += a * a;
             eb += b * b;
         }
         let r = num / (ea * eb).sqrt().max(1e-30);

@@ -11,8 +11,6 @@ use crate::{
     P_FORMANT, P_MIX, P_MODE, P_OUTPUT, P_PITCH, P_TARGET_KEY, MODE_NAMES, PARAMS, SharedParams,
 };
 
-
-
 /// Target-key selector label: 0 = None, 1..24 = C major..B minor.
 fn target_name(v: usize) -> &'static str {
     if v == 0 {

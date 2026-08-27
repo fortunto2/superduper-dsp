@@ -11,7 +11,7 @@ use sdsp_test_kit::signals as common;
 /// The shared probes take whole slices; these two just carry the range so the
 /// call sites keep reading as "measure this stretch of the render".
 fn rms_db(x: &[f32], a: usize, b: usize) -> f32 {
-    sdsp_test_kit::probes::db(sdsp_test_kit::probes::rms(&x[a..b.min(x.len())])) as f32
+    sdsp_test_kit::probes::rms_db(&x[a..b.min(x.len())]) as f32
 }
 fn max_step(x: &[f32], a: usize, b: usize) -> f32 {
     sdsp_test_kit::probes::max_step(&x[a..b.min(x.len())]) as f32
@@ -34,17 +34,11 @@ fn run<F: FnMut(&mut PitchEngine, usize)>(
     p: &PitchParams,
     mut at_block: F,
 ) -> Vec<f32> {
-    let mut out = vec![0.0; x.len()];
-    let mut at = 0;
-    while at < x.len() {
-        let n = BLOCK.min(x.len() - at);
+    let mut r = vec![0.0; BLOCK];
+    sdsp_test_kit::signals::render_blocks(x, BLOCK, |at, i, o| {
         at_block(e, at);
-        let (i, o) = (&x[at..at + n], &mut out[at..at + n]);
-        let mut r = vec![0.0; n];
-        e.process(i, i, o, &mut r, p);
-        at += n;
-    }
-    out
+        e.process(i, i, o, &mut r[..i.len()], p);
+    })
 }
 
 fn engine() -> PitchEngine {
@@ -337,4 +331,27 @@ fn reset_actually_resets_both_engines() {
         .fold(0.0f32, f32::max);
     println!("max |reset - fresh| over the settled tail: {diff:.2e}");
     assert!(diff < 1e-6, "a reset engine still differs from a fresh one by {diff:.2e}");
+}
+
+/// Every reading this engine publishes comes from PSOLA's tracker, so it has
+/// to advance even when PSOLA is not the engine rendering. In forced Pvoc the
+/// `!both` fast path fed only the vocoder and the tracker froze at whatever it
+/// last saw — `tracked_hz()` reported a held note forever, and `route()`
+/// measured sharpness at a stale period. Tune reads `tracked_hz()`, so with
+/// `Engine = Phase` its correction stuck on one note.
+#[test]
+fn tracked_hz_follows_the_input_in_every_mode() {
+    for mode in [Mode::Auto, Mode::Psola, Mode::Pvoc] {
+        let mut x = common::smooth_at(1.5, 220.0);
+        x.extend(common::smooth_at(1.5, 330.0));
+        let mut e = engine();
+        e.set_mode(mode);
+        run(&mut e, &x, &unity(), |_, _| {});
+        let hz = e.tracked_hz();
+        println!("{mode:?}: after stepping 220 -> 330 Hz, tracked {hz:.1} Hz");
+        assert!(
+            (hz - 330.0).abs() < 15.0,
+            "{mode:?}: tracker stuck at {hz:.1} Hz after the input moved to 330"
+        );
+    }
 }

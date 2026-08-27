@@ -501,6 +501,14 @@ pub fn epoch_sharpness(window: &[f32], t0: usize) -> f32 {
     let pairs = (window.len() / t0 - 1).min(8);
     let seg = &window[window.len() - (pairs + 1) * t0..];
 
+    // Silence is the common idle case in a DAW, and folding the RMS into the
+    // main loop moved its early-out to the end. A strided peek costs n/16
+    // loads and puts it back; anything that survives it falls through to the
+    // exact test below.
+    if seg.iter().step_by(16).all(|v| v.abs() < 1e-6) {
+        return 0.0;
+    }
+
     // One pass. The window RMS is the same `a²` sum the correlation
     // denominators already need, accumulated in the same order, so folding it
     // in here costs one add per sample and saves a whole extra traversal.

@@ -1198,7 +1198,6 @@ impl AdsrEnvelope {
     }
 }
 
-/// Convert a MIDI note number (0-127) to frequency in Hz.
 /// Equal-power crossfade gains for `x` in 0..1: `(sin(x·π/2), cos(x·π/2))`.
 ///
 /// The pair sums to constant POWER, not constant amplitude, which is the right
@@ -1221,6 +1220,7 @@ pub fn equal_power(x: f32) -> (f32, f32) {
     (theta.sin(), theta.cos())
 }
 
+/// Convert a MIDI note number (0-127) to frequency in Hz.
 /// A4 = key 69 = 440 Hz, then 12-TET.
 #[inline]
 pub fn midi_note_to_hz(note: f32) -> f32 {

@@ -556,6 +556,35 @@ pub fn preset_value_to_text<'a>(
     name_of(idx).map(|name| write!(writer, "{}", name))
 }
 
+/// `value_to_text` body for a stepped ENUM param (Mode, Engine, Target…):
+/// write the name for the rounded index, clamped into range.
+///
+/// Distinct from the Preset pair below only in that it takes the table
+/// directly and never fails, because an enum's table is exhaustive by
+/// construction. Added because two plugins grew a stepped param in the same
+/// change and answered the out-of-range question differently — one fell back
+/// to the first entry, the other clamped to the last — which is the kind of
+/// split that quietly outlives whoever wrote it.
+pub fn enum_value_to_text(
+    names: &[&str],
+    value: f64,
+    writer: &mut ParamDisplayWriter<'_>,
+) -> core::fmt::Result {
+    use core::fmt::Write;
+    let i = (value.round().max(0.0) as usize).min(names.len().saturating_sub(1));
+    write!(writer, "{}", names.get(i).copied().unwrap_or(""))
+}
+
+/// `text_to_value` body for a stepped ENUM param: resolve a name
+/// (case-insensitive, trimmed) to its index.
+///
+/// Without one of these a host or an MCP agent typing "Auto" into a stepped
+/// param gets a numeric parse failure, and the param is only reachable by
+/// number.
+pub fn enum_text_to_value(names: &[&str], text: &CStr) -> Option<f64> {
+    preset_text_to_value(names.len(), |i| names.get(i).copied(), text)
+}
+
 /// `text_to_value` body for a Preset selector param: resolve a preset name
 /// (case-insensitive, trimmed) to its index. `count` presets, `name_of(i)`
 /// their names. Returns `None` if nothing matches (caller falls back to the
@@ -569,4 +598,77 @@ pub fn preset_text_to_value<'a>(
     (0..count)
         .find(|&i| name_of(i).is_some_and(|n| n.eq_ignore_ascii_case(s)))
         .map(|i| i as f64)
+}
+
+// ---------------------------------------------------------------------------
+// External sidechain snapshot with a routed-latch
+// ---------------------------------------------------------------------------
+
+/// Scratch copy of an external sidechain port, plus the answer to "has a key
+/// ever been routed here?".
+///
+/// CLAP gives a plugin no direct "is something routed into port N" signal, so
+/// the workspace convention was a per-block any-non-zero check. That check is
+/// right for choosing a *fallback* (never routed → key off the dry input,
+/// which is what the duckers document as a feature), but wrong as a live
+/// test: a routed kick is silent between hits, and a per-block check hands
+/// detection back to the MAIN input mid-song — a compressor then never
+/// releases (measured as a constant −Range duck on real material), a ducker
+/// re-keys off dry. `capture()` therefore LATCHES on the first non-zero key
+/// sample: from then on the buffers are the key, and silence in them means
+/// "release", never "re-key". The latch resets with the processor (a new
+/// `SidechainSnapshot` at activate), so un-routing a key mid-session keys
+/// zeros until reactivation — the acceptable edge of this trade.
+pub struct SidechainSnapshot {
+    pub l: Box<[f32]>,
+    pub r: Box<[f32]>,
+    routed: bool,
+}
+
+impl SidechainSnapshot {
+    pub fn new(max_frames: usize) -> Self {
+        Self {
+            l: vec![0.0; max_frames].into_boxed_slice(),
+            r: vec![0.0; max_frames].into_boxed_slice(),
+            routed: false,
+        }
+    }
+
+    pub fn routed(&self) -> bool {
+        self.routed
+    }
+
+    /// Snapshot input port `port` for this block and return the latched
+    /// routed state. Zero-fills first so a silent or short block never leaves
+    /// stale audio behind; a mono key is mirrored into both channels.
+    pub fn capture(
+        &mut self,
+        audio: &mut clack_plugin::prelude::Audio,
+        port: u32,
+    ) -> Result<bool, clack_plugin::prelude::PluginError> {
+        let n_frames = (audio.frames_count() as usize).min(self.l.len());
+        self.l[..n_frames].fill(0.0);
+        self.r[..n_frames].fill(0.0);
+        if let Some(sc_port) = audio.input_port(port as usize) {
+            if let Some(chans) = sc_port.channels()?.into_f32() {
+                if let Some(l) = chans.channel(0) {
+                    let n = n_frames.min(l.len());
+                    self.l[..n].copy_from_slice(&l[..n]);
+                    if l.iter().take(n).any(|&x| x != 0.0) {
+                        self.routed = true;
+                    }
+                }
+                if let Some(r) = chans.channel(1) {
+                    let n = n_frames.min(r.len());
+                    self.r[..n].copy_from_slice(&r[..n]);
+                    if r.iter().take(n).any(|&x| x != 0.0) {
+                        self.routed = true;
+                    }
+                } else {
+                    self.r[..n_frames].copy_from_slice(&self.l[..n_frames]);
+                }
+            }
+        }
+        Ok(self.routed)
+    }
 }

@@ -324,12 +324,11 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     ) -> core::fmt::Result {
         use core::fmt::Write;
         if id.get() as usize == P_MODE {
-            return superduper_dsp_sdk::clap_helpers::preset_value_to_text(
-                |i| MODE_NAMES.get(i).copied(),
+            return superduper_dsp_sdk::clap_helpers::enum_value_to_text(
+                &MODE_NAMES,
                 value,
                 writer,
-            )
-            .unwrap_or_else(|| write!(writer, "{}", MODE_NAMES[0]));
+            );
         }
         if id.get() as usize == P_TARGET_KEY {
             let v = value.round() as usize;
@@ -345,11 +344,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         // Without this a host or an MCP agent typing "Auto" into Mode gets a
         // numeric parse failure — the stepped params need names both ways.
         if id.get() as usize == P_MODE {
-            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
-                MODE_NAMES.len(),
-                |i| MODE_NAMES.get(i).copied(),
-                t,
-            ) {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::enum_text_to_value(&MODE_NAMES, t) {
                 return Some(v);
             }
         }

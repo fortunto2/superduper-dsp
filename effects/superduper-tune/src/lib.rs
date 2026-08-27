@@ -36,7 +36,9 @@ use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};
-use superduper_dsp_sdk::clap_helpers::{split_io, ParamDef};
+use superduper_dsp_sdk::clap_helpers::{
+    enum_text_to_value, enum_value_to_text, split_io, ParamDef,
+};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 
 fn init_logging() {
@@ -499,9 +501,9 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 let s = (value.round() as usize).min(scale::NUM_SCALES - 1);
                 write!(writer, "{}", scale::SCALES[s].0)
             }
-            P_ENGINE => named_value(&ENGINE_NAMES, value, writer),
-            P_MODEL => named_value(&MODEL_NAMES, value, writer),
-            P_TARGET => named_value(&TARGET_NAMES, value, writer),
+            P_ENGINE => enum_value_to_text(&ENGINE_NAMES, value, writer),
+            P_MODEL => enum_value_to_text(&MODEL_NAMES, value, writer),
+            P_TARGET => enum_value_to_text(&TARGET_NAMES, value, writer),
             _ => ParamDef::write_display(PARAMS, id, value, writer),
         }
     }
@@ -514,32 +516,14 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             P_TARGET => &TARGET_NAMES,
             _ => &[],
         };
-        if !names.is_empty() {
-            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
-                names.len(),
-                |i| names.get(i).copied(),
-                t,
-            ) {
-                return Some(v);
-            }
+        if let Some(v) = enum_text_to_value(names, t) {
+            return Some(v);
         }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);
     }
-}
-
-/// Write the name for a stepped param's value, falling back to the first entry
-/// for anything out of range.
-fn named_value(
-    names: &[&str],
-    value: f64,
-    writer: &mut ParamDisplayWriter,
-) -> core::fmt::Result {
-    use core::fmt::Write;
-    let i = (value.round().max(0.0) as usize).min(names.len().saturating_sub(1));
-    write!(writer, "{}", names.get(i).copied().unwrap_or(""))
 }
 
 impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {

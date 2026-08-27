@@ -37,8 +37,8 @@
 
 use sdsp_test_kit::probes::max_step;
 use sdsp_test_kit::signals::{
-    breathy, glide, noise_to_harmonic, pulsed, smooth, take_from_env, unity_residual_db, vibrato,
-    voiced, F0, SR,
+    breathy, glide, noise_to_harmonic, pulsed, render_blocks, smooth, take_from_env,
+    unity_residual_db, vibrato, voiced, F0, SR,
 };
 use superduper_synth_core::pitch::{epoch_sharpness, EPOCH_SHARPNESS_THRESHOLD};
 use superduper_synth_core::psola::{PitchParams, PitchShifter};
@@ -82,23 +82,16 @@ fn render_gated(x: &[f32], st: f32) -> Vec<f32> {
     s.prime(1.0, 1.0);
     let p =
         PitchParams { pitch_st: st, formant_st: 0.0, mix: 1.0, output_lin: 1.0, bypassed: false };
-    let mut out = vec![0.0; x.len()];
     let mut r = vec![0.0; BLOCK];
-    let mut at = 0;
-    while at < x.len() {
-        let n = BLOCK.min(x.len() - at);
+    render_blocks(x, BLOCK, |at, i, o| {
         let t0 = s.current_period().round() as usize;
         let need = 9 * t0;
         if at >= need {
             let sharp = epoch_sharpness(&x[at - need..at], t0);
             s.set_epoch_snap(sharp >= EPOCH_SHARPNESS_THRESHOLD);
         }
-        r.resize(n, 0.0);
-        let (i, o) = (&x[at..at + n], &mut out[at..at + n]);
-        s.process(i, i, o, &mut r, &p);
-        at += n;
-    }
-    out
+        s.process(i, i, o, &mut r[..i.len()], &p);
+    })
 }
 
 fn latency() -> usize {
@@ -131,7 +124,7 @@ fn sources() -> Vec<Source> {
 /// The whole experiment in one table.
 #[test]
 fn snap_versus_no_snap() {
-    let lat = latency();
+    let lat = PitchShifter::natural_latency_for(SR, FLOOR_HZ);
     println!(
         "\n{:<12} {:>10} {:>10} {:>8}   {:>9} {:>9} {:>7}",
         "source", "snap dB", "none dB", "delta", "step snap", "step none", "ratio"
@@ -326,15 +319,8 @@ fn forced_voice_survives_the_wrong_material() {
             output_lin: 1.0,
             bypassed: false,
         };
-        let mut out = vec![0.0; x.len()];
-        let mut at = 0;
-        while at + BLOCK <= x.len() {
-            let mut r = vec![0.0; BLOCK];
-            let (i, o) = (&x[at..at + BLOCK], &mut out[at..at + BLOCK]);
-            e.process(i, i, o, &mut r, &p);
-            at += BLOCK;
-        }
-        out
+        let mut r = vec![0.0; BLOCK];
+        render_blocks(&x, BLOCK, |_, i, o| e.process(i, i, o, &mut r[..i.len()], &p))
     };
     for (name, x, bound) in
         [("smooth", smooth(2.5), -25.0f32), ("voiced", voiced(2.5), -18.0f32)]
@@ -346,4 +332,71 @@ fn forced_voice_survives_the_wrong_material() {
             assert!(v < bound, "forced Voice on {name} at {st} st: {v:.1} dB, want under {bound}");
         }
     }
+}
+
+/// A limitation the gate created, recorded rather than papered over.
+///
+/// `epoch_sharpness` is shift-blind, so Auto picks the engine from the
+/// material alone. Before the gate that was fine: PSOLA wrecked smooth
+/// material at every shift. Gated, PSOLA holds about −34 dB across the whole
+/// range while the vocoder degrades with the shift, and they cross between 4
+/// and 7 semitones:
+///
+/// ```text
+/// smooth tone   shift   gated PSOLA   pvoc
+///                0.00        -36.7   -66.9
+///                0.25        -35.9   -53.8
+///                4.00        -35.3   -36.1
+///                7.00        -33.6   -32.2   <- crossover
+///               12.00        -33.4   -17.9
+///               24.00        -28.2    -2.3
+/// ```
+///
+/// So above ~7 st on smooth mono, Auto now routes to the WORSE engine, by up
+/// to 26 dB at ±24 st. Pitch shifts ±24 st, so this is a real use case.
+///
+/// The obvious rule — prefer PSOLA above some |shift| when the material has no
+/// epochs — is NOT shipped, because it could not be verified where it matters
+/// most: PSOLA cannot do polyphony at all, and `noise_to_harmonic` cannot
+/// judge a chord (it scores one harmonic grid, so a triad measures +1 dB at
+/// its own input). A rule that might route chords into PSOLA on the strength
+/// of an unmeasured assumption is worse than the gap it closes. Fixing this
+/// needs a polyphony-capable metric first.
+#[test]
+fn auto_is_shift_blind_and_that_now_costs_something() {
+    use superduper_synth_core::pitch_engine::{Mode, PitchEngine};
+    let x = smooth(2.5);
+    let render_mode = |st: f32, m: Mode| {
+        let mut e = PitchEngine::new(SR, BLOCK);
+        e.prime(1.0, 1.0);
+        e.set_mode(m);
+        let p = PitchParams {
+            pitch_st: st,
+            formant_st: 0.0,
+            mix: 1.0,
+            output_lin: 1.0,
+            bypassed: false,
+        };
+        let mut out = vec![0.0; x.len()];
+        let mut at = 0;
+        while at + BLOCK <= x.len() {
+            let mut r = vec![0.0; BLOCK];
+            let (i, o) = (&x[at..at + BLOCK], &mut out[at..at + BLOCK]);
+            e.process(i, i, o, &mut r, &p);
+            at += BLOCK;
+        }
+        noise_to_harmonic(&out, F0 * (st / 12.0).exp2(), 1.0)
+    };
+    println!("\n{:>7} {:>12} {:>8}   {}", "shift", "gated PSOLA", "pvoc", "Auto picks");
+    let mut crossover = None;
+    for st in [0.25f32, 4.0, 7.0, 12.0, 24.0] {
+        let (a, b) = (render_mode(st, Mode::Psola), render_mode(st, Mode::Pvoc));
+        println!("{st:>7.2} {a:>12.1} {b:>8.1}   {}", if a < b { "the worse one" } else { "correctly" });
+        if a < b && crossover.is_none() {
+            crossover = Some(st);
+        }
+    }
+    let st = crossover.expect("PSOLA never overtakes — the limitation described above is gone");
+    println!("crossover at {st} st; Auto stays on pvoc regardless, by design for now");
+    assert!(st >= 4.0, "the crossover moved down to {st} st — the routing gap is now wider than recorded");
 }

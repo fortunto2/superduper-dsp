@@ -13,9 +13,6 @@ use crate::{
     P_TARGET, PARAMS,
 };
 
-
-
-
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 440;
 pub const MIN_WIDTH: u32 = 360;

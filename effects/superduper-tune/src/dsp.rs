@@ -138,7 +138,10 @@ fn selected_hz(swift: &SwiftF0Tracker, yin_hz: f32, use_swift: bool) -> f32 {
     }
 }
 
-fn new_tracker(sr: f32) -> YinPitchTracker {
+/// The sidechain reference tracker. Named for its one caller on purpose: a
+/// generic `new_tracker` invites a second tracker to be added "for free",
+/// which is exactly what the singer's f0 path just stopped doing.
+fn new_sc_tracker(sr: f32) -> YinPitchTracker {
     YinPitchTracker::new(sr, MIN_HZ, MAX_HZ, 1536, 256, 150.0)
 }
 
@@ -146,7 +149,7 @@ impl Tune {
     pub fn new(sr: f32, max_frames: usize) -> Self {
         Self {
             sr,
-            sc_tracker: new_tracker(sr),
+            sc_tracker: new_sc_tracker(sr),
             swift_tracker: SwiftF0Tracker::new(sr, 150.0),
             swift_sc_tracker: SwiftF0Tracker::new(sr, 150.0),
             engine: PitchEngine::new(sr, max_frames),

@@ -37,6 +37,11 @@ pub fn db(x: f32) -> f64 {
 
 /// Output level relative to input — catches "the plugin went quiet" and
 /// "the plugin got 3 dB louder", which is most of what silently changes.
+/// RMS of `x` in dB.
+pub fn rms_db(x: &[f32]) -> f64 {
+    db(rms(x))
+}
+
 pub fn gain_db(input: &[f32], output: &[f32]) -> f64 {
     db(rms(output)) - db(rms(input))
 }

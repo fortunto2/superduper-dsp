@@ -183,6 +183,22 @@ impl PitchShifter {
         self.latency as u32
     }
 
+    /// Advance ONLY the pitch tracker over a block, producing no audio.
+    ///
+    /// For when a caller is not rendering through this engine but still needs
+    /// its estimate — a router running the phase vocoder still owes an honest
+    /// `tracked_hz()` and an honest period to measure the material at. Without
+    /// this the tracker freezes at whatever it last saw, which is silent and
+    /// looks like a held note.
+    pub fn observe(&mut self, in_l: &[f32], in_r: &[f32]) {
+        for (i, &xl) in in_l.iter().enumerate() {
+            let xr = *in_r.get(i).unwrap_or(&xl);
+            self.tracker.push((xl + xr) * 0.5);
+        }
+        let target = (self.sr / self.tracker.current_hz()).clamp(self.t0_min, self.t0_max);
+        self.cur_t0 += (target - self.cur_t0) * 0.002 * in_l.len() as f32;
+    }
+
     /// Return to the state a freshly constructed engine is in: empty rings,
     /// tracker back to its default pitch, marks at zero.
     ///

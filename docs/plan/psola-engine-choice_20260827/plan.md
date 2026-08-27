@@ -26,24 +26,24 @@ descriptor can actually separate the two cases.
 - [x] `cargo test --release -p superduper-pitch --test engine_transparency -- --nocapture` prints the full matrix
 - [x] The descriptor's margin between pulsed and smooth is at least 2× on the reference signals (measured 5.8×: 2.65 vs 0.46)
 
-## Phase 2: Engine router in synth-core
+## Phase 2: Engine router in synth-core <!-- checkpoint:ea42790 -->
 
 One place decides which engine runs, so both plugins get identical behaviour.
 
 ### Tasks
-- [~] Task 2.1: Move the phase vocoder from `effects/superduper-pitch/src/pvoc.rs` into `synth-core/src/pvoc.rs`, re-exporting it from the plugin under the old path (the `wave_osc` precedent in synth-core/CLAUDE.md) so both plugins — and iOS — can reach it.
-- [ ] Task 2.2: Add `synth-core/src/pitch_engine.rs`: a `PitchEngine` wrapper owning both a `PitchShifter` and a `PhaseVocoder`, with `Mode { Psola, Pvoc, Auto }`, one `process()` signature, a latency reported as the max of both engines (fixed at construction), and an equal-power crossfade over ~20 ms when Auto switches.
-- [ ] Task 2.3: Derive the PSOLA pitch floor from the tracked f0 instead of the 95 Hz default — pass a real floor into `PitchShifter::with_range` so an 87 Hz voice locks; keep the reported latency fixed regardless.
-- [ ] Task 2.4: Add `synth-core/tests/pitch_engine.rs`: Auto picks PSOLA on the pulsed source and pvoc on the smooth one; a forced mid-note switch stays under the `click_audit` step bound; unity shift is within 2 dB of the input on both sources.
+- [x] Task 2.1: Move the phase vocoder from `effects/superduper-pitch/src/pvoc.rs` into `synth-core/src/pvoc.rs`, re-exporting it from the plugin under the old path (the `wave_osc` precedent in synth-core/CLAUDE.md) so both plugins — and iOS — can reach it. <!-- sha:30fd30d -->
+- [x] Task 2.2: Add `synth-core/src/pitch_engine.rs`: a `PitchEngine` wrapper owning both a `PitchShifter` and a `PhaseVocoder`, with `Mode { Psola, Pvoc, Auto }`, one `process()` signature, a latency reported as the max of both engines (fixed at construction), and an equal-power crossfade over ~20 ms when Auto switches. <!-- sha:ea42790 -->
+- [x] Task 2.3: Derive the PSOLA pitch floor from the tracked f0 instead of the 95 Hz default — pass a real floor into `PitchShifter::with_range` so an 87 Hz voice locks; keep the reported latency fixed regardless. <!-- sha:ea42790 -->
+- [x] Task 2.4: Add `synth-core/tests/pitch_engine.rs`: Auto picks PSOLA on the pulsed source and pvoc on the smooth one; a forced mid-note switch stays under the `click_audit` step bound; unity shift is within 2 dB of the input on both sources. <!-- sha:ea42790 -->
 
 ### Verification
-- [ ] `cargo test --release -p superduper-synth-core` green (82 existing + new)
+- [x] `cargo test --release -p superduper-synth-core` green (93: 58 + 26 + 8 pitch_engine + 1)
 - [ ] Allocation-free: the sdsp-test-kit counting allocator reports zero allocations in `process()`
 
 ## Phase 3: Wire the plugins
 
 ### Tasks
-- [ ] Task 3.1: `superduper-pitch` — swap its two engine fields for `PitchEngine`, extend the `Mode` param to `Voice | Track | Auto` (append the new value, keep 0/1 as they are), update `value_to_text` and `gui.rs`'s mode row, and re-record `tests/quality.snap` with `SDSP_UPDATE_SNAPSHOTS=1`.
+- [~] Task 3.1: `superduper-pitch` — swap its two engine fields for `PitchEngine`, extend the `Mode` param to `Voice | Track | Auto` (append the new value, keep 0/1 as they are), update `value_to_text` and `gui.rs`'s mode row, and re-record `tests/quality.snap` with `SDSP_UPDATE_SNAPSHOTS=1`.
 - [ ] Task 3.2: `superduper-tune` — replace its direct `PitchShifter` with `PitchEngine` in `src/dsp.rs`, append an `Engine` stepped param (`Auto | PSOLA | Phase`) next to the existing `Model` param, and re-record its snapshot.
 - [ ] Task 3.3: Closed-loop check via `tools/sdsp-tune`-style measurement: correct a smooth synthetic tone and a real vocal take through the Tune plugin (drive it with `sdsp-chain`), re-analyse, and assert median error under 10 cents with no rise in noise floor.
 

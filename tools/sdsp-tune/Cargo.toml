@@ -1,0 +1,15 @@
+[package]
+name = "sdsp-tune"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Offline melody correction — segment a sung take into notes, retune each as a whole, keep the vibrato. The auto-Melodyne half of the Melodyne-lite plan."
+
+[[bin]]
+name = "sdsp-tune"
+path = "src/main.rs"
+
+[dependencies]
+superduper-synth-core = { path = "../../synth-core" }
+hound = "3.5"
+png = "0.17"

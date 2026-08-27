@@ -35,6 +35,12 @@
 //! RT-safe: every buffer is pre-allocated in [`PitchShifter::new`]; `process`
 //! never allocates.
 
+// NOTE (measured 2026-08-27): this engine is transparent on material with
+// real glottal epochs (impulse-train voice: −23.9 dB noise-to-harmonic in,
+// −24.2 dB out at unity shift) and NOT on smooth harmonic tones (−66.9 dB in
+// → −2.6 dB out), where no pulse exists for `refine_epoch` to lock onto. Use
+// the phase vocoder for those. See lesson 24 in CLAUDE.md and
+// `superduper-pitch/tests/engine_transparency.rs`.
 use crate::dsp_blocks::SmoothedParam;
 use crate::pitch::YinPitchTracker;
 
@@ -91,7 +97,12 @@ impl PitchShifter {
     /// Natural look-behind (samples): 4·T0_max covers the 2·T0 epoch grains'
     /// read span (±T0·β), the ±T0/2 epoch search, and the ±T0 output span.
     pub fn natural_latency(sr: f32) -> usize {
-        4 * (sr / MIN_HZ).ceil() as usize
+        Self::natural_latency_for(sr, MIN_HZ)
+    }
+
+    /// Same, for a custom lowest tracked pitch — latency scales as 1/min_hz.
+    pub fn natural_latency_for(sr: f32, min_hz: f32) -> usize {
+        4 * (sr / min_hz.max(20.0)).ceil() as usize
     }
 
     /// `min_latency` lets the caller align this engine's reported latency with a
@@ -99,12 +110,28 @@ impl PitchShifter {
     /// host-reported latency. The natural PSOLA latency (3·T0_max) is used if
     /// it's larger.
     pub fn with_latency(sr: f32, max_frames: usize, min_latency: usize) -> Self {
-        let t0_max = (sr / MIN_HZ).ceil();
-        let t0_min = (sr / MAX_HZ).floor().max(4.0);
+        Self::with_range(sr, max_frames, min_latency, MIN_HZ, MAX_HZ)
+    }
+
+    /// Widen the tracked pitch range. The 95 Hz default keeps live latency
+    /// low but silently mangles a bass or a low male voice — below it the
+    /// epoch tracker never locks. Offline callers don't care about latency,
+    /// so they should pass the real floor of the material.
+    pub fn with_range(
+        sr: f32,
+        max_frames: usize,
+        min_latency: usize,
+        min_hz: f32,
+        max_hz: f32,
+    ) -> Self {
+        let min_hz = min_hz.max(20.0);
+        let max_hz = max_hz.max(min_hz * 2.0);
+        let t0_max = (sr / min_hz).ceil();
+        let t0_min = (sr / max_hz).floor().max(4.0);
         let t0_max_i = t0_max as usize;
         // Same formula as `natural_latency` (single source of truth so the
         // reported PDC and the intrinsic look-behind can't drift apart).
-        let latency = Self::natural_latency(sr).max(min_latency);
+        let latency = Self::natural_latency_for(sr, min_hz).max(min_latency);
         let ring = (latency + max_frames + 4 * t0_max_i + 8).next_power_of_two();
         let default_t0 = sr / 150.0;
         Self {
@@ -113,7 +140,7 @@ impl PitchShifter {
             in_ring: [vec![0.0; ring].into_boxed_slice(), vec![0.0; ring].into_boxed_slice()],
             out_ring: [vec![0.0; ring].into_boxed_slice(), vec![0.0; ring].into_boxed_slice()],
             win_ring: vec![0.0; ring].into_boxed_slice(),
-            tracker: YinPitchTracker::new(sr, MIN_HZ, MAX_HZ, 1536, 256, 150.0),
+            tracker: YinPitchTracker::new(sr, min_hz, max_hz, 1536, 256, 150.0),
             t0_min,
             t0_max,
             guard: 3.0 * t0_max as f64,
@@ -132,6 +159,17 @@ impl PitchShifter {
     /// Latency to report to the host (samples).
     pub fn latency_samples(&self) -> u32 {
         self.latency as u32
+    }
+
+    /// The period the engine is currently working at, in samples — the
+    /// tracker's estimate after smoothing and range clamping.
+    ///
+    /// Exposed so a router can measure epoch sharpness on the same period
+    /// this engine would cut grains at, instead of standing up a second YIN
+    /// tracker beside the one already running here.
+    #[inline]
+    pub fn current_period(&self) -> f32 {
+        self.cur_t0
     }
 
     pub fn prime(&mut self, mix: f32, output_lin: f32) {

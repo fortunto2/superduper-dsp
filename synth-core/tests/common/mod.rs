@@ -60,6 +60,12 @@ pub fn pulsed(secs: f32) -> Vec<f32> {
 /// is still there but the long open quotient blunts the closure, which is
 /// what makes it behave like a smooth tone under PSOLA.
 pub fn voiced(secs: f32, breath: f32, open: f32) -> Vec<f32> {
+    voiced_at(secs, F0, breath, open)
+}
+
+/// Same, at an arbitrary fundamental — a bass sitting under the engine's old
+/// 95 Hz floor is the case that never locked.
+pub fn voiced_at(secs: f32, f0: f32, breath: f32, open: f32) -> Vec<f32> {
     let n = (secs * SR) as usize;
     let mut rng = Xorshift::new(0x5EED_1234);
     let mut bank: Vec<Biquad> = [(730.0, 9.0), (1090.0, 11.0), (2440.0, 13.0)]
@@ -74,7 +80,7 @@ pub fn voiced(secs: f32, breath: f32, open: f32) -> Vec<f32> {
     air.set_bandpass(SR, 2600.0, 0.8);
 
     let mut ph = 0.0f32;
-    let mut period = SR / F0;
+    let mut period = SR / f0;
     let mut amp = 1.0f32;
     let mut prev_g = 0.0f32;
     (0..n)
@@ -82,7 +88,7 @@ pub fn voiced(secs: f32, breath: f32, open: f32) -> Vec<f32> {
             ph += 1.0;
             if ph >= period {
                 ph -= period;
-                period = SR / F0 * (1.0 + 0.004 * rng.next_bipolar());
+                period = SR / f0 * (1.0 + 0.004 * rng.next_bipolar());
                 amp = 1.0 + 0.06 * rng.next_bipolar();
             }
             let t = ph / period;
@@ -102,4 +108,55 @@ pub fn voiced(secs: f32, breath: f32, open: f32) -> Vec<f32> {
             out * 0.5
         })
         .collect()
+}
+
+/// Noise energy (everything off the harmonic grid) relative to harmonic
+/// energy, in dB. Lower is cleaner. Mirrors the metric in
+/// `superduper-pitch/tests/engine_transparency.rs`; `skip` lets a caller step
+/// past an engine's latency and any routing settling time.
+///
+/// Assumes ONE stationary f0 — on a moving pitch every harmonic lands off the
+/// grid and the number stops meaning anything.
+pub fn noise_to_harmonic(x: &[f32], f0: f32, skip: f32) -> f32 {
+    let start = (skip * SR) as usize;
+    let len = (1.0 * SR) as usize;
+    let seg: Vec<f32> = x[start..start + len]
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let w = 0.5 - 0.5 * (core::f32::consts::TAU * i as f32 / len as f32).cos();
+            v * w
+        })
+        .collect();
+    let spec = superduper_synth_core::analysis::magnitude_spectrum_db(&seg);
+    let bin_hz = SR / len as f32;
+    let (mut harm, mut noise) = (0.0f64, 0.0f64);
+    for (i, &db) in spec.iter().enumerate() {
+        let hz = i as f32 * bin_hz;
+        if hz < 60.0 || hz > 8000.0 {
+            continue;
+        }
+        let lin = 10f64.powf(db as f64 / 20.0);
+        let e = lin * lin;
+        if (1..=36).any(|k| (hz - f0 * k as f32).abs() < 7.0 * bin_hz) {
+            harm += e;
+        } else {
+            noise += e;
+        }
+    }
+    10.0 * ((noise / harm.max(1e-30)) as f32).log10()
+}
+
+/// RMS of `x[a..b]` in dB.
+pub fn rms_db(x: &[f32], a: usize, b: usize) -> f32 {
+    let n = (b.min(x.len())).saturating_sub(a).max(1);
+    let e: f32 = x[a..a + n].iter().map(|v| v * v).sum();
+    10.0 * (e / n as f32).max(1e-30).log10()
+}
+
+/// Largest sample-to-sample step in `x[a..b]` — the click detector from
+/// lesson 19.
+pub fn max_step(x: &[f32], a: usize, b: usize) -> f32 {
+    let b = b.min(x.len());
+    x[a..b].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max)
 }

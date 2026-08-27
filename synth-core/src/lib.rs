@@ -20,6 +20,7 @@ pub mod loudness;
 pub mod melody; // offline note segmentation + correction planning (sdsp-tune, future editor)
 pub mod nam;
 pub mod pitch;
+pub mod pitch_engine; // picks PSOLA or the phase vocoder by measuring the material (shared by superduper-pitch and superduper-tune)
 pub mod pvoc; // STFT phase vocoder — the polyphony-capable engine, and PSOLA's fallback on material with no glottal epoch
 pub mod psola; // TD-PSOLA pitch/formant shifter (extracted from superduper-pitch; shared with superduper-tune + iOS)
 pub mod spectral;

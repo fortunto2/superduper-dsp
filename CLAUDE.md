@@ -124,8 +124,17 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
     selector + **Match** button set `Pitch` to the nearest-octave interval that
     moves this track into the target key (read a vocal's key on one instance,
     type it as the target on the music → Match).
-  - Both engines report the **same** latency (~2048 ≈ 43 ms, `max(4·T0_max,
-    N−H)`) via CLAP `latency` ext, so switching Mode never re-triggers host PDC.
+  - **Auto** (`Mode` = 2, appended after Voice/Track) — measures
+    `epoch_sharpness` on the incoming audio and routes: PSOLA while the
+    material has real glottal pulses, the phase vocoder the moment it does
+    not (a synth, a sustained kubyz, a breathy take). Equal-power crossfade
+    over 20 ms, six agreeing readings before it acts. A forced Voice or Track
+    is never overridden. Both engines live in `synth_core::pitch_engine`; see
+    lesson 24 for the numbers.
+  - Both engines report the **same** latency, now `max(4·T0_max at the 70 Hz
+    floor, N−H)` = 2744 ≈ **57 ms** (was 2024 ≈ 42 ms — the extra 15 ms is what
+    finally locks an 87 Hz voice) via CLAP `latency` ext, so switching Mode
+    never re-triggers host PDC.
     6 params (Pitch / Formant / Mix / Output / Mode / Target). Presets: Chipmunk,
     Masyanya, Bass, Demon, Gender Flip, Deeper (Voice) + Key ±2 / ±5 (Track).
     Verified: Voice +12 → ×2, −12 → ×0.5, Formant +7 raises centroid with f0
@@ -144,13 +153,22 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   `Reference` input port 1 via a second YIN). `Retune` sets the effect: **0 ms =
   hard tune / T-Pain** (the shifter's built-in ~5 ms pitch smoothing gives the
   snap, not a click), higher = natural glide. `Amount` blends correction depth;
-  `Formant` shifts timbre independently (no chipmunking); Mix/Output. Unvoiced /
-  silent input **freezes** the correction (no snapping breath). Latency = PSOLA
-  look-behind, reported via CLAP `latency`. GUI shows live detected-Hz +
+  `Formant` shifts timbre independently (no chipmunking); Mix/Output. **`Engine`**
+  (Auto / PSOLA / Phase, param 9) picks what applies the correction — Auto by
+  default, because PSOLA alone turned a −66.9 dB noise floor into −2.6 dB on
+  smooth or breathy material (lesson 24); on the quality suite's tone the switch
+  moved THD from −52.7 to **−80.3 dB** and stopped the peak sagging. Unvoiced /
+  silent input **freezes** the correction (no snapping breath). Latency = the
+  max of both engines, fixed at activate (2744 ≈ 57 ms at 48 kHz), reported via
+  CLAP `latency`. GUI shows live detected-Hz +
   correction-cents. 9 presets (Hard Tune / Natural / Subtle / Minor Hard / Robot
   / Pentatonic / MIDI Graph / Sidechain Follow / Bright Doll). **Verified:** in
   460 Hz → −0.77 st → A4 440; sing 300 Hz + MIDI C4 → 261.6 Hz; in-key 220 Hz →
-  no correction; clap_e2e green. **TODO:** Melodyne-lite (offline mono note
+  no correction; clap_e2e green. `tests/closed_loop.rs` re-analyses the OUTPUT
+  (correcting well and sounding well are different claims — see lesson 24):
+  a detuned smooth tone lands 0.0 cents off at a −47.4 dB noise floor against
+  −2.7 dB through forced PSOLA, a synthetic voice 0.2 cents, and a real take
+  (`SDSP_VOCAL_TAKE=<wav>`) 8.7 cents. **TODO:** Melodyne-lite (offline mono note
   editor) is the planned follow-on (M4).
 - **superduper-harmonic** *(new)* — pitch-locked harmonic comb denoiser for a
   **piezo / electric kubyz** (jaw-harp): keep the harmonics AND the plucks,
@@ -499,6 +517,19 @@ from host BPM read out of `CoreEventSpace::Transport` events.
   `SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-<name> --test quality`.
   The allocator found six real violations the lexical `rt_safety` scan could not
   see, including a LoudnessMeter that grew a Vec by one f64 per 100 ms block.
+- **`tools/sdsp-tune`** — offline melody correction ("auto-Melodyne"):
+  `analyse` writes a note list + a PNG of the melody, `fix` renders the
+  corrected audio. Renders through `PitchEngine` in Auto (it used to hardcode
+  the phase vocoder) with the floor taken from the take's own lowest note —
+  latency is free offline. Closed loop on a real vocal: median |error| 20 → 6
+  cents. Notes are corrected whole (median → target, vibrato kept),
+  and the note list is an editable text file — change a `target`, re-run with
+  `--apply`, and only that note moves. That text file is the manual editing
+  surface until a GUI exists.
+- **`tools/pitch-bench`** — put the two pitch detectors side by side. No args =
+  synthetic suite with known f0 (accuracy in cents, octave-error rate, CPU);
+  a WAV = agreement between them plus the timestamps where they disagree by an
+  octave. This is how the `Model` choice in Tune is meant to be settled.
 - **`tools/mixcheck.py`** — measure a finished mix: band balance against a
   commercial reference, crest factor, channel correlation, per-section RMS arc.
   See the `sdsp-mix` skill for how to act on the numbers.
@@ -1096,6 +1127,84 @@ and the CFBundleIdentifier. The script also installs to
     THD < -35 dB at 1 kHz, aliasing < -55 dB at 18 kHz under 4× OS").
     Use these as the basis for new plugins — the measurement primitives
     in `analysis.rs` (THD/IMD/aliasing) exist specifically for this.
+
+24. **TD-PSOLA is only transparent on material that HAS glottal epochs — so
+    measure the material and route.** *(Shipped 2026-08-27 as
+    `synth_core::pitch_engine`; the diagnosis below is kept because it is the
+    reason the rule exists.)*
+
+    **The rule:** never hand audio to PSOLA without knowing it has epochs.
+    `synth_core::pitch::epoch_sharpness(window, t0)` is the measurement —
+    RT-safe, alloc-free, no FFT — and `PitchEngine` is the router. Route to
+    PSOLA at **≥ 0.9**, to the phase vocoder below it. Measured on the
+    reference signals, with what PSOLA does to each at unity shift:
+
+    | source | sharpness | PSOLA at unity |
+    |---|---|---|
+    | pulsed voice | 2.65 | −23.9 → −24.2 dB (transparent) |
+    | voiced (glottal) | 1.25 | −20.5 → −20.8 dB (transparent) |
+    | breathy take | 0.58 | −9.1 → **−1.4 dB** |
+    | smooth tone | 0.46 | −66.9 → **−2.6 dB** |
+
+    Two things that table settles. First, **voicedness is the wrong signal**:
+    the breathy take is unambiguously a voice and still belongs on the vocoder
+    side, because aspiration blunts the glottal closure there is nothing to
+    snap to. Second, the descriptor needs **two** factors — crest excess (is
+    there an epoch) times tonality from the lag-`t0` autocorrelation (or is the
+    period full of hiss, which OLA combs into a buzz). Plain crest scores
+    breathy 1.21 against a normal note's 1.25; energy concentration around the
+    peak inverts the answer outright.
+
+    Both plugins expose the choice: Pitch's `Mode` gained **Auto** (value 2,
+    appended — 0/1 still mean Voice/Track), Tune gained an **`Engine`** param
+    (Auto / PSOLA / Phase). Auto is Tune's default and moved its quality-suite
+    tone THD from −52.7 to **−80.3 dB**. `PitchEngine` reports the **max** of
+    both engines' latency, fixed at construction, so PDC never moves and the
+    two outputs stay sample-aligned; the swap is an equal-power crossfade over
+    20 ms, held back by six agreeing readings so a breathy take cannot flap it.
+    A cold engine warms at zero gain for its latency **plus one STFT window**
+    first — warming for only the latency left a measured 1.9 dB hole.
+
+    The same work fixed the second, independent defect: PSOLA's floor was
+    hardcoded at 95 Hz, so an 87 Hz voice never locked and nobody got an error.
+    The floor is now **70 Hz** (`VOICE_FLOOR_HZ`), which costs 42 → 57 ms of
+    latency, because the look-behind is 4·T0_max. It is fixed at construction
+    rather than derived from the tracked f0 for exactly that reason: an
+    adaptive floor means adaptive latency, and that is the one thing hosts
+    mishandle.
+
+    **Diagnosis (what the rule is made of).**
+    Measured at unity shift (`superduper-pitch/tests/engine_transparency.rs`):
+    on an impulse-train voice (sharp pulses through formant resonators) the
+    engine is clean — noise-to-harmonic −23.9 dB in, −24.2 dB out. On a SMOOTH
+    harmonic tone (a synth, a sustained kubyz, any sum-of-sines) the same call
+    turns −66.9 dB into **−2.6 dB**: the grain is read around a snapped energy
+    peak but written to an unsnapped synthesis mark, and with no real pulse to
+    snap to, that peak wanders, so pulses overlap-add at scrambled phase. So
+    it is a SCOPE bug, not an algorithm bug. Three "fixes" were tried and
+    reverted: snapping both read and write points kills the shift itself
+    (+12 st measured as −16 st), sequential epochs made it worse, and the OLA
+    window floor changed nothing. The phase vocoder (`pvoc` in
+    synth-core) measures −66.9 dB on the smooth tone, which is why the router
+    falls back to it. Lesson for any new engine: **test "do nothing" on BOTH a
+    pulsed and a smooth source before testing "do the thing"** — and measure
+    the OUTPUT, not what the engine decided. `superduper-tune`'s
+    `correction.rs` stayed green through this entire defect, because it asks
+    what the corrector chose; `tests/closed_loop.rs` re-analyses what came out.
+
+23. **External sidechain needs a routed-LATCH, not a per-block zero check.**
+    CLAP gives no "is port N routed" signal, so plugins detected a key by
+    "any non-zero sample this block" — but a routed kick is SILENT between
+    hits, and the check then handed detection back to the main input
+    mid-song: a compressor never released (measured as a constant −Range
+    duck), a ducker re-keyed off dry. Use
+    `sdk::clap_helpers::SidechainSnapshot` (zero-fills scratch, copies port,
+    latches on first non-zero; latch resets at activate) — compressor,
+    delay, reverb, supermass and vocal all use it since 2026-08-27. The
+    never-routed fallback to dry keying still works — the latch only removes
+    the mid-song revert. Formant/tune/vocoder intentionally do NOT latch:
+    their silence semantics live in the tracker/param (vowel freeze, pitch
+    hold, carrier select).
 
 ## DSP code style rules — never violate inside `process()`
 

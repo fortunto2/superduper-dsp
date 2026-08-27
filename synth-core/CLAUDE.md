@@ -44,6 +44,63 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
   pre-emphasis → frequency-proportional envelope smoothing → per-formant
   peak-pick → glide). Gates on the newest hop only so the estimate **freezes**
   instead of chasing the noise floor. Drives SuperDuper Formant's Follow mode.
+- **`pitch`** — `detect_pitch_hz` (offline, Wave's WAV import),
+  `epoch_sharpness` (the descriptor `pitch_engine` routes on — crest excess
+  times lag-`t0` tonality, RT-safe, alloc-free, no FFT; its doc comment carries
+  the measured threshold and the two cheaper descriptors that were rejected on
+  measurement) and `YinPitchTracker`, the streaming YIN fundamental tracker behind Tune,
+  Pitch (Voice/PSOLA), Vocoder, Harmonic and Wind. The tracker's difference
+  function is **FFT-based** (d(τ) = ΣX²-prefix sums − 2·autocorr via one
+  realfft pair over the zero-padded window) — the scalar O(τmax·W) version
+  cost ~800k f64 mul-adds per analysis and made Tune (which runs TWO
+  trackers: its own + the PSOLA engine's) burn 25% of a core; FFT brought
+  it to ~5%. Keep new pitch consumers on this tracker instead of calling
+  `yin_pitch_window` per hop — the scalar path stays only for offline use.
+- **`swiftf0`** — SwiftF0 (lars76, CC-BY-4.0) neural pitch tracker as pure-Rust
+  streaming inference: resample→16 kHz, STFT 1024/256, 5× Conv2d 5×5 + 1×1
+  projection over 200 log bins, ±9-bin weighted decode with a confidence
+  output. Weights are a 379 KB `include_bytes!` blob. Costs ~5% of a core
+  (vs YIN's 0.5%) and lags one frame, and it earns that where YIN cannot:
+  on noisy/breathy material YIN jumps a full octave in 100% of frames while
+  SwiftF0 stays within 1.3 cents (`tools/pitch-bench` prints the table). The
+  conv kernel is tiled 12 frequencies at a time — the naive axpy form was
+  memory-bound at 1.4× realtime, tiling made it 15×. Streaming zeroes the
+  two future time taps (causal), which costs ~6 cents against the offline
+  model; matching it exactly would need 160 ms of lookahead. Selected in
+  superduper-tune by the `Model` param. Core ML variant + conversion recipe:
+  `~/Music/1music/swiftf0-coreml/`.
+- **`pvoc`** — STFT phase vocoder (smbPitchShift-style: true-frequency per bin,
+  bins moved to `k·α`, phase re-accumulated, iFFT + OLA). Moved here from
+  `effects/superduper-pitch` so **Tune** and the iOS staticlib can reach it —
+  an effect crate depending on another effect crate would have been a new and
+  wrong direction. Still re-exported as `superduper_pitch::pvoc`, so nothing
+  outside that crate needed editing. Handles polyphony, and is the fallback
+  whenever PSOLA's assumptions do not hold.
+- **`pitch_engine`** — owns a `PitchShifter` and a `PhaseVocoder` and decides
+  which one runs, so Pitch and Tune cannot drift apart. `Mode::Auto` measures
+  `pitch::epoch_sharpness` on the period PSOLA is already tracking and routes
+  at a threshold of 0.9; six agreeing readings switch it, one does not.
+  Three design points that are load-bearing rather than incidental:
+  * **latency is the max of both engines, fixed at construction** — hosts
+    mishandle PDC that moves, and padding both to the same number is also what
+    makes their outputs sample-aligned, so the crossfade mixes two versions of
+    the same moment;
+  * **in Auto both engines run every block** — a cold engine emits nothing for
+    its whole latency, so fading one in from cold is a fade into silence. That
+    is the CPU price of an inaudible switch. Forced modes run one engine and
+    warm the incoming one at zero gain for its latency *plus one STFT window*
+    first (warming for only the latency left a measured 1.9 dB dip);
+  * **equal-power, not linear** — measured, not assumed: the two renderings
+    correlate at r = 0.13 on a pulsed source, so they sum in power.
+  The PSOLA floor is 70 Hz here rather than the engine's 95 Hz default, which
+  is what finally locks an 87 Hz voice, at 42 → 57 ms of latency.
+- **`melody`** — offline note model: cut a pitch curve into `Note`s (unvoiced
+  gaps, held pitch jumps, minimum duration), pick a target per note, and emit
+  a per-frame shift curve. The point is that a note is corrected **as one
+  object** — its median moves to the target, the shape inside it (vibrato,
+  scoop) is untouched — which is what separates Melodyne-style editing from
+  live autotune. Allocates and needs the whole take, so it is offline-only.
+  Drives `tools/sdsp-tune`; a standalone editor would sit on the same model.
 - **`spectral`** — `StftProcessor` (streaming STFT overlap-add with a per-frame
   callback; one shared `hop`, so an algorithm needing different analysis and
   synthesis hops can't use it) plus `smooth_proportional`, the
@@ -119,7 +176,20 @@ Adding a new helper to `gui.rs`:
 
 ## Tests
 
-`tests/dsp_blocks.rs` — 9 unit tests, run with
+`tests/dsp_blocks.rs` — unit tests, run with
 `cargo test --release -p superduper-synth-core`. New blocks: extend this
 file rather than adding new test files; the suite is intentionally small
-and fast.
+and fast. `tests/common/mod.rs` holds the shared reference signals (smooth
+tone, pulsed voice, Rosenberg-pulse voice with adjustable breath) plus
+`noise_to_harmonic` / `rms_db` / `max_step`; they mirror
+`superduper-pitch/tests/engine_transparency.rs`, where the dB baseline lives,
+so **keep the two in sync** — a sharpness number from here is only meaningful
+paired with a dB number from there.
+
+**Rule for any pitch-shifting engine** (learned the expensive way, lesson 24 in
+the parent CLAUDE.md): test "do nothing" on BOTH a pulsed and a smooth source
+before testing "do the thing", and measure the OUTPUT rather than what the
+engine decided. TD-PSOLA was transparent at unity shift on a voice and turned
+a −66.9 dB noise floor into −2.6 dB on a synth tone, and the autotune test
+suite stayed green throughout because it only ever asked what correction the
+corrector had chosen.

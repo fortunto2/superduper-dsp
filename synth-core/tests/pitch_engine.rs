@@ -355,3 +355,85 @@ fn tracked_hz_follows_the_input_in_every_mode() {
         );
     }
 }
+
+/// The block-rate pitch update must agree with the per-sample one at every
+/// buffer size a host might use.
+///
+/// `observe()` originally scaled the one-pole coefficient linearly by block
+/// length, which passes 1.0 at 500 frames and 2.0 at 1000. At a 1024-frame
+/// buffer — the size this rig mixes at — the recursion diverged to −1.4e10,
+/// and at 2048 to NaN, after which every grain was poisoned and the plugin
+/// rendered silence for the rest of the session. It only ran in a forced Pvoc
+/// route, so Pitch's Track mode and Tune's Phase mode were the way in.
+#[test]
+fn the_block_rate_pitch_update_is_stable_at_every_buffer_size() {
+    for block in [64usize, 256, 512, 1024, 2048, 4096] {
+        let x = common::smooth_at(2.0, 220.0);
+        let mut e = PitchEngine::new(common::SR, block);
+        e.prime(1.0, 1.0);
+        e.set_mode(Mode::Pvoc);
+        let p = unity();
+        let mut out = vec![0.0; x.len()];
+        let mut at = 0;
+        while at + block <= x.len() {
+            let mut r = vec![0.0; block];
+            let (i, o) = (&x[at..at + block], &mut out[at..at + block]);
+            e.process(i, i, o, &mut r, &p);
+            at += block;
+        }
+        // The divergence lives in the smoothed period, not the raw tracker,
+        // and it only shows once PSOLA renders again — so switch back and
+        // listen, which is how a user meets it.
+        e.set_mode(Mode::Psola);
+        let mut back = vec![0.0; x.len()];
+        let mut at = 0;
+        while at + block <= x.len() {
+            let mut r = vec![0.0; block];
+            let (i, o) = (&x[at..at + block], &mut back[at..at + block]);
+            e.process(i, i, o, &mut r, &p);
+            at += block;
+        }
+        let tail = &back[back.len() / 2..];
+        let rms = (tail.iter().map(|v| v * v).sum::<f32>() / tail.len() as f32).sqrt();
+        println!("block {block:>5}: period {:8.1}, RMS after returning to Voice {rms:.4}",
+                 e.psola_period());
+        assert!(tail.iter().all(|v| v.is_finite()), "block {block}: non-finite output");
+        assert!(rms > 0.01, "block {block}: Voice mode renders silence (RMS {rms:.4})");
+    }
+}
+
+/// A gap between phrases is not evidence about the material.
+///
+/// `epoch_sharpness` reports 0.0 for silence by design, and feeding that
+/// straight into the vote made an ordinary breath argue for the phase
+/// vocoder: a locked-on voice lost the route after ~53 ms of silence and
+/// needed ~101 ms of singing to win it back. Every entry — the transient
+/// where the epoch snap and the independent formant axis matter most — was
+/// rendered by the wrong engine, and Formant audibly changed character at
+/// each one.
+#[test]
+fn a_gap_between_phrases_does_not_change_the_route() {
+    let phrase = common::voiced(1.5);
+    let gap = vec![0.0f32; (0.4 * common::SR) as usize];
+    let mut x = phrase.clone();
+    x.extend_from_slice(&gap);
+    x.extend_from_slice(&phrase);
+
+    let mut e = engine();
+    e.set_mode(Mode::Auto);
+    let mut lowest_after_gap = 1.0f32;
+    let gap_start = phrase.len();
+    run(&mut e, &x, &unity(), |e, at| {
+        if at >= gap_start {
+            lowest_after_gap = lowest_after_gap.min(e.psola_mix());
+        }
+    });
+    println!(
+        "voice -> 400 ms of silence -> voice: psola mix dipped to {lowest_after_gap:.2}, ended {:.2}",
+        e.psola_mix()
+    );
+    assert!(
+        lowest_after_gap > 0.99,
+        "the route left PSOLA during a silent gap (mix fell to {lowest_after_gap:.2})"
+    );
+}

@@ -18,7 +18,7 @@ tail_s = 2.0
 # 0. PITCH — first, always on the DRY take: the tracker reads pitch reliably
 #    before anything nonlinear touches it. Uncomment for tuned vocals.
 #    Retune 0 = hard tune (T-Pain / modern rap), 80-150 = transparent.
-#    Adds ~43 ms latency — in a multi-track mix the whole track lands late;
+#    Adds ~57 ms latency — in a multi-track mix the whole track lands late;
 #    nudge the input or ignore it if the feel survives.
 # [[stage]]
 # plugin = "tune"

@@ -64,14 +64,38 @@ its channels 3/4, compressor last in the chain, plugin input pins 2/3 mapped to
 channels 3/4. `demos7/apply_fx.py::setup_sidechain` does all of it over the
 bridge and is safe to re-run — copy that function rather than clicking.
 
-Compressor settings for ducking (not for compressing):
-`Threshold -26, Ratio 6, Attack 0.5 ms, Release 90 ms, Knee 3, SC HPF **0**,
-Lookahead **0**, Auto Rel off`. Two of those matter more than the rest: **SC HPF
-off**, because the key *is* low end and filtering it deafens the detector, and
-**Lookahead 0**, because ducking before the hit sounds like a mistake.
+Compressor settings for ducking (not for compressing) — **depth comes from
+`Range`, not from threshold arithmetic**:
+`Threshold -30, Ratio 10, Range = the depth you want (4-6 dB), Attack 0.5 ms,
+Release 80 ms, Knee 3, SC HPF **0**, Lookahead **0**, Auto Rel off`. The
+threshold sits far below any hit, the steep ratio slams into the Range cap, so
+the duck is exactly Range dB regardless of how hot the key is. (Setting depth
+via threshold-overshoot × ratio — Thr −10 / Ratio 1.6 hoping for ~4 dB —
+measured 1.3 dB on real material.) SC HPF stays off because the key *is* low
+end; Lookahead 0 because ducking before the hit sounds like a mistake.
 
-Verify it, don't assume: measure the bass 5 ms after a kick and 150 ms after. A
-working duck shows ~6–10 dB between them.
+Match **Release to the gap after the key**, not to taste alone: GR holds while
+the key sounds and needs Release + detector time (~150 ms total) to come back,
+so a 300 ms kick tail in a 580 ms beat leaves the bass only ~150 ms of freedom.
+A long swelling key means a duck that never breathes — shorten the kick, don't
+fight the release.
+
+Verify it, don't assume — and not by comparing the bass to itself (when kick
+and bass strike the same beat, the bass's own attack confounds "5 ms vs 150 ms
+after the hit"). Render the ducked track twice, with and without the duck
+stage, and plot `20*log10(env_ducked/env_dry)` against the kick envelope: the
+curve must sit at −depth while the kick sounds and return to 0 before the next
+beat. A flat line at −depth is a fader, not a duck.
+
+**Fixed 2026-08-27, worth remembering:** the keyed plugins used to decide
+"sidechain routed?" per 256-frame block by checking for non-zero samples — so
+between kick hits the silent key handed detection back to the MAIN input, and
+with a low threshold a compressor's GR never released (the duck measured as a
+constant −Range) while a ducker re-keyed off dry. All five (compressor,
+delay, reverb, supermass, vocal) now share a latch
+(`sdk::clap_helpers::SidechainSnapshot`): once a key is seen, silence on it
+means release. Renders made before the fix have static gain where a pump was
+intended.
 
 ### 2. Clear the low end everywhere else
 
@@ -110,6 +134,54 @@ in — they take the dry signal as the key when no sidechain is routed.
 A static EQ cut that fixes the loud note ruins every other note. `soothe` cuts
 only when the band actually spikes. Amount 6–9 dB, Sens −9, bracket the range
 you care about (2.5–9 kHz for harsh vocals, 200–500 Hz for boxy).
+
+## The channel chain — one order, only the numbers change
+
+A channel strip's stage ORDER is the part that costs nothing and matters most.
+The canonical vocal chain, each slot one job:
+
+```
+0 tune → 1 HP + trim → 2 mud cut → 3 comp FAST (peaks) → 4 comp SLOW (level)
+       → 5 de-ess → 6 saturate → 7 tonal EQ → 8 delay + reverb
+```
+
+Why each thing sits where it sits — these are the rules, the numbers are taste:
+
+- **Pitch correction first, on the dry take** (0). The tracker reads pitch
+  reliably before anything nonlinear touches the signal.
+- **Gain-stage into the chain, ride before the comps** (1). Aim ~−20 LUFS
+  into stage 3 via the first eq's `Output`, and level uneven phrases there
+  with `automate = { Output = … }` — that is clip gain, so the compressors
+  work less. `gain_automate` on the track is post-chain: a fader, not a ride.
+- **Subtractive EQ before compression** (1–2). The comps must react to the
+  voice, not to rumble and box they then drag along.
+- **Fast compressor before slow** (3→4) — the 1176-into-LA-2A stack. The
+  fast FET-style stage (Pump curve) takes 3–5 dB off peaks only; the slow
+  leveler (Smooth curve) then holds 2–3 dB constantly. Reversed, the slow
+  one slams on every transient and pumps. The signatures are measurable in
+  the per-stage printout: stage 3 should barely move the LUFS (peaks only),
+  stage 4 should shave a steady 2–3 dB. 3 dB twice beats 6 dB once.
+- **De-ess after the comps and before the saturator** (5). The comps just
+  raised the esses; drive would then exaggerate them. Between the two is the
+  only slot where a de-esser wins.
+- **Saturation after compression** (6) — the drive amount stops depending on
+  how loud the performer got. `Mix < 1` = parallel: expensive, not distorted.
+- **Additive EQ after saturation** (7). It shapes the harmonics the drive just
+  added; boosting *before* the drive feeds back the mud slot 2 removed.
+- **Space last** (8), so it hears the finished, de-essed voice — a reverb fed
+  before the de-esser sprays sibilance across every tail. Duck it. In a mix
+  the pro topology is a 100%-wet return track; serial low-Mix is the shortcut.
+
+Genre changes only the numbers (rap: hard tune, harder comp, slap not tail,
+parallel comp Ratio 10 / Mix 0.35 for thickness; pop: more air and plate;
+house: darker, longer). Ready starting config with per-genre notes:
+`sdsp-chain --template vocal`. The same chain exists as a REAPER project
+template ("SuperDuper Vocal Chain", File → Project templates) with the space
+stages as ducked send returns and every parameter saved in the .rpp; its
+generator lives in `~/Music/1music/vocal-template/` and reads the same TOML.
+
+The same slot logic — clean → level → character → tone → control → space —
+applies to any source chain, and the mastering chain below follows it too.
 
 ## The mastering chain
 

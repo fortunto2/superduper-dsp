@@ -118,12 +118,19 @@ fn render(a: &Audio, frames: &[Frame], curve: &[f32], formant_st: f32, min_hz: f
     // `latency` samples ago. Feeding it the shift for the CURRENT input time
     // lands each note's correction on its NEIGHBOUR — on short notes that
     // cancels the correction outright (measured: median error unchanged).
-    let lat_s = sh.latency_samples() as f32 / a.sr;
-    let mut out_l = vec![0.0f32; a.l.len()];
-    let mut out_r = vec![0.0f32; a.r.len()];
+    let lat = sh.latency_samples() as usize;
+    let lat_s = lat as f32 / a.sr;
+    // The engine emits `lat` samples in the past, so the render has to run
+    // that much longer and then drop the leading silence. Writing it straight
+    // out opened the corrected file with 57 ms of nothing and truncated the
+    // same amount off the end — dropping it beside the original on a timeline
+    // put it a frame and a half late.
+    let total = a.l.len() + lat;
+    let mut out_l = vec![0.0f32; total];
+    let mut out_r = vec![0.0f32; total];
     let mut at = 0usize;
-    while at < a.l.len() {
-        let n = BLOCK.min(a.l.len() - at);
+    while at < total {
+        let n = BLOCK.min(total - at);
         let t = (at as f32 / a.sr - lat_s).max(0.0);
         // Nearest analysis frame for the moment being synthesised.
         let fi = frames.partition_point(|f| f.t < t).min(frames.len().saturating_sub(1));
@@ -135,16 +142,18 @@ fn render(a: &Audio, frames: &[Frame], curve: &[f32], formant_st: f32, min_hz: f
             bypassed: false,
         };
         let mut tmp_r = vec![0.0f32; n];
-        sh.process(
-            &a.l[at..at + n],
-            &a.r[at..at + n],
-            &mut out_l[at..at + n],
-            &mut tmp_r,
-            &p,
-        );
+        let silence = vec![0.0f32; n];
+        let (il, ir) = if at + n <= a.l.len() {
+            (&a.l[at..at + n], &a.r[at..at + n])
+        } else {
+            (&silence[..], &silence[..])
+        };
+        sh.process(il, ir, &mut out_l[at..at + n], &mut tmp_r, &p);
         out_r[at..at + n].copy_from_slice(&tmp_r);
         at += n;
     }
+    out_l.drain(..lat);
+    out_r.drain(..lat);
     Audio { l: out_l, r: out_r, sr: a.sr, stereo: a.stereo }
 }
 

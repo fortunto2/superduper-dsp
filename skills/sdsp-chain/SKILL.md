@@ -19,7 +19,17 @@ cargo run --release -p sdsp-chain -- <config.toml> [<in.wav> <out.wav>]
 # Introspection — no need to grep PARAMS tables any more:
 cargo run --release -p sdsp-chain -- --list             # every plugin + param count
 cargo run --release -p sdsp-chain -- --params formant   # id / name / min / max / default / unit
+
+# Ready-made chains — the stage ORDER is the point, numbers are a start:
+cargo run --release -p sdsp-chain -- --template         # list them
+cargo run --release -p sdsp-chain -- --template vocal > my-vocal.toml
 ```
+
+Templates live in `tools/sdsp-chain/templates/*.toml` (compiled in via
+`include_str!`). `vocal` encodes the fixed channel-strip order — clean → level
+→ de-ess → colour → tone → catch peaks → space — with per-genre number notes;
+the reasoning is in the `sdsp-mix` skill ("The channel chain"). Start from a
+template rather than improvising stage order.
 
 The binary lands at `$CARGO_TARGET_DIR/release/sdsp-chain` (this machine:
 `/Users/rustam/.cargo-target/release/sdsp-chain`) — call it directly to skip cargo.
@@ -111,9 +121,12 @@ Plugins with a sidechain input: `compressor`, `reverb`, `supermass`, `delay`,
 
 ## Plugins
 
-`--list` is authoritative. Currently: `eq`, `lineq`, `compressor`, `saturator`,
+`--list` is authoritative. Currently 21: `eq`, `lineq`, `compressor`, `saturator`,
 `limiter`, `midside`, `vocal`, `filter`, `reverb`, `supermass`, `delay`, `chorus`,
-`formant`, `granular`, `stretch`.
+`formant`, `granular`, `stretch`, `pitch`, `tune`, `vocoder`, `harmonic`, `wind`,
+`soothe`. Note: `tune`/`pitch` report ~57 ms latency and the chain has no PDC —
+a serial chain just shifts as a whole, but in a multi-track mix that track lands
+late; nudge the input if the timing matters.
 
 ## What it guarantees
 

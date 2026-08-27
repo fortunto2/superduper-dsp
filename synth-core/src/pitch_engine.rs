@@ -88,6 +88,11 @@ pub const VOICE_FLOOR_HZ: f32 = 70.0;
 
 /// Crossfade length when the route changes, in milliseconds.
 const FADE_MS: f32 = 20.0;
+/// Peak below which a window says nothing about the material, so the routing
+/// decision is held rather than re-taken. −80 dBFS: comfortably under a
+/// breath, comfortably over digital silence.
+const SILENCE_GATE: f32 = 1e-4;
+
 /// Floor on the mixing scratch, in frames.
 ///
 /// This is the only stage that needs a scratch buffer at all — PSOLA masks its
@@ -285,6 +290,12 @@ impl PitchEngine {
         self.psola.tracked_hz()
     }
 
+    /// The smoothed period PSOLA cuts grains at. For tests that need to see
+    /// the state the raw tracker hides.
+    pub fn psola_period(&self) -> f32 {
+        self.psola.current_period()
+    }
+
     /// Last measured epoch sharpness, and which engine that argues for.
     /// For GUI meters and tests — not used by `process`.
     pub fn sharpness(&self) -> f32 {
@@ -453,7 +464,30 @@ impl PitchEngine {
             return;
         }
         let end = self.hist_pos + l;
-        self.sharpness = epoch_sharpness(&self.hist[end - need..end], t0);
+        let window = &self.hist[end - need..end];
+        // A gap between phrases is not evidence about the material. The
+        // descriptor reports 0.0 for silence by design, and feeding that to
+        // the vote made an ordinary breath argue for the phase vocoder:
+        // measured, 53 ms of silence moved a locked-on voice to psola_mix 0,
+        // and the next phrase needed 101 ms to win it back — so every entry,
+        // the transient where the epoch snap and the independent formant axis
+        // matter most, was rendered by the wrong engine. Hold the last
+        // decision through quiet frames, the way `formant_track` freezes its
+        // vowel.
+        // EVERY hop of the window must carry signal, not just the newest one.
+        // The window spans ~40 ms, so a reading taken while any part of it is
+        // silent describes a mixture of two things and lands low — which is
+        // how a phrase ONSET used to vote for the vocoder and take ~100 ms to
+        // hand the route back, on exactly the transient where the epoch snap
+        // and the independent formant axis earn their keep.
+        let quietest_hop = window
+            .chunks(self.analysis_hop)
+            .map(|c| c.iter().fold(0.0f32, |m, v| m.max(v.abs())))
+            .fold(f32::INFINITY, f32::min);
+        if quietest_hop < SILENCE_GATE {
+            return;
+        }
+        self.sharpness = epoch_sharpness(window, t0);
 
         // Debounce the DESCRIPTOR once, then let both consumers read the held
         // state. Same number for both, and the doc is honest that this is one

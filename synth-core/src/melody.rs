@@ -47,7 +47,7 @@ pub struct Note {
 impl Note {
     /// How far the note is out of tune, in cents (+ = sharp).
     pub fn error_cents(&self) -> f32 {
-        (self.sung_st - self.target_st) * -100.0
+        (self.sung_st - self.target_st) * 100.0
     }
     pub fn dur_s(&self) -> f32 {
         self.end_s - self.start_s

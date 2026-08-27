@@ -10,12 +10,14 @@ the code) and are surfaced to Claude Code via **symlinks** from `~/.claude/skill
 | `superduper-song` | Make songs in REAPER driven by our instruments (Wave/Kubyz/Drum/Pad/Sampler) via the reaper MCP — param maps by name, preset-recall indices, raw-value gotcha, CC expression, audio→MIDI. |
 | `sdsp-chain` | Headless mastering/mixing chain of our effects from the CLI (per-stage LUFS/dBTP). |
 | `sdsp-mash` | Mashup / cypher engine (`tools/sdsp-mash`). Big living skill. |
+| `sdsp-mix` | Mixing and mastering by measurement — sidechain, band balance vs a reference, `tools/mixcheck.py`. |
+| `track-teardown` | Reverse-engineer a reference track (spectrograms as pictures, demucs stems, fitted tempo, arrangement dynamics) and converge a rebuild onto it numerically. |
 
 ## The symlink setup (recreate on a new machine)
 
 ```bash
 REPO="/Users/rustam/Music/1music/superduper-dsp/skills"
-for s in superduper-plugin superduper-song sdsp-chain sdsp-mash; do
+for s in superduper-plugin superduper-song sdsp-chain sdsp-mash sdsp-mix track-teardown; do
   # if a real (non-symlink) copy exists globally, move it into the repo first:
   # mv "$HOME/.claude/skills/$s" "$REPO/$s"
   ln -sf "$REPO/$s" "$HOME/.claude/skills/$s"

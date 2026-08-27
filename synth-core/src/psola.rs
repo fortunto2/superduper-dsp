@@ -196,7 +196,15 @@ impl PitchShifter {
             self.tracker.push((xl + xr) * 0.5);
         }
         let target = (self.sr / self.tracker.current_hz()).clamp(self.t0_min, self.t0_max);
-        self.cur_t0 += (target - self.cur_t0) * 0.002 * in_l.len() as f32;
+        // The render path steps this pole once per SAMPLE with a 0.002
+        // coefficient, so the block-rate equivalent is the compounded factor,
+        // not `0.002 * n`. The linear form exceeds 1 at n = 500 and 2 at
+        // n = 1000 — at a 1024-frame buffer it diverged to −1.4e10 and at 2048
+        // to NaN, which then poisoned every grain and rendered silence for the
+        // rest of the session.
+        let approach = 1.0 - 0.998f32.powi(in_l.len().min(1 << 20) as i32);
+        self.cur_t0 += (target - self.cur_t0) * approach;
+        self.cur_t0 = self.cur_t0.clamp(self.t0_min, self.t0_max);
     }
 
     /// Return to the state a freshly constructed engine is in: empty rings,

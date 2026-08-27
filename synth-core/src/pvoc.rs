@@ -229,6 +229,15 @@ impl PhaseVocoder {
         self.target_latency
     }
 
+    /// How long this engine needs from cold before its output is worth
+    /// mixing. Longer than the reported latency: the padded delay decides when
+    /// the first sample appears, but the STFT also needs a whole analysis
+    /// window behind it before the frames it emits mean anything. Fading in
+    /// after only `latency()` left a measured 1.9 dB dip.
+    pub fn settling_samples(&self) -> usize {
+        self.target_latency + N
+    }
+
     /// Process one stereo block (Dry/Wet, output trim, bypass handled here).
     pub fn process(
         &mut self,

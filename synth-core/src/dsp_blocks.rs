@@ -1199,6 +1199,28 @@ impl AdsrEnvelope {
 }
 
 /// Convert a MIDI note number (0-127) to frequency in Hz.
+/// Equal-power crossfade gains for `x` in 0..1: `(sin(x·π/2), cos(x·π/2))`.
+///
+/// The pair sums to constant POWER, not constant amplitude, which is the right
+/// law when the two signals being mixed are uncorrelated — mix two correlated
+/// signals this way and the middle of the fade bulges by up to 3 dB. Measure
+/// the correlation before choosing; `pitch_engine` did (r = 0.13).
+///
+/// Note the endpoints are not exactly 1 and 0: `cos(π/2)` in f32 is −4.4e−8,
+/// so the far side is attenuated by −147 dB rather than silenced. Callers that
+/// need a true zero must branch, and should think about whether that
+/// discontinuity is audible first.
+///
+/// Equal-power *panning* elsewhere in the crate (`granular`, `wave_osc`) maps
+/// a −1..+1 position instead and is deliberately left alone: its `x` is
+/// computed slightly differently and routing it through here could move a
+/// checked-in snapshot by an ulp for no gain.
+#[inline]
+pub fn equal_power(x: f32) -> (f32, f32) {
+    let theta = x * core::f32::consts::FRAC_PI_2;
+    (theta.sin(), theta.cos())
+}
+
 /// A4 = key 69 = 440 Hz, then 12-TET.
 #[inline]
 pub fn midi_note_to_hz(note: f32) -> f32 {

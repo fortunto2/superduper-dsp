@@ -161,6 +161,14 @@ impl PitchShifter {
         self.latency as u32
     }
 
+    /// How long this engine needs from cold before its output is worth
+    /// mixing: the look-behind it reports, and nothing more — PSOLA builds
+    /// each grain from the input ring directly, with no analysis window to
+    /// fill first.
+    pub fn settling_samples(&self) -> usize {
+        self.latency
+    }
+
     /// The period the engine is currently working at, in samples — the
     /// tracker's estimate after smoothing and range clamping.
     ///

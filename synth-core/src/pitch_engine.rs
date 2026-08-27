@@ -35,10 +35,12 @@
 //! emits nothing for its whole latency (the phase vocoder: 1536 samples), so
 //! fading one in from cold is a fade into silence. Keeping both warm is what
 //! makes a route change inaudible, and it is the honest CPU price of that. In
-//! the forced modes only the selected engine runs; a mode change there warms
-//! the incoming engine at zero gain until it has fully settled (its padded
-//! latency *plus* one STFT window) before the fade starts.
+//! the forced modes only the selected engine runs, which is why the fade is
+//! gated on one measured quantity — how long both engines have actually been
+//! fed — rather than on which mode we came from. Each engine reports its own
+//! `settling_samples()`; the router never learns what they are made of.
 
+use crate::dsp_blocks::equal_power;
 use crate::pitch::epoch_sharpness;
 use crate::psola::{PitchParams, PitchShifter};
 use crate::pvoc::PhaseVocoder;
@@ -58,9 +60,10 @@ pub enum Mode {
 }
 
 /// Route to PSOLA at or above this epoch sharpness, to the phase vocoder
-/// below it. Picked as the midpoint of the only gap in the measurements —
-/// evidence table on [`epoch_sharpness`].
-pub const ROUTE_THRESHOLD: f32 = 0.9;
+/// below it. The number belongs to the descriptor that produces it, next to
+/// the measurements that justify it — this is a re-export for callers who
+/// think in terms of routing.
+pub use crate::pitch::EPOCH_SHARPNESS_THRESHOLD as ROUTE_THRESHOLD;
 
 /// Lowest pitch the PSOLA engine will track, in Hz.
 ///
@@ -74,14 +77,17 @@ pub const VOICE_FLOOR_HZ: f32 = 70.0;
 
 /// Crossfade length when the route changes, in milliseconds.
 const FADE_MS: f32 = 20.0;
-/// How often the router re-measures the material, in samples.
-const ANALYSIS_HOP: usize = 256;
-/// Consecutive disagreeing measurements needed to actually switch. At 256
-/// samples / 48 kHz that is ~32 ms of the router being sure before it acts —
-/// the gap between a normal and a breathy voice is the narrowest part of the
-/// descriptor's range, and a single reading straddling it must not flap the
-/// engine.
-const VOTES_TO_SWITCH: i32 = 6;
+/// How often the router re-measures the material, in milliseconds.
+const ANALYSIS_MS: f32 = 5.33;
+/// How long the descriptor must keep disagreeing with the current route
+/// before the engine actually changes. The gap between a normal and a breathy
+/// voice is the narrowest part of the descriptor's range, so a single reading
+/// straddling it must not flap the engine.
+///
+/// In milliseconds, not in analyses: expressed as a count it would mean 32 ms
+/// at 48 kHz and 8 ms at 192 kHz, i.e. the hysteresis policy would quietly
+/// change with the host's sample rate.
+const HOLD_MS: f32 = 32.0;
 
 pub struct PitchEngine {
     psola: PitchShifter,
@@ -95,14 +101,16 @@ pub struct PitchEngine {
     /// the alternative to doubling is copying across the seam on every
     /// analysis.
     hist: Box<[f32]>,
-    /// Half the buffer: the ring's real length, a power of two.
-    hist_len: usize,
     hist_pos: usize,
     hist_filled: usize,
     since_analysis: usize,
 
     /// Scratch for the engine that is not writing straight to the output.
-    scratch: [Box<[f32]>; 2],
+    /// Two fields rather than an array: index projections do not split a
+    /// borrow, field projections do, so an array would need a destructure and
+    /// `split_at_mut` just to hand both halves to `pvoc.process`.
+    scratch_l: Box<[f32]>,
+    scratch_r: Box<[f32]>,
 
     /// True when PSOLA is the engine being faded *towards*.
     want_psola: bool,
@@ -110,14 +118,27 @@ pub struct PitchEngine {
     /// towards 1.0 or 0.0 over `fade_len`.
     fade_pos: f32,
     fade_step: f32,
-    /// Samples the incoming engine still runs at zero gain before the fade
-    /// starts (forced-mode changes only — in Auto both are already warm).
-    /// Reporting latency is not enough on its own: the phase vocoder's first
-    /// valid sample arrives after its padded delay, but its STFT also needs a
-    /// whole analysis window of input behind it before the frames it emits
-    /// are worth anything. Warming for only the latency left a measured
-    /// 1.9 dB dip in the middle of every mode change.
-    warmup: usize,
+    /// Samples between descriptor readings, and how many agreeing readings
+    /// switch the route — both derived from ms at construction so the policy
+    /// does not change with sample rate.
+    analysis_hop: usize,
+    votes_to_switch: i32,
+    /// Consecutive samples for which BOTH engines have been fed. The fade may
+    /// only advance once this reaches the incoming engine's settling time —
+    /// an engine that has just started emits nothing for its whole latency, so
+    /// fading into it any earlier is a fade into silence (measured: a 1.9 dB
+    /// dip in the middle of every mode change).
+    ///
+    /// One quantity rather than a flag plus a countdown. The countdown version
+    /// armed itself from a table of mode pairs, and the table did not cover
+    /// forced Voice → Auto: the target does not move there, so nothing was
+    /// armed, and the fade was left relying on the router's own vote delay
+    /// happening to exceed the vocoder's latency. Measured, it does — the
+    /// route change after that switch shows no dip either way — so this is a
+    /// structural guarantee replacing a coincidence, not a bug fix. The dip it
+    /// does prevent is the forced Psola → Pvoc one, covered by
+    /// `the_crossfade_holds_its_level`.
+    warm_samples: usize,
     votes: i32,
     /// Last measured sharpness, for meters and tests.
     sharpness: f32,
@@ -146,6 +167,9 @@ impl PitchEngine {
         let want = (9.0 * sr / min_hz) as usize;
         let hist_len = want.next_power_of_two();
         let fade_len = (FADE_MS * 0.001 * sr).max(1.0);
+        let analysis_hop = (ANALYSIS_MS * 0.001 * sr).max(16.0) as usize;
+        let votes_to_switch =
+            ((HOLD_MS * 0.001 * sr) / analysis_hop as f32).round().max(1.0) as i32;
 
         Self {
             psola,
@@ -153,20 +177,19 @@ impl PitchEngine {
             mode: Mode::Auto,
             latency,
             hist: vec![0.0; 2 * hist_len].into_boxed_slice(),
-            hist_len,
             hist_pos: 0,
             hist_filled: 0,
             since_analysis: 0,
-            scratch: [
-                vec![0.0; max_frames.max(1)].into_boxed_slice(),
-                vec![0.0; max_frames.max(1)].into_boxed_slice(),
-            ],
+            analysis_hop,
+            votes_to_switch,
+            scratch_l: vec![0.0; max_frames.max(1)].into_boxed_slice(),
+            scratch_r: vec![0.0; max_frames.max(1)].into_boxed_slice(),
             // Start on PSOLA: it is the engine with the independent formant
             // axis, so it is what a user gets unless the material argues.
             want_psola: true,
             fade_pos: 1.0,
             fade_step: 1.0 / fade_len,
-            warmup: 0,
+            warm_samples: 0,
             votes: 0,
             sharpness: 0.0,
         }
@@ -182,13 +205,11 @@ impl PitchEngine {
         self.mode
     }
 
-    /// Change mode. In a forced mode the incoming engine is cold, so it is
-    /// warmed at zero gain for one latency before the fade begins.
+    /// Change mode.
     pub fn set_mode(&mut self, mode: Mode) {
         if mode == self.mode {
             return;
         }
-        let was_auto = self.mode == Mode::Auto;
         self.mode = mode;
         let want = match mode {
             Mode::Psola => true,
@@ -198,9 +219,28 @@ impl PitchEngine {
         if want != self.want_psola {
             self.want_psola = want;
             self.votes = 0;
-            // Coming out of Auto both engines are already warm; coming out of
-            // a forced mode the other one has been idle.
-            self.warmup = if was_auto { 0 } else { self.latency + crate::pvoc::N };
+        }
+    }
+
+    /// The gain the crossfade is heading for.
+    #[inline]
+    fn target(&self) -> f32 {
+        if self.want_psola {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// How long the engine being faded *towards* needs before its output is
+    /// worth hearing. The outgoing one is running by definition, so only the
+    /// incoming one's settling time gates the fade.
+    #[inline]
+    fn incoming_settling(&self) -> usize {
+        if self.want_psola {
+            self.psola.settling_samples()
+        } else {
+            self.pvoc.settling_samples()
         }
     }
 
@@ -226,7 +266,7 @@ impl PitchEngine {
         self.hist_filled = 0;
         self.since_analysis = 0;
         self.votes = 0;
-        self.warmup = 0;
+        self.warm_samples = 0;
         self.fade_pos = if self.want_psola { 1.0 } else { 0.0 };
     }
 
@@ -253,13 +293,17 @@ impl PitchEngine {
         }
 
         // Where the fade will be by the end of this block decides whether the
-        // second engine has to run at all.
-        let start = self.fade_pos;
-        let target = if self.want_psola { 1.0 } else { 0.0 };
-        let moving = self.warmup > 0 || (target - start).abs() > 1e-6;
-        let both = self.mode == Mode::Auto || moving;
+        // second engine has to run at all. The `warmup` disjunct is not
+        // implied by the fade being off-target: switching away and back inside
+        // one warm-up leaves `fade_pos` already AT the target while the idle
+        // engine still needs feeding.
+        let target = self.target();
+        let both = self.mode == Mode::Auto || (target - self.fade_pos).abs() > 1e-6;
 
         if !both {
+            // Only one engine is fed, so the other goes cold and any future
+            // fade has to wait for it again.
+            self.warm_samples = 0;
             if self.want_psola {
                 self.psola.process(in_l, in_r, out_l, out_r, p);
             } else {
@@ -267,55 +311,63 @@ impl PitchEngine {
             }
             return;
         }
+        let warm = self.warm_samples >= self.incoming_settling();
+        self.warm_samples = self.warm_samples.saturating_add(n);
 
         // PSOLA into the output, phase vocoder into scratch, then mix down.
         self.psola.process(in_l, in_r, out_l, out_r, p);
-        {
-            // Field-disjoint borrows: `pvoc` and `scratch` are separate
-            // fields, but only a destructure tells the borrow checker that.
-            let Self { pvoc, scratch, .. } = self;
-            let (a, b) = scratch.split_at_mut(1);
-            pvoc.process(in_l, in_r, &mut a[0][..n], &mut b[0][..n], p);
-        }
+        self.pvoc.process(in_l, in_r, &mut self.scratch_l[..n], &mut self.scratch_r[..n], p);
 
+        // Equal-power, and that is a measurement rather than a habit. The
+        // right law depends on how correlated the two renderings are, and they
+        // turn out to be mostly independent: r = 0.13 on the pulsed source,
+        // 0.60 on the smooth one (`how_correlated_are_the_two_engines`).
+        // Independent signals sum in power, so a linear law would dip mid-fade;
+        // equal-power holds the level (measured excursion 0.9 dB either way,
+        // which is the correlated residue).
+        //
+        // The gains only move while a fade is actually in flight, which is a
+        // few blocks in an instance's lifetime — the rest of the time this is
+        // one sin/cos per block instead of two per sample. Note it still mixes
+        // when parked: at `fade_pos = 1.0` the other engine comes in at
+        // cos(π/2) = −4.4e−8, i.e. −147 dB. That is inaudible but not zero, and
+        // skipping it would change the rendered output.
+        let settled = !warm || self.fade_pos == target;
+        let (mut a, mut b) = equal_power(self.fade_pos);
+        let n_r = n.min(out_r.len());
         for i in 0..n {
-            if self.warmup > 0 {
-                self.warmup -= 1;
-            } else if self.fade_pos < target {
-                self.fade_pos = (self.fade_pos + self.fade_step).min(target);
-            } else if self.fade_pos > target {
-                self.fade_pos = (self.fade_pos - self.fade_step).max(target);
+            if !settled {
+                if self.fade_pos < target {
+                    self.fade_pos = (self.fade_pos + self.fade_step).min(target);
+                } else if self.fade_pos > target {
+                    self.fade_pos = (self.fade_pos - self.fade_step).max(target);
+                }
+                (a, b) = equal_power(self.fade_pos);
             }
-            // Equal-power, and that is a measurement rather than a habit.
-            // The right law depends on how correlated the two renderings are,
-            // and they turn out to be mostly independent: r = 0.13 on the
-            // pulsed source, 0.60 on the smooth one
-            // (`how_correlated_are_the_two_engines`). Independent signals sum
-            // in power, so a linear law would dip mid-fade; equal-power holds
-            // the level (measured excursion 0.9 dB either way, which is the
-            // correlated residue).
-            let a = (self.fade_pos * core::f32::consts::FRAC_PI_2).sin();
-            let b = (self.fade_pos * core::f32::consts::FRAC_PI_2).cos();
-            out_l[i] = out_l[i] * a + self.scratch[0][i] * b;
-            if i < out_r.len() {
-                out_r[i] = out_r[i] * a + self.scratch[1][i] * b;
+            out_l[i] = out_l[i] * a + self.scratch_l[i] * b;
+            if i < n_r {
+                out_r[i] = out_r[i] * a + self.scratch_r[i] * b;
             }
         }
     }
 
     /// Measure the material and update the routing vote. Cheap: one
-    /// [`epoch_sharpness`] call per [`ANALYSIS_HOP`] samples.
+    /// [`epoch_sharpness`] call per [`ANALYSIS_MS`].
     fn route(&mut self, in_l: &[f32], in_r: &[f32], n: usize) {
-        let l = self.hist_len;
+        // The ring is exactly double its usable length, so deriving it here
+        // keeps that invariant in one place instead of a field plus a comment.
+        let l = self.hist.len() / 2;
         for (i, &xl) in in_l[..n].iter().enumerate() {
             let m = 0.5 * (xl + *in_r.get(i).unwrap_or(&xl));
             self.hist[self.hist_pos] = m;
             self.hist[self.hist_pos + l] = m;
             self.hist_pos = (self.hist_pos + 1) & (l - 1);
-            self.hist_filled = (self.hist_filled + 1).min(l);
-            self.since_analysis += 1;
         }
-        if self.since_analysis < ANALYSIS_HOP {
+        // Both counters are read only after the loop, and clamping is
+        // monotone, so once per block gives the same values as once per sample.
+        self.hist_filled = (self.hist_filled + n).min(l);
+        self.since_analysis += n;
+        if self.since_analysis < self.analysis_hop {
             return;
         }
         self.since_analysis = 0;
@@ -337,7 +389,7 @@ impl PitchEngine {
             return;
         }
         self.votes += 1;
-        if self.votes >= VOTES_TO_SWITCH {
+        if self.votes >= self.votes_to_switch {
             self.votes = 0;
             self.want_psola = argues_psola;
         }

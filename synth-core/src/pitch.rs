@@ -420,6 +420,12 @@ impl YinPitchTracker {
     }
 }
 
+/// At or above this sharpness, TD-PSOLA is the right engine for the material;
+/// below it, the phase vocoder is. See [`epoch_sharpness`] for the
+/// measurements this midpoint was read off, and `pitch_engine` for the router
+/// that acts on it.
+pub const EPOCH_SHARPNESS_THRESHOLD: f32 = 0.9;
+
 /// How sharply defined is the glottal epoch in this signal?
 ///
 /// TD-PSOLA reads each grain around a snapped energy peak but writes it to an
@@ -459,8 +465,9 @@ impl YinPitchTracker {
 /// Alloc-free and branch-light — safe to call from `process()`. Cost is one
 /// pass over the window plus a few ops per period.
 ///
-/// **Threshold: 0.9** — at or above it PSOLA, below it the phase vocoder. Not
-/// a taste call; it is the midpoint of the only gap in the measurements.
+/// **Threshold: [`EPOCH_SHARPNESS_THRESHOLD`] = 0.9** — at or above it PSOLA,
+/// below it the phase vocoder. Not a taste call; it is the midpoint of the
+/// only gap in the measurements.
 /// Sharpness measured 2026-08-27 on the reference signals in
 /// `synth-core/tests/common` (median of 40 readings over the steady middle),
 /// paired with what PSOLA does to the same signal at unity shift, from
@@ -494,17 +501,12 @@ pub fn epoch_sharpness(window: &[f32], t0: usize) -> f32 {
     let pairs = (window.len() / t0 - 1).min(8);
     let seg = &window[window.len() - (pairs + 1) * t0..];
 
-    let mut sum_sq = 0.0f32;
-    for &v in &seg[..pairs * t0] {
-        sum_sq += v * v;
-    }
-    let rms = (sum_sq / (pairs * t0) as f32).sqrt();
-    if rms < 1e-6 {
-        return 0.0;
-    }
-
+    // One pass. The window RMS is the same `a²` sum the correlation
+    // denominators already need, accumulated in the same order, so folding it
+    // in here costs one add per sample and saves a whole extra traversal.
     let mut peak_sum = 0.0f32;
     let mut r_sum = 0.0f32;
+    let mut sum_sq = 0.0f32;
     for p in 0..pairs {
         let this = &seg[p * t0..(p + 1) * t0];
         let next = &seg[(p + 1) * t0..(p + 2) * t0];
@@ -514,7 +516,9 @@ pub fn epoch_sharpness(window: &[f32], t0: usize) -> f32 {
             let (a, b) = (this[i], next[i]);
             peak = peak.max(a.abs());
             num += a * b;
-            ea += a * a;
+            let aa = a * a;
+            ea += aa;
+            sum_sq += aa;
             eb += b * b;
         }
         peak_sum += peak;
@@ -522,6 +526,10 @@ pub fn epoch_sharpness(window: &[f32], t0: usize) -> f32 {
         // repeats exactly (harmonics, ringing formants) scores 1; anything
         // that does not (aspiration, hiss, a mistracked t0) drags it down.
         r_sum += num / (ea * eb).sqrt().max(1e-20);
+    }
+    let rms = (sum_sq / (pairs * t0) as f32).sqrt();
+    if rms < 1e-6 {
+        return 0.0;
     }
     let n = pairs as f32;
     let crest_excess = ((peak_sum / n) / rms - core::f32::consts::SQRT_2).max(0.0);

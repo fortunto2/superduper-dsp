@@ -160,7 +160,10 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   moved THD from −52.7 to **−80.3 dB** and stopped the peak sagging. Unvoiced /
   silent input **freezes** the correction (no snapping breath). Latency = the
   max of both engines, fixed at activate (2744 ≈ 57 ms at 48 kHz), reported via
-  CLAP `latency`. GUI shows live detected-Hz +
+  CLAP `latency`. **Tune runs no pitch tracker of its own in YIN mode** — the
+  engine already runs one on the same signal with the same settings, so it
+  reads `PitchEngine::tracked_hz()` (0.36 % of a core saved, ~a fifth of the
+  plugin). GUI shows live detected-Hz +
   correction-cents. 9 presets (Hard Tune / Natural / Subtle / Minor Hard / Robot
   / Pentatonic / MIDI Graph / Sidechain Follow / Bright Doll). **Verified:** in
   460 Hz → −0.77 st → A4 440; sing 300 Hz + MIDI C4 → 261.6 Hz; in-key 220 Hz →

@@ -97,6 +97,9 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
   The descriptor is measured in EVERY mode, not just Auto: besides picking the
   engine it gates PSOLA's per-grain epoch snap, and that matters most exactly
   where routing is switched off (forced Voice on a synth pad: +2.7 → −33.4 dB).
+  `tracked_hz()` exposes the engine's YIN estimate so a caller does not run a
+  second identical tracker (superduper-tune used to). `reset()` clears both
+  engines, and an oversized block is chunked rather than indexing past scratch.
 - **`melody`** — offline note model: cut a pitch curve into `Note`s (unvoiced
   gaps, held pitch jumps, minimum duration), pick a target per note, and emit
   a per-frame shift curve. The point is that a note is corrected **as one

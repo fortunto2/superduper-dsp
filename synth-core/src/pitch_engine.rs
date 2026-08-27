@@ -73,6 +73,17 @@ pub use crate::pitch::EPOCH_SHARPNESS_THRESHOLD as ROUTE_THRESHOLD;
 /// 4·T0_max, so the floor sets the latency (70 Hz → 57 ms at 48 kHz, against
 /// 42 ms at 95 Hz). Callers that would rather have the milliseconds than the
 /// low notes can pass their own floor to [`PitchEngine::with_floor`].
+///
+/// The 15 ms is not bought for a marginal quality gain: at 95 Hz an 87 Hz
+/// voice does not track 8 % flat, it does not track at all — the estimate
+/// sits at the tracker's 150 Hz default, 943 cents out, while
+/// noise-to-harmonic moves less than 1 dB. An autotune driven by that reads a
+/// wrong note and nothing sounds broken. Measured in
+/// `the_floor_is_the_difference_between_locking_and_not`.
+///
+/// Known cost, accepted deliberately: Pitch's Track mode never runs PSOLA and
+/// still pays the 15 ms. Making latency depend on the mode is the one thing
+/// hosts mishandle, so it stays uniform.
 pub const VOICE_FLOOR_HZ: f32 = 70.0;
 
 /// Crossfade length when the route changes, in milliseconds.
@@ -244,6 +255,14 @@ impl PitchEngine {
         }
     }
 
+    /// The pitch PSOLA is currently tracking, in Hz.
+    ///
+    /// Exposed so a caller that needs the singer's f0 can read the tracker
+    /// already running in here instead of standing up a second identical one.
+    pub fn tracked_hz(&self) -> f32 {
+        self.psola.tracked_hz()
+    }
+
     /// Last measured epoch sharpness, and which engine that argues for.
     /// For GUI meters and tests — not used by `process`.
     pub fn sharpness(&self) -> f32 {
@@ -260,6 +279,7 @@ impl PitchEngine {
     }
 
     pub fn reset(&mut self) {
+        self.psola.reset();
         self.pvoc.reset();
         self.hist.fill(0.0);
         self.hist_pos = 0;
@@ -285,6 +305,27 @@ impl PitchEngine {
             out_l[..n].copy_from_slice(&in_l[..n]);
             let rn = n.min(in_r.len()).min(out_r.len());
             out_r[..rn].copy_from_slice(&in_r[..rn]);
+            return;
+        }
+        // A host handing over more frames than it declared at activate would
+        // otherwise index past the scratch buffers and panic. Every other
+        // stage in the chain degrades instead, so chunk to the size we have.
+        let cap = self.scratch_l.len();
+        if n > cap {
+            let mut at = 0;
+            while at < n {
+                let k = cap.min(n - at);
+                let il = &in_l[at..at + k];
+                let ir = in_r.get(at..at + k).unwrap_or(il);
+                let (_, out_l_tail) = out_l.split_at_mut(at);
+                if out_r.len() >= at + k {
+                    let (_, out_r_tail) = out_r.split_at_mut(at);
+                    self.process(il, ir, &mut out_l_tail[..k], &mut out_r_tail[..k], p);
+                } else {
+                    self.process(il, ir, &mut out_l_tail[..k], &mut [], p);
+                }
+                at += k;
+            }
             return;
         }
 

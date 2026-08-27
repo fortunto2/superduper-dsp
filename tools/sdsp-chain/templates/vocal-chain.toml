@@ -1,0 +1,104 @@
+# Vocal chain — the ORDER is the instrument, the numbers are only a start.
+#
+#   tune -> clean -> catch peaks -> level -> de-ess -> colour -> tone -> space
+#
+# Each stage does ONE job. Genre changes the numbers, never the order
+# (per-genre notes at the bottom). The compressor pair runs FAST first,
+# SLOW second — the 1176-into-LA-2A stack: the peak-catcher protects the
+# leveler, so the leveler never pumps on a shout.
+#
+#   sdsp-chain --template vocal > my-vocal.toml
+#   sdsp-chain my-vocal.toml in.wav out.wav
+#
+# For a mix, paste these as [[track.stage]] under a [[track]] instead.
+
+out = "vocal.wav"
+tail_s = 2.0
+
+# 0. PITCH — first, always on the DRY take: the tracker reads pitch reliably
+#    before anything nonlinear touches it. Uncomment for tuned vocals.
+#    Retune 0 = hard tune (T-Pain / modern rap), 80-150 = transparent.
+#    Adds ~43 ms latency — in a multi-track mix the whole track lands late;
+#    nudge the input or ignore it if the feel survives.
+# [[stage]]
+# plugin = "tune"
+# params = { Key = 0.0, Scale = 1.0, Retune = 0.0, Amount = 1.0 }   # Key 0=C … 11=B
+
+# 1. HIGH-PASS + GAIN STAGING — clean-up. Nothing musical lives below the
+#    voice; rumble still drives every detector downstream. `Output` here is
+#    the input trim: aim the take so the "1. eq" line below prints roughly
+#    -20 LUFS-I, and ride uneven phrases HERE, before the compressors, with
+#    automate = { Output = [[sec, dB], …] } — that is clip-gain, so the
+#    comps work less. (Track-level gain_automate is post-chain: fader, not ride.)
+#    A noisy take (hum, plosives, clicks) gets a full `vocal` repair stage
+#    before this one — that is what that plugin's defaults are for.
+[[stage]]
+plugin = "eq"
+params = { HP = 90.0, Output = 0.0 }      # male ~80, female ~110
+
+# 2. MUD CUT — clean-up. Boxiness sits at 250-400 Hz. Subtractive EQ goes
+#    BEFORE compression so the comps react to the voice, not to the mud.
+[[stage]]
+plugin = "eq"
+params = { "Mid Freq" = 300.0, "Mid Gain" = -3.0, "Mid Q" = 1.2 }
+
+# 3. FAST COMPRESSOR — peaks only (the 1176 role). Fast attack and release,
+#    Curve 1 = Pump (FET). Wants 3-5 dB GR on the loudest syllables and
+#    NOTHING between phrases — if this stage's LUFS drop says it works
+#    constantly, raise Threshold.
+[[stage]]
+plugin = "compressor"
+params = { Threshold = -10.0, Ratio = 4.0, Attack = 0.8, Release = 60.0, Makeup = 1.0, Curve = 1.0 }
+
+# 4. SLOW COMPRESSOR — levelling (the LA-2A role). Slow attack, gentle ratio,
+#    Curve 2 = Smooth. Wants 2-3 dB GR almost constantly. It can afford the
+#    slow attack because stage 3 already ate the spikes.
+[[stage]]
+plugin = "compressor"
+params = { Threshold = -24.0, Ratio = 2.5, Attack = 20.0, Release = 300.0, Makeup = 4.0, Curve = 2.0 }
+
+# 5. DE-ESSER — after the compressors (they just raised the esses), before
+#    the saturator (drive would exaggerate them). This is the only slot
+#    where a de-esser wins. Sub Mode 1 = pure de-esser; Ess Track follows
+#    the sibilance frequency. Harsh/resonant voice: add a `soothe` stage
+#    right after (Lo 2500, Hi 9000, Amount 6-9).
+[[stage]]
+plugin = "vocal"
+params = { "Sub Mode" = 1.0, "Ess Track" = 1.0, "Ess Thr" = -30.0, "Ess Amt" = 8.0 }
+
+# 6. SATURATION — character, on a level the compressors already stabilised,
+#    so the drive no longer depends on how loud the singer got.
+#    Type 1 = Tube; Mix < 1 keeps it parallel ("expensive", not distorted).
+[[stage]]
+plugin = "saturator"
+params = { Drive = 6.0, Type = 1.0, Mix = 0.4, OS = 1.0 }
+
+# 7. TONAL EQ — character. Additive moves live HERE, after the saturator,
+#    shaping the harmonics it just added. Boosting before the drive would
+#    feed back the mud stage 2 removed.
+[[stage]]
+plugin = "eq"
+params = { "Mid Freq" = 3500.0, "Mid Gain" = 2.0, "Mid Q" = 0.7, "High Freq" = 12000.0, "High Gain" = 2.5 }
+
+# 8. SPACE — last, so it hears the finished, DE-ESSED voice (space before the
+#    de-esser sprays sibilance across every tail). Both stages duck under the
+#    dry signal, so the tail steps out of the way while the voice sounds.
+#    In a mix, the pro topology is a separate return [[track]] (100% wet)
+#    fed the rendered vocal; serial with low Mix is the one-file shortcut.
+[[stage]]
+plugin = "delay"
+params = { Mix = 0.12, "Time Sync" = 1.0, Feedback = 0.35, Tone = 4500.0, "Duck Amount" = 10.0 }
+# Time Div: pick against the song's BPM by ear (1/4 and 1/8 dotted are the usual two).
+
+[[stage]]
+plugin = "reverb"
+params = { Mix = 0.15, "Pre-Delay" = 40.0, Decay = 0.6, "Duck Amount" = 8.0 }
+# Pre-delay 20-40 ms keeps the dry hit in front of its own tail.
+
+# ── Same order, different numbers ────────────────────────────────────────────
+# POP        stage 4: 3-5 dB GR · stage 7: High Gain +3..4 (air) · reverb Mix 0.2
+# RAP        tune on, Retune 0 · stage 3: Threshold -8, GR 4-6 · stage 6: Drive 9-12
+#            · reverb Mix 0.06 · delay as a slap: Time 110-130, "Time Sync" = 0,
+#            Feedback 0.1 · thickness: parallel comp — Ratio 10, Mix 0.35
+# DEEP HOUSE stage 7: High Gain +1, add LP = 10000 · delay Mix 0.2, Feedback 0.5
+#            · reverb Decay 0.75, Mix 0.12

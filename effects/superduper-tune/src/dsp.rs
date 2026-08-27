@@ -95,11 +95,15 @@ impl Default for TuneParams {
 
 pub struct Tune {
     sr: f32,
-    /// Tracks the singer (main input).
-    in_tracker: YinPitchTracker,
-    /// Tracks the sidechain reference (only advanced in Sidechain mode).
+    /// Tracks the sidechain reference (only advanced in Sidechain mode). The
+    /// singer's own pitch is NOT tracked here — `PitchEngine` already runs a
+    /// YIN on the same signal with the same settings, so this plugin reads
+    /// `engine.tracked_hz()` instead of paying for a second identical tracker
+    /// (measured at 0.36 % of a core, about a fifth of Tune's total). The cost
+    /// is that the correction sees the previous block's estimate, 10.7 ms at a
+    /// 512-frame block against 57 ms of latency already in the path.
     sc_tracker: YinPitchTracker,
-    /// The neural alternative to `in_tracker`, selected by `Model`. Only the
+    /// The neural alternative to the engine's YIN, selected by `Model`. Only the
     /// SELECTED detector is fed (see `process`) — feeding both would burn a
     /// tracker's worth of CPU for an estimate nothing reads, so switching
     /// mid-phrase costs one window of settling, which the shifter's smoothing
@@ -121,11 +125,11 @@ pub struct Tune {
 ///
 /// SwiftF0 reports its own confidence; below the gate the frame is reported as
 /// unvoiced (0 Hz) so the `VOICED_HZ` branch freezes the correction, exactly
-/// as YIN's hold-last behaviour does. YIN has no confidence output, so its
-/// estimate is taken as-is.
-fn selected_hz(swift: &SwiftF0Tracker, yin: &YinPitchTracker, use_swift: bool) -> f32 {
+/// as YIN's hold-last behaviour does. YIN has no confidence output, so
+/// `yin_hz` is taken as-is.
+fn selected_hz(swift: &SwiftF0Tracker, yin_hz: f32, use_swift: bool) -> f32 {
     if !use_swift {
-        return yin.current_hz();
+        return yin_hz;
     }
     if swift.confidence() >= SWIFT_CONF_GATE {
         swift.current_hz()
@@ -142,7 +146,6 @@ impl Tune {
     pub fn new(sr: f32, max_frames: usize) -> Self {
         Self {
             sr,
-            in_tracker: new_tracker(sr),
             sc_tracker: new_tracker(sr),
             swift_tracker: SwiftF0Tracker::new(sr, 150.0),
             swift_sc_tracker: SwiftF0Tracker::new(sr, 150.0),
@@ -202,11 +205,9 @@ impl Tune {
         //    estimate nothing reads. A switch therefore costs one window of
         //    settling, which is what the shifter's smoothing already absorbs.
         for i in 0..n {
-            let m = (in_l[i] + *in_r.get(i).unwrap_or(&in_l[i])) * 0.5;
             if p.use_swiftf0 {
+                let m = (in_l[i] + *in_r.get(i).unwrap_or(&in_l[i])) * 0.5;
                 self.swift_tracker.push(m);
-            } else {
-                self.in_tracker.push(m);
             }
             if p.target == TARGET_SIDECHAIN {
                 let s = (*sc_l.get(i).unwrap_or(&0.0) + *sc_r.get(i).unwrap_or(&0.0)) * 0.5;
@@ -217,7 +218,7 @@ impl Tune {
                 }
             }
         }
-        let f0 = selected_hz(&self.swift_tracker, &self.in_tracker, p.use_swiftf0);
+        let f0 = selected_hz(&self.swift_tracker, self.engine.tracked_hz(), p.use_swiftf0);
         self.last_in_hz = f0;
 
         // 2. Decide the target correction (semitones) for this block.
@@ -234,8 +235,11 @@ impl Tune {
                     }
                 }
                 TARGET_SIDECHAIN => {
-                    let scf =
-                        selected_hz(&self.swift_sc_tracker, &self.sc_tracker, p.use_swiftf0);
+                    let scf = selected_hz(
+                        &self.swift_sc_tracker,
+                        self.sc_tracker.current_hz(),
+                        p.use_swiftf0,
+                    );
                     if scf < VOICED_HZ { self.smoothed_corr } else { scale::correction_to_hz(f0, scf) }
                 }
                 _ => scale::nearest_correction_st(f0, p.key, p.scale_mask),

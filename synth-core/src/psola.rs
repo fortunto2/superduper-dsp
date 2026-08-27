@@ -183,6 +183,24 @@ impl PitchShifter {
         self.latency as u32
     }
 
+    /// Return to the state a freshly constructed engine is in: empty rings,
+    /// tracker back to its default pitch, marks at zero.
+    ///
+    /// Smoothed params are deliberately left alone — they hold the user's
+    /// current Mix/Output, and snapping them to a default here would make
+    /// every reset a fade. Use [`prime`](Self::prime) for those.
+    pub fn reset(&mut self) {
+        for r in self.in_ring.iter_mut().chain(self.out_ring.iter_mut()) {
+            r.fill(0.0);
+        }
+        self.win_ring.fill(0.0);
+        self.tracker.reset();
+        self.write_pos = 0;
+        self.next_synth = 0.0;
+        self.next_analysis = 0.0;
+        self.cur_t0 = (self.sr / 150.0).clamp(self.t0_min, self.t0_max);
+    }
+
     /// Turn the per-grain epoch snap off. See the `snap` field.
     pub fn set_epoch_snap(&mut self, on: bool) {
         self.snap = on;
@@ -194,6 +212,17 @@ impl PitchShifter {
     /// fill first.
     pub fn settling_samples(&self) -> usize {
         self.latency
+    }
+
+    /// The tracker's raw held estimate in Hz, before the grain-rate smoothing.
+    ///
+    /// This is what a second YIN tracker on the same signal would report, so a
+    /// caller that needs the singer's pitch can read this instead of running
+    /// one. Distinct from [`current_period`](Self::current_period), which is
+    /// the smoothed period grains are actually cut at.
+    #[inline]
+    pub fn tracked_hz(&self) -> f32 {
+        self.tracker.current_hz()
     }
 
     /// The period the engine is currently working at, in samples — the

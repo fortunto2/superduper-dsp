@@ -841,6 +841,36 @@ fn real_main() -> Result<(), String> {
             println!("  sdsp-chain --list");
             println!("  sdsp-chain --params <plugin>");
             println!("  sdsp-chain --presets <plugin>");
+            println!("  sdsp-chain --template [<name>]   ready-made chain configs");
+            return Ok(());
+        }
+        Some("--template") => {
+            // The stage ORDER encoded in these is the point; the numbers are
+            // starting values. Kept in tools/sdsp-chain/templates/. The
+            // listing blurb is the file's own chain-order line (line 3 by
+            // convention) so it can never drift from the template it ships.
+            let templates: &[(&str, &str)] =
+                &[("vocal", include_str!("../templates/vocal-chain.toml"))];
+            match args.get(1).map(|s| s.as_str()) {
+                None => {
+                    println!("Templates (sdsp-chain --template <name> > my.toml):");
+                    for (k, body) in templates {
+                        let blurb = body
+                            .lines()
+                            .nth(2)
+                            .map(|l| l.trim_start_matches(['#', ' ']))
+                            .unwrap_or("");
+                        println!("  {k:<8} {blurb}");
+                    }
+                }
+                Some(k) => {
+                    let (_, body) = templates
+                        .iter()
+                        .find(|(n, _)| *n == k)
+                        .ok_or_else(|| format!("no template {k:?} — run --template to list"))?;
+                    print!("{body}");
+                }
+            }
             return Ok(());
         }
         Some("--list") => {

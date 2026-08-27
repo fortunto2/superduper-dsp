@@ -1,0 +1,14 @@
+[package]
+name = "pitch-bench"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Compare our pitch trackers (FFT-YIN vs SwiftF0) on a WAV or a synthetic probe — accuracy, octave stability, CPU."
+
+[[bin]]
+name = "pitch-bench"
+path = "src/main.rs"
+
+[dependencies]
+superduper-synth-core = { path = "../../synth-core" }
+hound = "3.5"

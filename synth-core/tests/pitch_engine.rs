@@ -182,11 +182,44 @@ fn forced_modes_ignore_the_material() {
     assert!(e.psola_mix() < 0.01, "Pvoc mode drifted onto PSOLA on pulsed material");
 }
 
-/// The floor is the reason a bass never locked. 70 Hz has to cost latency —
-/// if it ever stops doing so, the look-behind is no longer covering the
-/// longest period and the engine is lying to the host.
+/// What the floor actually buys, measured on the tracker rather than on the
+/// noise floor. The distinction matters: at the old 95 Hz default an 87 Hz
+/// voice reads as **150 Hz** — the tracker's own default, i.e. it never locked
+/// at all, 943 cents out — while noise-to-harmonic barely moves (−17.7 vs
+/// −18.6 dB), because the grains still overlap-add coherently, just at the
+/// wrong period. An autotune driven by that number corrects to a wrong note
+/// and nothing sounds broken until you listen.
+///
+/// This is the evidence for paying 42 → 57 ms of latency, and it is why the
+/// floor is not a taste setting.
 #[test]
-fn a_lower_floor_buys_low_voices_and_costs_latency() {
+fn the_floor_is_the_difference_between_locking_and_not() {
+    for (f0, floor, want_locked) in
+        [(87.0f32, 95.0f32, false), (87.0, 70.0, true), (220.0, 95.0, true)]
+    {
+        let x = common::voiced_at(2.5, f0, 0.02, 0.4);
+        let mut e = PitchEngine::with_floor(common::SR, BLOCK, floor);
+        e.prime(1.0, 1.0);
+        run(&mut e, &x, &unity(), |_, _| {});
+        let hz = e.tracked_hz();
+        let cents = 1200.0 * (hz / f0).log2();
+        println!("f0 {f0:5.0} Hz at a {floor:.0} Hz floor -> tracked {hz:6.1} Hz ({cents:+.0} cents)");
+        if want_locked {
+            assert!(cents.abs() < 50.0, "should have locked: {hz:.1} Hz for a {f0:.0} Hz voice");
+        } else {
+            assert!(
+                cents.abs() > 300.0,
+                "the 95 Hz floor is supposed to MISS an 87 Hz voice; if it now locks \
+                 ({hz:.1} Hz), the 70 Hz floor is buying nothing and its 15 ms should go back"
+            );
+        }
+    }
+}
+
+/// 70 Hz has to cost latency — if it ever stops doing so, the look-behind is
+/// no longer covering the longest period and the engine is lying to the host.
+#[test]
+fn a_lower_floor_costs_latency() {
     let live = PitchEngine::with_floor(common::SR, BLOCK, 95.0);
     let low = PitchEngine::with_floor(common::SR, BLOCK, 70.0);
     let (a, b) = (live.latency_samples(), low.latency_samples());
@@ -254,4 +287,54 @@ fn an_87_hz_voice_is_tracked_and_routed_to_psola() {
     let nout = common::noise_to_harmonic(&y, 87.0, 1.2);
     println!("87 Hz: in {nin:.1} dB -> out {nout:.1} dB");
     assert!(nout - nin < 2.0, "87 Hz take degraded: {nin:.1} -> {nout:.1}");
+}
+
+/// Two holes found by the cleanup review, each a test that must go red first.
+///
+/// A host handing over more frames than it declared indexed past the scratch
+/// buffers and panicked — the only stage in the chain that did, where PSOLA
+/// uses masked indexing and the vocoder is per-sample.
+#[test]
+fn an_oversized_block_degrades_instead_of_panicking() {
+    let x = common::pulsed(1.0);
+    let mut e = PitchEngine::new(common::SR, BLOCK);
+    e.prime(1.0, 1.0);
+    e.set_mode(Mode::Auto);
+    let big = BLOCK * 5;
+    let mut out = vec![0.0; big];
+    let mut r = vec![0.0; big];
+    e.process(&x[..big], &x[..big], &mut out, &mut r, &unity());
+    assert!(out.iter().all(|v| v.is_finite()), "oversized block produced non-finite output");
+}
+
+/// `reset()` cleared the vocoder, the history and the votes but not PSOLA,
+/// which had no `reset()` at all — so a reset engine still carried the
+/// previous take's rings and tracked pitch.
+#[test]
+fn reset_actually_resets_both_engines() {
+    let a = common::voiced(1.5);
+    let b = common::pulsed(1.5);
+    let p = unity();
+
+    // Run something else through it, then reset, then run `b`.
+    let mut used = engine();
+    used.set_mode(Mode::Psola);
+    run(&mut used, &a, &p, |_, _| {});
+    used.reset();
+    used.prime(1.0, 1.0);
+    let after_reset = run(&mut used, &b, &p, |_, _| {});
+
+    // A fresh engine given the same input must agree.
+    let mut fresh = engine();
+    fresh.set_mode(Mode::Psola);
+    let virgin = run(&mut fresh, &b, &p, |_, _| {});
+
+    let from = (0.8 * common::SR) as usize;
+    let diff = after_reset[from..]
+        .iter()
+        .zip(&virgin[from..])
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    println!("max |reset - fresh| over the settled tail: {diff:.2e}");
+    assert!(diff < 1e-6, "a reset engine still differs from a fresh one by {diff:.2e}");
 }

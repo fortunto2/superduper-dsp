@@ -565,7 +565,7 @@ fn swiftf0_resampler_tracks_a_saw_at_48k() {
 // epoch_sharpness — the descriptor that decides which pitch engine runs
 // ---------------------------------------------------------------------------
 
-mod common;
+use sdsp_test_kit::signals as common;
 
 /// The number itself. Printed so the doc-comment table in `pitch.rs` can be
 /// checked against reality without re-deriving it by hand.
@@ -604,8 +604,8 @@ fn epoch_sharpness_separates_pulsed_from_smooth() {
 /// other voice.
 #[test]
 fn epoch_sharpness_puts_a_breathy_voice_with_the_smooth_tone() {
-    let normal = sharpness_of(&common::voiced(2.0, 0.02, 0.4));
-    let breathy = sharpness_of(&common::voiced(2.0, 0.5, 0.62));
+    let normal = sharpness_of(&common::voiced(2.0));
+    let breathy = sharpness_of(&common::breathy(2.0));
     println!("epoch sharpness: voiced {normal:.2}, breathy {breathy:.2}");
     assert!(normal > 0.9, "a normal sung note must read as pulsed: {normal:.2}");
     assert!(breathy < 0.9, "a breathy take must read as smooth: {breathy:.2}");

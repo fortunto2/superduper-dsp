@@ -6,7 +6,16 @@
 //! 3. asked to do nothing, it does nothing — on BOTH kinds of material, which
 //!    is the rule lesson 24 was written to enforce.
 
-mod common;
+use sdsp_test_kit::signals as common;
+
+/// The shared probes take whole slices; these two just carry the range so the
+/// call sites keep reading as "measure this stretch of the render".
+fn rms_db(x: &[f32], a: usize, b: usize) -> f32 {
+    sdsp_test_kit::probes::db(sdsp_test_kit::probes::rms(&x[a..b.min(x.len())])) as f32
+}
+fn max_step(x: &[f32], a: usize, b: usize) -> f32 {
+    sdsp_test_kit::probes::max_step(&x[a..b.min(x.len())]) as f32
+}
 
 use superduper_synth_core::pitch_engine::{Mode, PitchEngine, ROUTE_THRESHOLD};
 use superduper_synth_core::psola::PitchParams;
@@ -109,8 +118,8 @@ fn switching_engines_mid_note_does_not_click() {
     let lat = e.latency_samples() as usize;
     let fade_from = switch_at + lat;
     let fade_to = fade_from + 2 * lat + (0.05 * common::SR) as usize;
-    let steady = common::max_step(&y, (0.4 * common::SR) as usize, (0.9 * common::SR) as usize);
-    let during = common::max_step(&y, fade_from, fade_to);
+    let steady = max_step(&y, (0.4 * common::SR) as usize, (0.9 * common::SR) as usize);
+    let during = max_step(&y, fade_from, fade_to);
     println!("max step: steady {steady:.4}, across the switch {during:.4}");
     assert!(
         during < 2.0 * steady.max(1e-4),
@@ -142,7 +151,7 @@ fn the_crossfade_holds_its_level() {
     let sweep = |from: usize, to: usize| -> (f32, f32) {
         let l: Vec<f32> = (from..to.min(y.len() - win))
             .step_by(win / 4)
-            .map(|a| common::rms_db(&y, a, a + win))
+            .map(|a| rms_db(&y, a, a + win))
             .collect();
         (l.iter().copied().fold(f32::MIN, f32::max), l.iter().copied().fold(f32::MAX, f32::min))
     };

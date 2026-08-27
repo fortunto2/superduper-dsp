@@ -33,6 +33,7 @@ pub mod alloc;
 pub mod host;
 pub mod params;
 pub mod probes;
+pub mod signals;
 
 pub use host::{render_effect, render_instrument, PluginUnderTest};
 

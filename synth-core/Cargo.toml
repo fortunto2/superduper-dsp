@@ -29,3 +29,9 @@ superduper-dsp-sdk = { path = "../sdk", optional = true }
 [features]
 default = []
 gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lot"]
+
+[dev-dependencies]
+# Test fixtures only. Cargo allows the cycle (test-kit depends on this crate)
+# for dev-dependencies, and it keeps the reference signals out of the shipping
+# library, which cross-compiles to iOS.
+sdsp-test-kit = { path = "../tools/sdsp-test-kit" }

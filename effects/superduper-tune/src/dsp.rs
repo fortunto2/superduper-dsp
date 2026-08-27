@@ -17,7 +17,10 @@
 //! in [`Tune::new`]; `process` never allocates.
 
 use superduper_synth_core::pitch::YinPitchTracker;
-use superduper_synth_core::psola::{PitchParams, PitchShifter};
+pub use superduper_synth_core::pitch_engine::Mode as EngineMode;
+use superduper_synth_core::pitch_engine::PitchEngine;
+use superduper_synth_core::psola::PitchParams;
+use superduper_synth_core::swiftf0::SwiftF0Tracker;
 use crate::scale;
 
 pub const TARGET_SCALE: u32 = 0;
@@ -36,6 +39,9 @@ const VOICED_HZ: f32 = 55.0;
 /// Hard clamp on how far the correction may pull, so an octave-error in the
 /// tracker can't throw the voice a huge interval.
 const MAX_CORRECTION_ST: f32 = 12.0;
+
+/// SwiftF0's confidence below which a frame counts as unvoiced.
+const SWIFT_CONF_GATE: f32 = 0.5;
 
 #[derive(Clone, Copy)]
 pub struct TuneParams {
@@ -58,6 +64,13 @@ pub struct TuneParams {
     pub output_lin: f32,
     /// Held MIDI note for `TARGET_MIDI`, or -1 when none is held.
     pub midi_note: i16,
+    /// Detect pitch with the SwiftF0 CNN instead of YIN.
+    pub use_swiftf0: bool,
+    /// Which shifting engine applies the correction. Auto measures the
+    /// material — PSOLA on a voice with real glottal pulses, the phase
+    /// vocoder on anything smooth or breathy, where PSOLA turns a −66.9 dB
+    /// noise floor into −2.6 dB.
+    pub engine: EngineMode,
     pub bypassed: bool,
 }
 
@@ -73,6 +86,8 @@ impl Default for TuneParams {
             mix: 1.0,
             output_lin: 1.0,
             midi_note: -1,
+            use_swiftf0: false,
+            engine: EngineMode::Auto,
             bypassed: false,
         }
     }
@@ -84,8 +99,14 @@ pub struct Tune {
     in_tracker: YinPitchTracker,
     /// Tracks the sidechain reference (only advanced in Sidechain mode).
     sc_tracker: YinPitchTracker,
-    /// Shared TD-PSOLA shifter that does the actual correction.
-    shifter: PitchShifter,
+    /// The neural alternative to `in_tracker`, selected by `Model`. Both are
+    /// fed every sample so switching mid-phrase doesn't wait for a window to
+    /// refill; only the selected one's estimate is used. Costs ~5% of a core
+    /// (measured by tools/pitch-bench) — worth it where YIN flips octaves.
+    swift_tracker: SwiftF0Tracker,
+    swift_sc_tracker: SwiftF0Tracker,
+    /// Both shifting engines plus the router that picks between them.
+    engine: PitchEngine,
     /// Retune-smoothed correction in semitones (one-pole toward the target).
     smoothed_corr: f32,
     /// Most recent detected input pitch (Hz), for the GUI.
@@ -104,20 +125,28 @@ impl Tune {
             sr,
             in_tracker: new_tracker(sr),
             sc_tracker: new_tracker(sr),
-            shifter: PitchShifter::new(sr, max_frames),
+            swift_tracker: SwiftF0Tracker::new(sr, 150.0),
+            swift_sc_tracker: SwiftF0Tracker::new(sr, 150.0),
+            engine: PitchEngine::new(sr, max_frames),
             smoothed_corr: 0.0,
             last_in_hz: 0.0,
             last_corr_st: 0.0,
         }
     }
 
-    /// Latency reported to the host (the PSOLA look-behind).
+    /// Latency reported to the host. Fixed at the max of both engines, so it
+    /// does not move when the router switches.
     pub fn latency_samples(&self) -> u32 {
-        self.shifter.latency_samples()
+        self.engine.latency_samples()
     }
 
     pub fn prime(&mut self, mix: f32, output_lin: f32) {
-        self.shifter.prime(mix, output_lin);
+        self.engine.prime(mix, output_lin);
+    }
+
+    /// Last epoch-sharpness reading and the current PSOLA share, for the GUI.
+    pub fn engine_readout(&self) -> (f32, f32) {
+        (self.engine.sharpness(), self.engine.psola_mix())
     }
 
     pub fn detected_hz(&self) -> f32 {
@@ -150,15 +179,37 @@ impl Tune {
         }
 
         // 1. Feed the trackers so we know the singer's (and reference's) pitch.
+        //    Only the selected detector runs — the other would cost CPU for an
+        //    estimate nothing reads. A switch therefore costs one window of
+        //    settling, which is what the shifter's smoothing already absorbs.
         for i in 0..n {
             let m = (in_l[i] + *in_r.get(i).unwrap_or(&in_l[i])) * 0.5;
-            self.in_tracker.push(m);
+            if p.use_swiftf0 {
+                self.swift_tracker.push(m);
+            } else {
+                self.in_tracker.push(m);
+            }
             if p.target == TARGET_SIDECHAIN {
                 let s = (*sc_l.get(i).unwrap_or(&0.0) + *sc_r.get(i).unwrap_or(&0.0)) * 0.5;
-                self.sc_tracker.push(s);
+                if p.use_swiftf0 {
+                    self.swift_sc_tracker.push(s);
+                } else {
+                    self.sc_tracker.push(s);
+                }
             }
         }
-        let f0 = self.in_tracker.current_hz();
+        // SwiftF0 reports its own confidence; below the gate treat the frame
+        // as unvoiced (0 Hz) so the VOICED_HZ branch freezes the correction,
+        // exactly as YIN's hold-last behaviour does.
+        let f0 = if p.use_swiftf0 {
+            if self.swift_tracker.confidence() >= SWIFT_CONF_GATE {
+                self.swift_tracker.current_hz()
+            } else {
+                0.0
+            }
+        } else {
+            self.in_tracker.current_hz()
+        };
         self.last_in_hz = f0;
 
         // 2. Decide the target correction (semitones) for this block.
@@ -175,7 +226,15 @@ impl Tune {
                     }
                 }
                 TARGET_SIDECHAIN => {
-                    let scf = self.sc_tracker.current_hz();
+                    let scf = if p.use_swiftf0 {
+                        if self.swift_sc_tracker.confidence() >= SWIFT_CONF_GATE {
+                            self.swift_sc_tracker.current_hz()
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        self.sc_tracker.current_hz()
+                    };
                     if scf < VOICED_HZ { self.smoothed_corr } else { scale::correction_to_hz(f0, scf) }
                 }
                 _ => scale::nearest_correction_st(f0, p.key, p.scale_mask),
@@ -206,6 +265,7 @@ impl Tune {
             output_lin: p.output_lin,
             bypassed: false,
         };
-        self.shifter.process(in_l, in_r, out_l, out_r, &pp);
+        self.engine.set_mode(p.engine);
+        self.engine.process(in_l, in_r, out_l, out_r, &pp);
     }
 }

@@ -61,13 +61,22 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 5, name: b"Formant", min: -12.0, max: 12.0,  default: 0.0,  unit: "st" },
     ParamDef { id: 6, name: b"Mix",     min: 0.0,   max: 1.0,   default: 1.0,  unit: "" },
     ParamDef { id: 7, name: b"Output",  min: -24.0, max: 24.0,  default: 0.0,  unit: "dB" },
+    // Pitch detector: 0 = YIN (classic, ~0.5% of a core, exact on clean
+    // material), 1 = SwiftF0 (97k-param CNN, ~5% of a core, holds the octave
+    // on noisy / breathy takes where YIN jumps). See tools/pitch-bench.
+    ParamDef { id: 8, name: b"Model",   min: 0.0,   max: 1.0,   default: 0.0,  unit: "" },
+    // Shifting engine: 0 = Auto (measure the material and route), 1 = PSOLA
+    // (forced — independent formant, needs glottal epochs), 2 = Phase (forced
+    // — the vocoder, clean on smooth or breathy material). Appended last;
+    // never reorder (lesson 10).
+    ParamDef { id: 9, name: b"Engine",  min: 0.0,   max: 2.0,   default: 0.0,  unit: "" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
 /// the host with IS_STEPPED so it quantises automation instead of sweeping
 /// through the intermediate values — a ramp across a preset selector otherwise
 /// recalls every kit between the two endpoints.
-const STEPPED_PARAMS: &[u32] = &[2];
+const STEPPED_PARAMS: &[u32] = &[2, 8, 9];
 
 pub const P_KEY: usize = 0;
 pub const P_SCALE: usize = 1;
@@ -77,6 +86,27 @@ pub const P_AMOUNT: usize = 4;
 pub const P_FORMANT: usize = 5;
 pub const P_MIX: usize = 6;
 pub const P_OUTPUT: usize = 7;
+pub const P_MODEL: usize = 8;
+pub const P_ENGINE: usize = 9;
+
+/// The `Engine` param as the router's enum. Auto is the default, and an
+/// unrecognised value falls back to it.
+pub fn engine_from_param(v: f32) -> dsp::EngineMode {
+    match v.round() as u32 {
+        1 => dsp::EngineMode::Psola,
+        2 => dsp::EngineMode::Pvoc,
+        _ => dsp::EngineMode::Auto,
+    }
+}
+
+/// Display name for an `Engine` value.
+pub fn engine_name(v: f32) -> &'static str {
+    match v.round() as u32 {
+        1 => "PSOLA",
+        2 => "Phase",
+        _ => "Auto",
+    }
+}
 
 // ===========================================================================
 // Shared params.
@@ -300,6 +330,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             mix: load(P_MIX),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
             midi_note: self.midi_target(),
+            use_swiftf0: load(P_MODEL) >= 0.5,
+            engine: engine_from_param(load(P_ENGINE)),
             bypassed: self.shared.bypass.load(Ordering::Relaxed),
         };
 
@@ -464,6 +496,12 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 let s = (value.round() as usize).min(scale::NUM_SCALES - 1);
                 write!(writer, "{}", scale::SCALES[s].0)
             }
+            P_ENGINE => write!(writer, "{}", engine_name(value as f32)),
+            P_MODEL => write!(
+                writer,
+                "{}",
+                if value.round() as u32 == 1 { "SwiftF0" } else { "YIN" }
+            ),
             P_TARGET => write!(
                 writer,
                 "{}",

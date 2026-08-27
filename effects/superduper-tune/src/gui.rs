@@ -8,10 +8,14 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::PRESETS;
 use crate::scale;
 use crate::{
-    SharedParams, P_AMOUNT, P_FORMANT, P_KEY, P_MIX, P_OUTPUT, P_RETUNE, P_SCALE, P_TARGET, PARAMS,
+    SharedParams, P_AMOUNT, P_ENGINE, P_FORMANT, P_KEY, P_MIX, P_MODEL, P_OUTPUT, P_RETUNE,
+    P_SCALE,
+    P_TARGET, PARAMS,
 };
 
 const TARGET_NAMES: [&str; 3] = ["Scale", "MIDI", "Sidechain"];
+const MODEL_NAMES: [&str; 2] = ["YIN", "SwiftF0"];
+const ENGINE_NAMES: [&str; 3] = ["Auto", "PSOLA", "Phase"];
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 440;
@@ -128,6 +132,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 param(ui, state, P_RETUNE);
                 param(ui, state, P_AMOUNT);
                 param(ui, state, P_FORMANT);
+                choice(ui, state, P_MODEL, &MODEL_NAMES);
+                choice(ui, state, P_ENGINE, &ENGINE_NAMES);
             });
             core_gui::section(ui, "Output", |ui| {
                 param(ui, state, P_MIX);
@@ -145,6 +151,27 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                          this plugin (graph mode). Sidechain = follow the pitch of a reference \
                          audio input (route a synth/vocal into the 'Reference' input) — sing to \
                          a melody.",
+                    ),
+                    (
+                        "Model — which detector hears you",
+                        "YIN is the classic autocorrelation tracker: exact on a clean, close-mic'd \
+                         take and nearly free (0.5% of a core). SwiftF0 is a small neural net that \
+                         holds the right octave on noisy, breathy or distant material where YIN \
+                         jumps a whole octave — it costs ~5% of a core and lags the voice by one \
+                         frame. Switch to it when the pitch readout leaps around; stay on YIN \
+                         otherwise. Compare them yourself: tools/pitch-bench.",
+                    ),
+                    (
+                        "Engine — what actually moves the pitch",
+                        "PSOLA cuts the voice into grains at the glottal pulses and re-spaces \
+                         them; that is what keeps Formant independent, and it is transparent on \
+                         a real voice. It needs those pulses, though: on a synth, a sustained \
+                         kubyz or a very breathy take there is nothing to cut on, and it adds \
+                         broadband noise instead (measured: a −66.9 dB noise floor becomes −2.6 \
+                         dB). Phase is the vocoder — clean on that material, and it treats \
+                         formants as part of the spectrum rather than a separate axis. Auto \
+                         measures the take and picks, crossfading so you do not hear the swap. \
+                         Leave it on Auto unless you want one specific character.",
                     ),
                     (
                         "Retune Speed = the effect",

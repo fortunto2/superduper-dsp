@@ -3,7 +3,7 @@
 **Track ID:** psola-engine-choice_20260827
 **Spec:** [spec.md](./spec.md)
 **Created:** 2026-08-27
-**Status:** [ ] Not Started
+**Status:** [x] Complete
 
 ## Overview
 
@@ -52,7 +52,7 @@ One place decides which engine runs, so both plugins get identical behaviour.
 - [x] `cargo run --release -p sdsp-chain -- --params pitch` / `--params tune` show the new params with correct names (Mode 0..2, Engine 0..2)
 - [~] Bundles rebuild and install: `./scripts/build_pitch_bundle.sh && ./scripts/build_tune_bundle.sh` done. **REAPER restart left to the user** — it caches CLAP dylibs per session and restarting would drop an open project.
 
-## Phase 4: Docs & Cleanup
+## Phase 4: Docs & Cleanup <!-- checkpoint:369d4ac -->
 
 ### Tasks
 - [x] Task 4.1: Rewrite lesson 24 in `CLAUDE.md` from "open defect" to the shipped rule (Auto routing + the measured numbers), and update the `superduper-pitch` / `superduper-tune` entries with the new params. <!-- sha:369d4ac -->
@@ -60,14 +60,14 @@ One place decides which engine runs, so both plugins get identical behaviour.
 - [x] Task 4.3: Point `tools/sdsp-tune` at `PitchEngine` (it hardcodes pvoc today) and delete the now-duplicated engine comment there. <!-- sha:3c6533e -->
 
 ### Verification
-- [ ] `cargo test --release --workspace` green
-- [ ] `cargo clippy --release -p superduper-synth-core -p superduper-pitch -p superduper-tune` clean
+- [x] `cargo test --release --workspace` green — full run produced no `FAILED`, no `error`, no `panicked`
+- [~] `cargo clippy --release -p superduper-synth-core -p superduper-pitch -p superduper-tune` — clean for everything this track touched; **4 pre-existing errors remain in `synth-core/src/wave_osc.rs`** (`approximate value of FRAC_1_SQRT_2`, i.e. `0.7071`). Last touched by 396b02b, before this track, and not fixed here on purpose: the constant differs in the 5th decimal, so "fixing" it would change Wave's output and its quality snapshot. That is a separate decision.
 
 ## Final Verification
-- [ ] All acceptance criteria from spec met
-- [ ] Unity-shift transparency within 2 dB of input on both reference sources
-- [ ] Tests pass, clippy clean, bundles build
-- [ ] CLAUDE.md and synth-core/CLAUDE.md reflect the shipped behaviour
+- [x] All acceptance criteria from spec met (see spec.md)
+- [x] Unity-shift transparency within 2 dB of input on both reference sources — pulsed −23.9 → −24.2 dB, smooth −66.9 → −66.8 dB (was −2.6)
+- [x] Tests pass and bundles build; clippy carries the pre-existing `wave_osc` errors noted above
+- [x] CLAUDE.md and synth-core/CLAUDE.md reflect the shipped behaviour
 
 ## Context Handoff
 

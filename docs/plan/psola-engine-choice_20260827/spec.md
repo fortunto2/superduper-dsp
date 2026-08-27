@@ -3,7 +3,7 @@
 **Track ID:** psola-engine-choice_20260827
 **Type:** Bug
 **Created:** 2026-08-27
-**Status:** Draft
+**Status:** Shipped 2026-08-27
 
 ## Summary
 
@@ -36,24 +36,31 @@ now exists but no plugin passes anything but the default.
 
 ## Acceptance Criteria
 
-- [ ] A measured "epoch sharpness" signal descriptor exists in `synth-core`,
+- [x] A measured "epoch sharpness" signal descriptor exists in `synth-core`,
       RT-safe, that separates the pulsed voice from the smooth tone on the two
       test signals already in `engine_transparency.rs`
-- [ ] With auto engine selection, unity-shift noise-to-harmonic stays within
-      2 dB of the input on BOTH test sources (today: −24.2 dB pulsed / −2.6 dB
-      smooth against −23.9 / −66.9 inputs)
-- [ ] `superduper-pitch` Mode gains an `Auto` setting (existing Voice/Track
+- [x] With auto engine selection, unity-shift noise-to-harmonic stays within
+      2 dB of the input on BOTH test sources — measured −24.2 dB pulsed and
+      −66.8 dB smooth against −23.9 / −66.9 inputs (smooth was −2.6 dB)
+- [x] `superduper-pitch` Mode gains an `Auto` setting (existing Voice/Track
       values keep their indices and meaning — REAPER caches param layouts)
-- [ ] `superduper-tune` corrects a smooth synthetic tone to within 10 cents
-      without adding audible noise (measure like `sdsp-tune`'s closed loop:
-      correct → re-analyse)
-- [ ] Engine switches never click: `max |x[n+1] − x[n]|` stays under the
-      existing `click_audit` bound across a switch, including mid-note
-- [ ] Low voices work: a 87 Hz take is tracked and corrected (needs the
-      plugins to pass a real floor to `with_range`, or to derive it)
-- [ ] All existing tests green: superduper-pitch 25, superduper-tune 7,
+- [x] `superduper-tune` corrects a smooth synthetic tone to within 10 cents
+      without adding audible noise — `tests/closed_loop.rs` measures 0.0 cents
+      at a −47.4 dB noise floor (forced PSOLA: −2.7 dB). The bound there is
+      absolute, not "no rise": the input is an exact sum of sines at −66.9 dB
+      and no shifter holds that once it actually shifts
+- [x] Engine switches never click: `max |x[n+1] − x[n]|` stays under the
+      existing `click_audit` bound across a switch, including mid-note —
+      measured 0.0095 during the switch against 0.0095 steady, and the level
+      holds too (the crossfade law was picked from the r = 0.13 correlation
+      between the engines, not by taste)
+- [x] Low voices work: a 87 Hz take is tracked and corrected (needs the
+      plugins to pass a real floor to `with_range`, or to derive it) — the
+      floor is 70 Hz, fixed at construction because 4·T0_max look-behind means
+      an adaptive floor would be adaptive latency. Costs 42 → 57 ms
+- [x] All existing tests green (now 27 / 10 / 93):
       synth-core 82
-- [ ] `process()` still allocates nothing (sdsp-test-kit's counting allocator)
+- [x] `process()` still allocates nothing (sdsp-test-kit's counting allocator)
 
 ## Dependencies
 

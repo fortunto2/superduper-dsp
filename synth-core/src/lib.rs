@@ -17,11 +17,14 @@ pub mod granular; // real-time granular cloud + freeze (drives superduper-granul
 pub mod paulstretch; // extreme time-stretch smear, random-phase STFT (drives superduper-stretch)
 pub mod linphase;
 pub mod loudness;
+pub mod melody; // offline note segmentation + correction planning (sdsp-tune, future editor)
 pub mod nam;
 pub mod pitch;
+pub mod pvoc; // STFT phase vocoder — the polyphony-capable engine, and PSOLA's fallback on material with no glottal epoch
 pub mod psola; // TD-PSOLA pitch/formant shifter (extracted from superduper-pitch; shared with superduper-tune + iOS)
 pub mod spectral;
 pub mod supermass;
+pub mod swiftf0; // SwiftF0 neural pitch tracker, pure-Rust inference (option in superduper-tune)
 pub mod user_preset;
 pub mod wav;
 pub mod wave_osc; // wavetable oscillator/voice (extracted from superduper-wave so it reaches iOS too)

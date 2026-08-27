@@ -9,7 +9,11 @@ pub mod dsp;
 pub mod gui;
 pub mod keydetect;
 pub mod presets;
-pub mod pvoc;
+
+/// The phase vocoder moved to synth-core so **Tune** and the iOS staticlib can
+/// reach it too (the `wave_osc` precedent). Re-exported here so nothing
+/// outside this crate had to change.
+pub use superduper_synth_core::pvoc;
 
 pub use dsp::{PitchParams, PitchShifter};
 pub use keydetect::KeyDetector;

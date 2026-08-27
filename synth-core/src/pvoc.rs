@@ -10,13 +10,13 @@
 //! component independently.
 //!
 //! The STFT scaffolding (windowing, rings, FFT plans, OLA, COLA normalisation)
-//! is the shared [`synth_core::spectral::StftProcessor`]; this file is just the
+//! is the shared [`crate::spectral::StftProcessor`]; this file is just the
 //! per-frame pitch-shift operation + the Dry/Wet / latency-padding wrapper.
 
-use crate::dsp::PitchParams;
+use crate::dsp_blocks::LatencyDelay;
+use crate::psola::PitchParams;
+use crate::spectral::StftProcessor;
 use realfft::num_complex::Complex;
-use superduper_synth_core::dsp_blocks::LatencyDelay;
-use superduper_synth_core::spectral::StftProcessor;
 
 /// FFT window. 2048 @ 48 kHz = 23 Hz/bin — enough resolution for bass in a mix.
 pub const N: usize = 2048;

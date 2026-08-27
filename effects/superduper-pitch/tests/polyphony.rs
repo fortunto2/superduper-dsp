@@ -5,8 +5,8 @@
 //!
 //! Run: `cargo test -p superduper-pitch --test polyphony -- --nocapture`
 
-use superduper_pitch::dsp::PitchParams;
-use superduper_pitch::pvoc::PhaseVocoder;
+use superduper_synth_core::psola::PitchParams;
+use superduper_synth_core::pvoc::PhaseVocoder;
 use superduper_synth_core::analysis::spectrum_with_freq;
 
 const SR: f32 = 48_000.0;
@@ -24,7 +24,7 @@ fn chord(freqs: &[f32], n: usize) -> Vec<f32> {
 fn run_track(m: &[f32], pitch: f32, formant: f32) -> Vec<f32> {
     let n = m.len();
     let mut out = vec![0.0f32; n];
-    let mut pv = PhaseVocoder::new(SR, superduper_pitch::pvoc::LATENCY);
+    let mut pv = PhaseVocoder::new(SR, superduper_synth_core::pvoc::LATENCY);
     let p = PitchParams { pitch_st: pitch, formant_st: formant, mix: 1.0, output_lin: 1.0, bypassed: false };
     let mut i = 0;
     while i < n {

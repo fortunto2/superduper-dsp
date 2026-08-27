@@ -99,10 +99,12 @@ pub struct Tune {
     in_tracker: YinPitchTracker,
     /// Tracks the sidechain reference (only advanced in Sidechain mode).
     sc_tracker: YinPitchTracker,
-    /// The neural alternative to `in_tracker`, selected by `Model`. Both are
-    /// fed every sample so switching mid-phrase doesn't wait for a window to
-    /// refill; only the selected one's estimate is used. Costs ~5% of a core
-    /// (measured by tools/pitch-bench) — worth it where YIN flips octaves.
+    /// The neural alternative to `in_tracker`, selected by `Model`. Only the
+    /// SELECTED detector is fed (see `process`) — feeding both would burn a
+    /// tracker's worth of CPU for an estimate nothing reads, so switching
+    /// mid-phrase costs one window of settling, which the shifter's smoothing
+    /// absorbs. Costs ~5% of a core (measured by tools/pitch-bench) — worth it
+    /// where YIN flips octaves.
     swift_tracker: SwiftF0Tracker,
     swift_sc_tracker: SwiftF0Tracker,
     /// Both shifting engines plus the router that picks between them.
@@ -113,6 +115,23 @@ pub struct Tune {
     last_in_hz: f32,
     /// Most recent applied correction (semitones), for the GUI meter.
     last_corr_st: f32,
+}
+
+/// Read the selected detector's estimate.
+///
+/// SwiftF0 reports its own confidence; below the gate the frame is reported as
+/// unvoiced (0 Hz) so the `VOICED_HZ` branch freezes the correction, exactly
+/// as YIN's hold-last behaviour does. YIN has no confidence output, so its
+/// estimate is taken as-is.
+fn selected_hz(swift: &SwiftF0Tracker, yin: &YinPitchTracker, use_swift: bool) -> f32 {
+    if !use_swift {
+        return yin.current_hz();
+    }
+    if swift.confidence() >= SWIFT_CONF_GATE {
+        swift.current_hz()
+    } else {
+        0.0
+    }
 }
 
 fn new_tracker(sr: f32) -> YinPitchTracker {
@@ -198,18 +217,7 @@ impl Tune {
                 }
             }
         }
-        // SwiftF0 reports its own confidence; below the gate treat the frame
-        // as unvoiced (0 Hz) so the VOICED_HZ branch freezes the correction,
-        // exactly as YIN's hold-last behaviour does.
-        let f0 = if p.use_swiftf0 {
-            if self.swift_tracker.confidence() >= SWIFT_CONF_GATE {
-                self.swift_tracker.current_hz()
-            } else {
-                0.0
-            }
-        } else {
-            self.in_tracker.current_hz()
-        };
+        let f0 = selected_hz(&self.swift_tracker, &self.in_tracker, p.use_swiftf0);
         self.last_in_hz = f0;
 
         // 2. Decide the target correction (semitones) for this block.
@@ -226,15 +234,8 @@ impl Tune {
                     }
                 }
                 TARGET_SIDECHAIN => {
-                    let scf = if p.use_swiftf0 {
-                        if self.swift_sc_tracker.confidence() >= SWIFT_CONF_GATE {
-                            self.swift_sc_tracker.current_hz()
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        self.sc_tracker.current_hz()
-                    };
+                    let scf =
+                        selected_hz(&self.swift_sc_tracker, &self.sc_tracker, p.use_swiftf0);
                     if scf < VOICED_HZ { self.smoothed_corr } else { scale::correction_to_hz(f0, scf) }
                 }
                 _ => scale::nearest_correction_st(f0, p.key, p.scale_mask),

@@ -203,15 +203,34 @@ fn phase_vocoder_is_transparent_at_unity() {
     assert!(nout < -60.0, "phase vocoder should stay clean, got {nout:.1} dB");
 }
 
+/// Where PSOLA alone lands on a smooth tone at unity shift, as measured
+/// 2026-08-27. It is a record of a defect, not a target — `PitchEngine` routes
+/// around it, and if the grain scheduler is ever fixed this number should
+/// collapse and the bound below should be tightened rather than kept.
+const PSOLA_SMOOTH_DEFECT_DB: f32 = -2.6;
+
+/// Guards the defect against getting WORSE, and says so. A bound of the form
+/// "must stay bad" would fail the day someone fixes the scheduler, which is
+/// the opposite of what a regression test is for.
 #[test]
 fn psola_unity_shift_noise_is_a_known_defect() {
     let x = smooth(2.0);
     let nout = noise_to_harmonic(&psola_out(&x, F0, 0.0), F0, 0.6);
     println!(
-        "PSOLA @ unity: {nout:.1} dB  (known defect — epoch snap moves the read \
-         point only; see synth-core/CLAUDE.md)"
+        "PSOLA @ unity: {nout:.1} dB against a recorded {PSOLA_SMOOTH_DEFECT_DB:.1} dB \
+         (epoch snap moves the read point only; see lesson 24)"
     );
-    assert!(nout < 0.0, "PSOLA got even worse than the recorded defect: {nout:.1} dB");
+    assert!(
+        nout < PSOLA_SMOOTH_DEFECT_DB + 2.0,
+        "PSOLA got worse than the recorded defect: {nout:.1} dB vs {PSOLA_SMOOTH_DEFECT_DB:.1}"
+    );
+    if nout < PSOLA_SMOOTH_DEFECT_DB - 6.0 {
+        println!(
+            "NOTE: PSOLA is now {:.1} dB better than recorded — if that is a real fix, \
+             re-record PSOLA_SMOOTH_DEFECT_DB and tighten this bound.",
+            PSOLA_SMOOTH_DEFECT_DB - nout
+        );
+    }
 }
 
 /// The claim that turns "rewrite the engine" into "route around it": the same

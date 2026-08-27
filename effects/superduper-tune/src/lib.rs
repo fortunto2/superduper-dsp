@@ -89,22 +89,25 @@ pub const P_OUTPUT: usize = 7;
 pub const P_MODEL: usize = 8;
 pub const P_ENGINE: usize = 9;
 
+/// Display names for the stepped params, indexed by value. One table each,
+/// shared with the GUI's radio rows and with `value_to_text`/`text_to_value`,
+/// so a rename cannot leave the dropdown and the host's automation lane
+/// disagreeing.
+pub const ENGINE_NAMES: [&str; 3] = ["Auto", "PSOLA", "Phase"];
+pub const TARGET_NAMES: [&str; 3] = ["Scale", "MIDI", "Sidechain"];
+pub const MODEL_NAMES: [&str; 2] = ["YIN", "SwiftF0"];
+
 /// The `Engine` param as the router's enum. Auto is the default, and an
 /// unrecognised value falls back to it.
+///
+/// Deliberately not shared with Pitch's `Mode`: the orders differ (Auto is 0
+/// here, Voice is 0 there) because both are pinned by already-shipped param
+/// values (lesson 10).
 pub fn engine_from_param(v: f32) -> dsp::EngineMode {
     match v.round() as u32 {
         1 => dsp::EngineMode::Psola,
         2 => dsp::EngineMode::Pvoc,
         _ => dsp::EngineMode::Auto,
-    }
-}
-
-/// Display name for an `Engine` value.
-pub fn engine_name(v: f32) -> &'static str {
-    match v.round() as u32 {
-        1 => "PSOLA",
-        2 => "Phase",
-        _ => "Auto",
     }
 }
 
@@ -496,30 +499,47 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 let s = (value.round() as usize).min(scale::NUM_SCALES - 1);
                 write!(writer, "{}", scale::SCALES[s].0)
             }
-            P_ENGINE => write!(writer, "{}", engine_name(value as f32)),
-            P_MODEL => write!(
-                writer,
-                "{}",
-                if value.round() as u32 == 1 { "SwiftF0" } else { "YIN" }
-            ),
-            P_TARGET => write!(
-                writer,
-                "{}",
-                match value.round() as u32 {
-                    TARGET_MIDI => "MIDI",
-                    TARGET_SIDECHAIN => "Sidechain",
-                    _ => "Scale",
-                }
-            ),
+            P_ENGINE => named_value(&ENGINE_NAMES, value, writer),
+            P_MODEL => named_value(&MODEL_NAMES, value, writer),
+            P_TARGET => named_value(&TARGET_NAMES, value, writer),
             _ => ParamDef::write_display(PARAMS, id, value, writer),
         }
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        // Without this a host or an MCP agent typing "Auto" into Engine gets a
+        // numeric parse failure — a stepped param needs its names both ways.
+        let names: &[&str] = match id.get() as usize {
+            P_ENGINE => &ENGINE_NAMES,
+            P_MODEL => &MODEL_NAMES,
+            P_TARGET => &TARGET_NAMES,
+            _ => &[],
+        };
+        if !names.is_empty() {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
+                names.len(),
+                |i| names.get(i).copied(),
+                t,
+            ) {
+                return Some(v);
+            }
+        }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);
     }
+}
+
+/// Write the name for a stepped param's value, falling back to the first entry
+/// for anything out of range.
+fn named_value(
+    names: &[&str],
+    value: f64,
+    writer: &mut ParamDisplayWriter,
+) -> core::fmt::Result {
+    use core::fmt::Write;
+    let i = (value.round().max(0.0) as usize).min(names.len().saturating_sub(1));
+    write!(writer, "{}", names.get(i).copied().unwrap_or(""))
 }
 
 impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {

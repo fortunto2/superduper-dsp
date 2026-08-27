@@ -7,9 +7,11 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::keydetect::{key_name, KEY_NONE};
 use crate::presets::PRESETS;
-use crate::{P_FORMANT, P_MIX, P_MODE, P_OUTPUT, P_PITCH, P_TARGET_KEY, PARAMS, SharedParams};
+use crate::{
+    P_FORMANT, P_MIX, P_MODE, P_OUTPUT, P_PITCH, P_TARGET_KEY, MODE_NAMES, PARAMS, SharedParams,
+};
 
-const MODE_NAMES: [&str; 3] = ["Voice", "Track", "Auto"];
+
 
 /// Target-key selector label: 0 = None, 1..24 = C major..B minor.
 fn target_name(v: usize) -> &'static str {

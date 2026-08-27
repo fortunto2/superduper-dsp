@@ -3,7 +3,7 @@
 //!
 //! Run: `cargo test -p superduper-pitch --test pitch_accuracy -- --nocapture`
 
-use superduper_pitch::dsp::{PitchParams, PitchShifter};
+use superduper_synth_core::psola::{PitchParams, PitchShifter};
 use superduper_synth_core::analysis::spectrum_with_freq;
 use superduper_synth_core::dsp_blocks::Biquad;
 

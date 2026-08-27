@@ -5,20 +5,14 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-pub mod dsp;
 pub mod gui;
 pub mod keydetect;
 pub mod presets;
 
-/// The phase vocoder moved to synth-core so **Tune** and the iOS staticlib can
-/// reach it too (the `wave_osc` precedent). Re-exported here so nothing
-/// outside this crate had to change.
-pub use superduper_synth_core::pvoc;
 pub use superduper_synth_core::pitch_engine::{Mode as EngineMode, PitchEngine};
+pub use superduper_synth_core::psola::PitchParams;
 
-pub use dsp::{PitchParams, PitchShifter};
 pub use keydetect::KeyDetector;
-pub use pvoc::PhaseVocoder;
 
 /// `Mode` enum values.
 pub const MODE_VOICE: u32 = 0;
@@ -28,22 +22,22 @@ pub const MODE_TRACK: u32 = 1;
 /// saved project that stored `1` must still mean Track (lesson 10).
 pub const MODE_AUTO: u32 = 2;
 
+/// Display names for `Mode`, indexed by its value. One table, shared with the
+/// GUI's radio row and with `value_to_text`/`text_to_value`, so a rename
+/// cannot leave the dropdown and the host's automation lane disagreeing.
+pub const MODE_NAMES: [&str; 3] = ["Voice", "Track", "Auto"];
+
 /// The `Mode` param as the router's enum. Anything unrecognised falls back to
 /// Voice, which is the plugin's historic behaviour.
+///
+/// Deliberately not shared with Tune's `Engine`: the two orders differ (Voice
+/// is 0 here, Auto is 0 there) because both are pinned by already-shipped
+/// param values (lesson 10).
 pub fn mode_from_param(v: f32) -> EngineMode {
     match v.round() as u32 {
         MODE_TRACK => EngineMode::Pvoc,
         MODE_AUTO => EngineMode::Auto,
         _ => EngineMode::Psola,
-    }
-}
-
-/// Display name for a `Mode` value.
-pub fn mode_name(v: f32) -> &'static str {
-    match v.round() as u32 {
-        MODE_TRACK => "Track",
-        MODE_AUTO => "Auto",
-        _ => "Voice",
     }
 }
 
@@ -330,7 +324,12 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     ) -> core::fmt::Result {
         use core::fmt::Write;
         if id.get() as usize == P_MODE {
-            return write!(writer, "{}", mode_name(value as f32));
+            return superduper_dsp_sdk::clap_helpers::preset_value_to_text(
+                |i| MODE_NAMES.get(i).copied(),
+                value,
+                writer,
+            )
+            .unwrap_or_else(|| write!(writer, "{}", MODE_NAMES[0]));
         }
         if id.get() as usize == P_TARGET_KEY {
             let v = value.round() as usize;
@@ -343,6 +342,17 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         ParamDef::write_display(PARAMS, id, value, writer)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        // Without this a host or an MCP agent typing "Auto" into Mode gets a
+        // numeric parse failure — the stepped params need names both ways.
+        if id.get() as usize == P_MODE {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
+                MODE_NAMES.len(),
+                |i| MODE_NAMES.get(i).copied(),
+                t,
+            ) {
+                return Some(v);
+            }
+        }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {

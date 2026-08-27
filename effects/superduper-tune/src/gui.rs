@@ -8,14 +8,13 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::PRESETS;
 use crate::scale;
 use crate::{
-    SharedParams, P_AMOUNT, P_ENGINE, P_FORMANT, P_KEY, P_MIX, P_MODEL, P_OUTPUT, P_RETUNE,
-    P_SCALE,
+    SharedParams, ENGINE_NAMES, MODEL_NAMES, P_AMOUNT, P_ENGINE, P_FORMANT, P_KEY, P_MIX,
+    P_MODEL, P_OUTPUT, P_RETUNE, P_SCALE, TARGET_NAMES,
     P_TARGET, PARAMS,
 };
 
-const TARGET_NAMES: [&str; 3] = ["Scale", "MIDI", "Sidechain"];
-const MODEL_NAMES: [&str; 2] = ["YIN", "SwiftF0"];
-const ENGINE_NAMES: [&str; 3] = ["Auto", "PSOLA", "Phase"];
+
+
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 440;

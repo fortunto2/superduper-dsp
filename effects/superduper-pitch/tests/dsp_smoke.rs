@@ -2,7 +2,7 @@
 //!
 //! Run: `cargo test -p superduper-pitch --test dsp_smoke -- --nocapture`
 
-use superduper_pitch::dsp::{PitchParams, PitchShifter};
+use superduper_synth_core::psola::{PitchParams, PitchShifter};
 
 const SR: f32 = 48_000.0;
 

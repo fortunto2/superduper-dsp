@@ -6,7 +6,7 @@
 //!
 //! Run: `cargo test -p superduper-pitch --test click_audit -- --nocapture`
 
-use superduper_pitch::dsp::{PitchParams, PitchShifter};
+use superduper_synth_core::psola::{PitchParams, PitchShifter};
 use superduper_synth_core::dsp_blocks::Biquad;
 
 const SR: f32 = 48_000.0;

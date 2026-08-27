@@ -198,8 +198,14 @@ fn a_lower_floor_buys_low_voices_and_costs_latency() {
 /// Which crossfade law is correct depends on one measurable fact: how
 /// correlated the two engines' outputs are. Correlated → linear (equal-power
 /// would bulge +3 dB); uncorrelated → equal-power (linear would dip 3 dB).
-/// Printed so the choice in `pitch_engine.rs` is answerable, not stylistic.
+///
+/// This asserts nothing — it is the measurement the choice in
+/// `pitch_engine.rs` cites (r = 0.13 pulsed, 0.60 smooth), kept runnable so
+/// the claim can be re-checked rather than trusted. `#[ignore]`d so CI does
+/// not pay for a test that can never fail:
+/// `cargo test -p superduper-synth-core --test pitch_engine -- --ignored --nocapture`
 #[test]
+#[ignore = "measurement, not a check — run explicitly to re-derive the crossfade law"]
 fn how_correlated_are_the_two_engines() {
     use superduper_synth_core::psola::PitchShifter;
     use superduper_synth_core::pvoc::PhaseVocoder;
@@ -248,15 +254,4 @@ fn an_87_hz_voice_is_tracked_and_routed_to_psola() {
     let nout = common::noise_to_harmonic(&y, 87.0, 1.2);
     println!("87 Hz: in {nin:.1} dB -> out {nout:.1} dB");
     assert!(nout - nin < 2.0, "87 Hz take degraded: {nin:.1} -> {nout:.1}");
-
-    // The old default would not even have tracked it: 95 Hz floor means the
-    // period search never reaches 552 samples.
-    let old = PitchEngine::with_floor(common::SR, BLOCK, 95.0);
-    assert!(
-        (common::SR / 95.0) < (common::SR / 87.0),
-        "sanity: the 95 Hz floor really is above an 87 Hz period ({} vs {} samples)",
-        (common::SR / 95.0) as u32,
-        (common::SR / 87.0) as u32
-    );
-    assert!(old.latency_samples() < e.latency_samples());
 }

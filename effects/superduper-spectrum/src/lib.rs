@@ -170,7 +170,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         slog!(
-            "activate: sr={}, frames=..{}",
+            "activate sr={}, frames=..{}",
             audio_config.sample_rate, audio_config.max_frames_count
         );
         // Ring buffer sized for ~4 max-blocks. Audio thread overwrites stale

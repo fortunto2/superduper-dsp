@@ -267,7 +267,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
-        slog!("activate: sr={}", sr);
+        slog!("activate sr={}", sr);
         let max_frames = audio_config.max_frames_count as usize;
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let mut voc = Box::new(Vocoder::new(sr));

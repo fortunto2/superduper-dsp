@@ -238,7 +238,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        slog!("activate: sr={}", audio_config.sample_rate);
+        slog!("activate sr={}", audio_config.sample_rate);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         // If the user has a community .nam in their library, default to
         // it; otherwise fall back to the built-in tube preamp.

@@ -46,6 +46,10 @@ use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
+use superduper_dsp_sdk::slog;
+
+/// Per-plugin log file: `~/.superduper-dsp/wave.log`. Idempotent.
+fn init_logging() { superduper_dsp_sdk::log::init("wave"); }
 use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams, SmoothedParam, midi_note_to_hz};
 
 use osc::{FilterMode, LfoDest, LfoShape, MipWavetable, WaveParams, WaveVoice, NOTE_FREE};
@@ -928,6 +932,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
+        slog!("activate sr={}", sr);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let frames: Vec<MipWavetable> = {
             let guard = shared.wavetable.lock();
@@ -1415,6 +1420,8 @@ impl DefaultPluginFactory for SuperDuperWave {
         .with_features([INSTRUMENT, STEREO, SYNTHESIZER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
+        init_logging();
+        slog!("new_shared: Wave — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
         // Try the auto-saved "last edited" snapshot — becomes the default
         // for a fresh plugin instance. PluginStateImpl::load runs AFTER

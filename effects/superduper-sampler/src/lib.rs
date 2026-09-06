@@ -380,6 +380,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         init_logging();
         let sr = cfg.sample_rate as f32;
+        slog!("activate sr={}", sr);
         shared.host_sr.store(sr, Ordering::Relaxed);
         slog!("sampler activate sr={}", sr);
         Ok(Self {

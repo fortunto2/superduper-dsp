@@ -292,7 +292,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared
             .latency_samples
             .store(tune.latency_samples(), Ordering::Relaxed);
-        slog!("activate: sr={} latency={}", sr, tune.latency_samples());
+        slog!("activate sr={} latency={}", sr, tune.latency_samples());
         Ok(Self {
             shared,
             tune,

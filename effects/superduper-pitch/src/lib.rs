@@ -207,7 +207,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let latency = engine.latency_samples();
         shared.latency_samples.store(latency, Ordering::Relaxed);
         let keydet = Box::new(KeyDetector::new(sr));
-        slog!("activate: sr={} latency={}", sr, latency);
+        slog!("activate sr={} latency={}", sr, latency);
         Ok(Self { shared, engine, keydet })
     }
 

@@ -281,7 +281,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         init_logging();
-        slog!("drum activate sr={}", audio_config.sample_rate);
+        slog!("activate sr={}", audio_config.sample_rate);
         Ok(Self {
             shared,
             host,

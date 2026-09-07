@@ -35,3 +35,5 @@ gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lo
 # for dev-dependencies, and it keeps the reference signals out of the shipping
 # library, which cross-compiles to iOS.
 sdsp-test-kit = { path = "../tools/sdsp-test-kit" }
+# Only for `examples/kubyz_f2.rs` — writing a WAV of the rendered instrument.
+hound = "3.5"

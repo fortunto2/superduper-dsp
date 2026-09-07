@@ -24,3 +24,7 @@ build-wrappers/
 #   git clone --depth 1 https://github.com/sdatkinson/NeuralAmpModelerCore \
 #       tools/nam-reference/NeuralAmpModelerCore
 tools/nam-reference/
+
+# Python bytecode (tools/mix-judge)
+__pycache__/
+*.pyc

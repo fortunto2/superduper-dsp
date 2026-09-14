@@ -8,6 +8,8 @@ members = [
     "sdk-macros",
     "sdk-build",
     "synth-core",
+    "connectome-core",
+    "mobile/fly-ios",
     "effects/example-passthrough",
     "effects/superduper-reverb",
     "effects/superduper-supermass",

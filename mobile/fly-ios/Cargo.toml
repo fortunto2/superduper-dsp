@@ -1,0 +1,20 @@
+# C-ABI staticlib bringing the connectome engine to iOS, shaped exactly like mobile/sdsp-ios
+# (which ships inside reelcam) so the XCFramework build is a known quantity.
+[package]
+name = "fly-ios"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "fly_ios"
+crate-type = ["staticlib"]
+
+[dependencies]
+# Simulation only — no gui, no clack, nothing that pulls a windowing stack onto iOS.
+connectome-core = { path = "../../connectome-core" }
+
+[profile.release]
+opt-level = 3
+lto = true

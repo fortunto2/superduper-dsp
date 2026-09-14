@@ -175,6 +175,24 @@ pub extern "C" fn fly_noise(brain: *const FlyBrain) -> c_float {
     borrow!(brain, 0.0).sim.noise()
 }
 
+/// Set current on many cells at once. The eye drives 10 600 photoreceptors every frame, and
+/// crossing the language boundary once per cell is most of that frame.
+#[no_mangle]
+pub extern "C" fn fly_set_stimulus_many(brain: *mut FlyBrain, neurons: *const c_uint,
+                                        currents: *const c_float, count: c_uint) {
+    let Some(b) = (unsafe { brain.as_mut() }) else { return };
+    if neurons.is_null() || currents.is_null() {
+        return;
+    }
+    let n = count as usize;
+    let (ids, vals) = unsafe {
+        (std::slice::from_raw_parts(neurons, n), std::slice::from_raw_parts(currents, n))
+    };
+    for (&i, &v) in ids.iter().zip(vals) {
+        b.sim.set_stimulus(i as usize, v);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn fly_clear_stimulus(brain: *mut FlyBrain) {
     if let Some(b) = unsafe { brain.as_mut() } {
@@ -280,6 +298,23 @@ mod tests {
         }
         fly_copy_rates(brain, rates.as_mut_ptr(), 700);
         assert!(rates[5] > 2.0 * mean, "a driven cell must read hotter than the mean: {} vs {mean}", rates[5]);
+        fly_destroy(brain);
+    }
+
+    #[test]
+    fn a_bulk_stimulus_reaches_every_cell_it_names() {
+        let brain = fly_create_synthetic(700, 12, 1);
+        let ids: Vec<c_uint> = (0..50).map(|i| i * 3).collect();
+        let vals = vec![9.0f32; ids.len()];
+        fly_set_stimulus_many(brain, ids.as_ptr(), vals.as_ptr(), ids.len() as c_uint);
+        for _ in 0..400 {
+            fly_step(brain);
+        }
+        let mut rates = vec![0f32; 700];
+        fly_copy_rates(brain, rates.as_mut_ptr(), 700);
+        let driven: f32 = ids.iter().map(|&i| rates[i as usize]).sum::<f32>() / ids.len() as f32;
+        let rest: f32 = rates.iter().sum::<f32>() / 700.0;
+        assert!(driven > 2.0 * rest, "bulk-driven cells should run hot: {driven} vs {rest}");
         fly_destroy(brain);
     }
 

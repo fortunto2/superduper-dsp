@@ -34,6 +34,11 @@ void     fly_reset(FlyBrain *brain, uint64_t seed);
 void fly_set_stimulus(FlyBrain *brain, uint32_t neuron, float current);
 void fly_clear_stimulus(FlyBrain *brain);
 
+// Many cells at once: the eye drives 10600 photoreceptors a frame, and one call per cell is
+// most of that frame. `neurons` and `currents` are parallel arrays of `count` entries.
+void fly_set_stimulus_many(FlyBrain *brain, const uint32_t *neurons, const float *currents,
+                           uint32_t count);
+
 // Background drive, the arousal dial. On the synthetic graph: 1.0 silent (sleep), 2.0 about
 // 1% of cells firing a step, 3.5 about 5% (the default), 8.0 about 8%. A silent brain
 // restarts on its own when raised; a touch wakes it regardless.

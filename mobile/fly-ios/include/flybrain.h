@@ -16,6 +16,11 @@ FlyBrain *fly_create_from_csv(const char *path, uint32_t threshold, uint64_t see
 // The app's packed export (brain.fcb from scripts/flywire-import.py): graph plus cell
 // positions, edges under `threshold` synapses dropped at load. Null on any failure.
 FlyBrain *fly_create_from_fcb(const char *path, uint32_t threshold, uint64_t seed);
+
+// Another brain over the same wiring. A colony shares one connectome — 31 MB on the full
+// export — and each fly costs only its own state, about 2.8 MB. Its own seed, so it has its
+// own life rather than being a copy. Null if `from` is null.
+FlyBrain *fly_create_shared(const FlyBrain *from, uint64_t seed);
 void      fly_destroy(FlyBrain *brain);
 int32_t   fly_is_synthetic(const FlyBrain *brain);
 

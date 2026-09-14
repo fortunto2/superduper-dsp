@@ -130,6 +130,15 @@ fn bytemuck_free_flatten(p: &[[f32; 3]]) -> &[f32] {
     unsafe { std::slice::from_raw_parts(p.as_ptr() as *const f32, p.len() * 3) }
 }
 
+/// Another brain over the same wiring: a second fly costs its state, about 2.8 MB on the
+/// full connectome, and not another copy of the 31 MB graph. Null if `from` is null.
+#[no_mangle]
+pub extern "C" fn fly_create_shared(from: *const FlyBrain, seed: u64) -> *mut FlyBrain {
+    let Some(b) = (unsafe { from.as_ref() }) else { return std::ptr::null_mut() };
+    let sim = Lif::new(b.sim.shared_graph(), *b.sim.params(), seed);
+    Box::into_raw(Box::new(FlyBrain { sim, synthetic: b.synthetic, positions: Vec::new() }))
+}
+
 #[no_mangle]
 pub extern "C" fn fly_destroy(brain: *mut FlyBrain) {
     if !brain.is_null() {
@@ -316,6 +325,34 @@ mod tests {
         let rest: f32 = rates.iter().sum::<f32>() / 700.0;
         assert!(driven > 2.0 * rest, "bulk-driven cells should run hot: {driven} vs {rest}");
         fly_destroy(brain);
+    }
+
+    #[test]
+    fn a_shared_brain_has_the_same_wiring_and_its_own_life() {
+        let a = fly_create_synthetic(700, 12, 1);
+        let b = fly_create_shared(a, 99);
+        assert!(!b.is_null());
+        assert_eq!(fly_neurons(b), fly_neurons(a));
+        assert_eq!(fly_edges(b), fly_edges(a));
+        for _ in 0..500 {
+            fly_step(a);
+            fly_step(b);
+        }
+        // Same wiring, different seed: alive, and living differently.
+        assert!(fly_total_spikes(a) > 1000 && fly_total_spikes(b) > 1000);
+        assert_ne!(fly_total_spikes(a), fly_total_spikes(b));
+        // And one fly's senses are its own.
+        fly_set_stimulus(a, 5, 9.0);
+        for _ in 0..300 {
+            fly_step(a);
+            fly_step(b);
+        }
+        let (mut ra, mut rb) = (vec![0f32; 700], vec![0f32; 700]);
+        fly_copy_rates(a, ra.as_mut_ptr(), 700);
+        fly_copy_rates(b, rb.as_mut_ptr(), 700);
+        assert!(ra[5] > 2.0 * rb[5], "stimulus leaked between flies: {} vs {}", ra[5], rb[5]);
+        fly_destroy(a);
+        fly_destroy(b);
     }
 
     #[test]

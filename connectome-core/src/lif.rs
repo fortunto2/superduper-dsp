@@ -7,6 +7,7 @@
 
 use crate::graph::Graph;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// Below this many cells the thread hand-off costs more than it saves (the eco tier is 700).
 const PARALLEL_MIN_NEURONS: usize = 20_000;
@@ -48,7 +49,9 @@ impl Default for LifParams {
 }
 
 pub struct Lif {
-    graph: Graph,
+    /// Shared: every fly in a colony has the same wiring and differs only in its state, so
+    /// the 31 MB graph is carried once however many brains are running over it.
+    graph: Arc<Graph>,
     params: LifParams,
     v: Vec<f32>,
     refractory: Vec<f32>,
@@ -103,7 +106,8 @@ fn update_cell(p: &LifParams, decay: f32, seed: u64, step: u64, i: usize,
 }
 
 impl Lif {
-    pub fn new(graph: Graph, params: LifParams, seed: u64) -> Self {
+    pub fn new(graph: impl Into<Arc<Graph>>, params: LifParams, seed: u64) -> Self {
+        let graph = graph.into();
         let n = graph.neurons();
         Self {
             graph,
@@ -123,6 +127,15 @@ impl Lif {
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    pub fn params(&self) -> &LifParams {
+        &self.params
+    }
+
+    /// The wiring, for another brain to share rather than copy.
+    pub fn shared_graph(&self) -> Arc<Graph> {
+        Arc::clone(&self.graph)
     }
 
     pub fn voltages(&self) -> &[f32] {
@@ -278,9 +291,12 @@ impl Lif {
     /// Zero a contiguous bundle of synapses. Exists for the mutation test rather than for
     /// biology: if destroying weights does not change the spike train, the simulation is
     /// reporting its own defaults and not this connectome.
+    /// Lesioning gives this brain its own copy of the wiring, so a colony sharing one graph
+    /// cannot have a mutation test quietly damage every fly at once.
     pub fn lesion_synapses(&mut self, from: usize, count: usize) {
-        let end = (from + count).min(self.graph.weights.len());
-        for w in &mut self.graph.weights[from..end] {
+        let graph = Arc::make_mut(&mut self.graph);
+        let end = (from + count).min(graph.weights.len());
+        for w in &mut graph.weights[from..end] {
             *w = 0.0;
         }
     }

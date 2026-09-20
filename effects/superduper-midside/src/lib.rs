@@ -154,7 +154,6 @@ pub struct PluginAudioProcessor<'a> {
     side_hp: superduper_synth_core::dsp_blocks::Biquad,
     side_hp2: superduper_synth_core::dsp_blocks::Biquad,
     side_hp_freq: f32,
-    side_hp_slope24: bool,
     sample_rate: f32,
 }
 
@@ -183,7 +182,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             side_hp: Default::default(),
             side_hp2: Default::default(),
             side_hp_freq: 0.0,
-            side_hp_slope24: false,
             sample_rate: sr,
         })
     }
@@ -216,17 +214,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let slope24 = load(P_MB_SLOPE) >= 0.5;
         // Coefficients follow the knob outside the sample loop; 20 Hz is the
         // audible floor, anything under it means "off".
-        if mono_below_t >= 20.0 {
-            if (mono_below_t - self.side_hp_freq).abs() > 0.5 || slope24 != self.side_hp_slope24 {
-                self.side_hp.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
-                self.side_hp2.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
-                self.side_hp_freq = mono_below_t;
-                self.side_hp_slope24 = slope24;
+        // Both biquads always carry the same coefficients; the slope choice
+        // only decides how many stages the sample loop runs, so it needs no
+        // cached state. (If a second plugin ever wants this bass-mono block,
+        // lift THIS cache/cascade assembly into dsp_blocks, not just Biquad.)
+        if mono_below_t < 20.0 {
+            if self.side_hp_freq != 0.0 {
+                self.side_hp.clear();
+                self.side_hp2.clear();
+                self.side_hp_freq = 0.0;
             }
-        } else if self.side_hp_freq != 0.0 {
-            self.side_hp.clear();
-            self.side_hp2.clear();
-            self.side_hp_freq = 0.0;
+        } else if (mono_below_t - self.side_hp_freq).abs() > 0.5 {
+            self.side_hp.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
+            self.side_hp2.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
+            self.side_hp_freq = mono_below_t;
         }
 
         for mut port_pair in &mut audio {
@@ -276,7 +277,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let mut s = (li - ri) * 0.5 * side_lin * width;
                         if self.side_hp_freq > 0.0 {
                             s = self.side_hp.process(s);
-                            if self.side_hp_slope24 {
+                            if slope24 {
                                 s = self.side_hp2.process(s);
                             }
                         }

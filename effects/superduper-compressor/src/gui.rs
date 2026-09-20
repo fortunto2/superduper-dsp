@@ -371,7 +371,7 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
     // the scope's range), Y axis = output dB (linear gain reduction
     // mapped onto the same dB span).
     let threshold = state.shared.params[P_THRESHOLD].load(Ordering::Relaxed);
-    let range_v = state.shared.params[crate::P_RANGE].load(Ordering::Relaxed).max(0.0);
+    let range_v = state.shared.params[P_RANGE].load(Ordering::Relaxed).max(0.0);
     let ratio = state.shared.params[P_RATIO].load(Ordering::Relaxed);
     let knee = state.shared.params[P_KNEE].load(Ordering::Relaxed);
     let makeup = state.shared.params[P_MAKEUP].load(Ordering::Relaxed);
@@ -403,8 +403,8 @@ fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
     state.curve_pts.clear();
     for i in 0..=64_usize {
         let in_db = SCOPE_DB_FLOOR + (SCOPE_DB_CEIL - SCOPE_DB_FLOOR) * (i as f32 / 64.0);
-        let mut gr = compressor_gain_db_curve(in_db, threshold, ratio, knee, curve_kind);
-        if range_v > 0.05 { gr = gr.max(-range_v); }
+        let gr = superduper_synth_core::dsp_blocks::apply_range(
+            compressor_gain_db_curve(in_db, threshold, ratio, knee, curve_kind), range_v);
         let out_db = (in_db + gr + makeup).clamp(SCOPE_DB_FLOOR, SCOPE_DB_CEIL);
         let x = rect.left() + rect.width() * (i as f32 / 64.0);
         let y = rect.bottom() - rect.height() * (out_db - SCOPE_DB_FLOOR)

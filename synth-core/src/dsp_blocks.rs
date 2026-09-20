@@ -669,6 +669,16 @@ impl CompressorCurve {
     }
 }
 
+/// Range — the hard floor on gain reduction, applied AFTER the static curve.
+/// This is the single home of the rule (including the 0.05 dB "off"
+/// deadband): the compressor's stereo block, its mono path and its GUI curve
+/// preview all call this, after a session where three hand-written copies
+/// drifted and Range silently did nothing in mono.
+#[inline]
+pub fn apply_range(gr_db: f32, range_db: f32) -> f32 {
+    if range_db > 0.05 { gr_db.max(-range_db) } else { gr_db }
+}
+
 /// Static compression curve in dB, dispatched on the selected shape.
 /// Curve = Clean reproduces `compressor_gain_db` bit-for-bit.
 #[inline]
@@ -751,6 +761,16 @@ pub struct DelayLine {
 }
 
 impl DelayLine {
+    /// Read an INTEGER number of samples behind the write head — one masked
+    /// load. Use this when the delay is a compile-time constant: routing a
+    /// constant through `read_lagrange3` costs three integer remainders and a
+    /// cubic whose fractional part is always zero, per channel, per sample.
+    #[inline]
+    pub fn read_int(&self, delay: usize) -> f32 {
+        let mask = self.capacity - 1; // capacity is next_power_of_two()
+        self.buf[(self.write_idx + self.capacity - (delay & mask)) & mask]
+    }
+
     pub fn new(max_delay_samples: usize) -> Self {
         let cap = max_delay_samples.next_power_of_two().max(1024);
         Self {

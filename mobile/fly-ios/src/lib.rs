@@ -21,7 +21,15 @@ pub struct FlyBrain {
     sim: Lif,
     synthetic: bool,
     /// Cell positions in µm, index order; empty for a synthetic brain.
-    positions: Vec<[f32; 3]>,
+    /// Arc so a colony shares one copy — "shared" means anatomy too, and the
+    /// non-empty ⇔ real-brain invariant lives in `FlyBrain::new` alone.
+    positions: std::sync::Arc<Vec<[f32; 3]>>,
+}
+
+impl FlyBrain {
+    fn new(sim: Lif, synthetic: bool, positions: std::sync::Arc<Vec<[f32; 3]>>) -> *mut FlyBrain {
+        Box::into_raw(Box::new(FlyBrain { sim, synthetic, positions }))
+    }
 }
 
 macro_rules! borrow {
@@ -65,7 +73,7 @@ pub extern "C" fn fly_create_synthetic(neurons: c_uint, fan_out: c_uint, seed: u
     // lowered so noise gives a graded band (sleep … walk) instead of an on/off switch.
     let params = LifParams { noise: SYNTHETIC_NOISE, weight_scale: SYNTHETIC_WEIGHT_SCALE, ..LifParams::default() };
     let sim = Lif::new(graph, params, seed);
-    Box::into_raw(Box::new(FlyBrain { sim, synthetic: true, positions: Vec::new() }))
+    FlyBrain::new(sim, true, std::sync::Arc::new(Vec::new()))
 }
 
 /// Returns null when the file is missing, unparseable, or thresholds down to nothing. The
@@ -86,7 +94,7 @@ pub extern "C" fn fly_create_from_csv(path: *const c_char, threshold: c_uint, se
     };
     let params = LifParams { noise: SYNTHETIC_NOISE, weight_scale: REAL_WEIGHT_SCALE, ..LifParams::default() };
     let sim = Lif::new(graph, params, seed);
-    Box::into_raw(Box::new(FlyBrain { sim, synthetic: false, positions: Vec::new() }))
+    FlyBrain::new(sim, false, std::sync::Arc::new(Vec::new()))
 }
 
 /// The app's packed export (`brain.fcb`): graph plus cell positions. Null on any failure,
@@ -107,7 +115,7 @@ pub extern "C" fn fly_create_from_fcb(path: *const c_char, threshold: c_uint, se
     };
     let params = LifParams { noise: SYNTHETIC_NOISE, weight_scale: REAL_WEIGHT_SCALE, ..LifParams::default() };
     let sim = Lif::new(graph, params, seed);
-    Box::into_raw(Box::new(FlyBrain { sim, synthetic: false, positions }))
+    FlyBrain::new(sim, false, std::sync::Arc::new(positions))
 }
 
 /// Cell positions in µm as x,y,z triples, index order; `capacity` counts floats. Returns
@@ -131,15 +139,15 @@ fn bytemuck_free_flatten(p: &[[f32; 3]]) -> &[f32] {
 }
 
 /// Another brain over the same wiring: a second fly costs its state (~2.8 MB on the full
-/// connectome) plus a copy of the anatomy positions (~1.7 MB), not another copy of the
-/// 31 MB graph. The positions MUST come along: fly_copy_positions() returning 0 is the
+/// connectome); the anatomy positions are Arc-shared, so a second fly costs
+/// no copy of them either, and none of the 31 MB graph. The positions MUST come along: fly_copy_positions() returning 0 is the
 /// documented "synthetic brain" signal, and a shared fly over a real .fcb is not one.
 /// Null if `from` is null.
 #[no_mangle]
 pub extern "C" fn fly_create_shared(from: *const FlyBrain, seed: u64) -> *mut FlyBrain {
     let Some(b) = (unsafe { from.as_ref() }) else { return std::ptr::null_mut() };
     let sim = Lif::new(b.sim.shared_graph(), *b.sim.params(), seed);
-    Box::into_raw(Box::new(FlyBrain { sim, synthetic: b.synthetic, positions: b.positions.clone() }))
+    FlyBrain::new(sim, b.synthetic, std::sync::Arc::clone(&b.positions))
 }
 
 #[no_mangle]

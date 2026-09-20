@@ -233,6 +233,28 @@ encoders have room.
 The compressor's attack has to stay **above** the kick's transient (12–15 ms) on
 a master, or the chain eats the punch it is supposed to glue.
 
+**Glue is 1.5–3 dB of GR, and that is a number to read, not guess.** A real
+master ran at −7.6 dB GR (mix RMS −10 into a −24 threshold at 2:1 — the math
+says 7, the meter agreed) and that surplus was both the audible pumping under
+the kick and a squashed crest. Set the threshold so the meter shows 1.5–3,
+put **Range 2–3 dB on the master glue** as a hard cap (the knob exists now),
+and raise SC HPF to 120–300 if an 808 tail is what drives the pumping.
+
+**Chain stages trade work — rebalance in pairs.** Relaxing that glue by 5 dB
+sent 5 dB more into the limiter, which promptly ate the crest the relaxation
+was meant to restore (9.6 → 8.7). Every time one stage backs off N dB, take
+~N dB out of the limiter Input, then re-measure; the second render, not the
+first, is the verdict.
+
+**The limiter meters its own output now** (S/I LUFS + true peak, red past
+−1 dBTP). Press reset, play the whole track once, and the I readout IS the
+mastering verdict — external meters are for cross-checking, not for every
+iteration. Two measurement traps: a render started while a parameter is
+still landing measures a hybrid of both values (wait a beat after setting,
+then render — one "ceiling broken?" scare was exactly this), and a +2.5 dB
+master shelf at 12 kHz moved the 6–16 kHz band by 0.1 dB — air lives in
+sources (hats, sparkle layers), the master EQ cannot invent it.
+
 ## Symptom → measurement → fix
 
 | It sounds… | Measure | Usually |

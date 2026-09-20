@@ -32,5 +32,3 @@ clack-host = { version = "0.1", features = ["clack-plugin"] }
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "state", "log", "clack-host"] }
 superduper-synth-core = { path = "../../synth-core" }
 
-[features]
-host_probe = []

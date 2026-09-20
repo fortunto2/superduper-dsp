@@ -1,4 +1,4 @@
-use crate::{P_CEILING, P_INPUT, P_LOOKAHEAD, P_RELEASE, P_TRUE_PEAK, PARAMS};
+use crate::{P_CEILING, P_INPUT, P_RELEASE, P_TRUE_PEAK, PARAMS};
 
 superduper_dsp_sdk::define_preset!(PARAMS);
 
@@ -9,7 +9,6 @@ pub static PRESETS: &[Preset] = &[
         (P_INPUT, 0.0),
         (P_CEILING, -1.0),
         (P_RELEASE, 80.0),
-        (P_LOOKAHEAD, 5.0),
         (P_TRUE_PEAK, 1.0),
     ]),
     // Loud mastering — push input, fast release for max loudness.
@@ -17,7 +16,6 @@ pub static PRESETS: &[Preset] = &[
         (P_INPUT, 6.0),
         (P_CEILING, -0.3),
         (P_RELEASE, 30.0),
-        (P_LOOKAHEAD, 3.0),
         (P_TRUE_PEAK, 1.0),
     ]),
     // Transparent — heavy lookahead, slow release, low input drive.
@@ -25,7 +23,6 @@ pub static PRESETS: &[Preset] = &[
         (P_INPUT, 0.0),
         (P_CEILING, -0.3),
         (P_RELEASE, 150.0),
-        (P_LOOKAHEAD, 8.0),
         (P_TRUE_PEAK, 1.0),
     ]),
     // Brickwall safety — final-stage broadcast limiter, -1.0 dBTP for streaming.
@@ -33,7 +30,6 @@ pub static PRESETS: &[Preset] = &[
         (P_INPUT, 0.0),
         (P_CEILING, -1.0),
         (P_RELEASE, 50.0),
-        (P_LOOKAHEAD, 4.0),
         (P_TRUE_PEAK, 1.0),
     ]),
     // Drum bus tame — fast release, no TP (track use, not master).
@@ -41,7 +37,6 @@ pub static PRESETS: &[Preset] = &[
         (P_INPUT, 2.0),
         (P_CEILING, -0.3),
         (P_RELEASE, 15.0),
-        (P_LOOKAHEAD, 1.0),
         (P_TRUE_PEAK, 0.0),
     ]),
 ];

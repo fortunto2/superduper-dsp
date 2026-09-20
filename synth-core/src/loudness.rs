@@ -118,6 +118,22 @@ impl LoudnessMeter {
     /// Feed one stereo sample. Returns true when a 100 ms block
     /// boundary just rolled over (caller can poll meters at this rate
     /// to avoid per-sample read overhead).
+    /// Mono feed — BS.1770 dual-mono: one K-filter, channel sum = 2·k².
+    /// Exists because the limiter's mono branch used to call
+    /// `process_stereo(x, x)` and pay for two identical filter chains.
+    #[inline]
+    pub fn process_mono(&mut self, x: f32) -> bool {
+        let k = self.k_l.process(x);
+        self.block_sum += (2.0 * (k as f64) * (k as f64)) as f64;
+        self.block_samples_remaining -= 1;
+        if self.block_samples_remaining == 0 {
+            self.commit_block();
+            true
+        } else {
+            false
+        }
+    }
+
     #[inline]
     pub fn process_stereo(&mut self, l: f32, r: f32) -> bool {
         let kl = self.k_l.process(l);
@@ -369,14 +385,27 @@ impl TruePeakDetector {
 
     #[inline]
     pub fn process_stereo(&mut self, l: f32, r: f32) {
+        self.feed(l, r, false)
+    }
+
+    /// Mono feed — same interpolator, half the MACs of `process_stereo(x, x)`.
+    /// Exists because the limiter's mono branch used to pay for two identical
+    /// convolutions of the same sample.
+    #[inline]
+    pub fn process_mono(&mut self, x: f32) {
+        self.feed(x, 0.0, true)
+    }
+
+    #[inline]
+    fn feed(&mut self, l: f32, r: f32, mono: bool) {
         // Raw-sample peak (phase 0 of the interpolator).
-        let raw = l.abs().max(r.abs());
+        let raw = if mono { l.abs() } else { l.abs().max(r.abs()) };
         if raw > self.peak {
             self.peak = raw;
         }
         // Push into the ring history.
         self.hist_l[self.pos] = l;
-        self.hist_r[self.pos] = r;
+        self.hist_r[self.pos] = if mono { 0.0 } else { r };
         self.pos = (self.pos + 1) % TP_TAPS;
         // Inter-sample estimates at t = 1/4, 2/4, 3/4 between history
         // samples via the polyphase FIR. Read order: m = 0 is the newest.
@@ -386,9 +415,11 @@ impl TruePeakDetector {
             for (m, tap) in phase.iter().enumerate() {
                 let idx = (self.pos + TP_TAPS - 1 - m) % TP_TAPS;
                 al += self.hist_l[idx] * tap;
-                ar += self.hist_r[idx] * tap;
+                if !mono {
+                    ar += self.hist_r[idx] * tap;
+                }
             }
-            let p = al.abs().max(ar.abs());
+            let p = if mono { al.abs() } else { al.abs().max(ar.abs()) };
             if p > self.peak {
                 self.peak = p;
             }

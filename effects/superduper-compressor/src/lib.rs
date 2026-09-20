@@ -306,6 +306,12 @@ pub struct PluginAudioProcessor<'a> {
     /// duck" — and silence in it means "release", never "re-key off the
     /// bass" (see `SidechainSnapshot` in the sdk for the full story).
     sc: SidechainSnapshot,
+    /// Taken out of the struct for the duration of the mono call so the
+    /// borrow checker allows `&mut self` alongside the slices; put back
+    /// right after. No allocation on the audio thread — take/replace move
+    /// the same boxes.
+    mono_r_in: Option<Box<[f32]>>,
+    mono_r_out: Option<Box<[f32]>>,
     smooth_threshold: SmoothedParam,
     smooth_ratio: SmoothedParam,
     smooth_attack: SmoothedParam,
@@ -384,6 +390,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             look_r: DelayLine::new(cap),
             lookahead_samples: initial_look_samples,
             sc: SidechainSnapshot::new(max_frames),
+            // Mono runs through the SAME stereo block with L copied here —
+            // process_sample_mono was a second implementation that had to
+            // learn every feature one forgotten port at a time (Range was
+            // the fifth; curve/hold/sidechain/auto-release never made it).
+            mono_r_in: Some(vec![0.0; max_frames].into_boxed_slice()),
+            mono_r_out: Some(vec![0.0; max_frames].into_boxed_slice()),
             smooth_threshold: SmoothedParam::new(load(P_THRESHOLD)),
             smooth_ratio: SmoothedParam::new(load(P_RATIO)),
             smooth_attack: SmoothedParam::new(load(P_ATTACK)),
@@ -475,50 +487,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // releases while a routed key is silent (the bug the latch fixes);
         // verified via sdsp-chain render + envelope measurement only.
         let sc_present = self.sc.capture(&mut audio, 1)?;
-        // AI-NOTE: temporary — REAPER never delivers the key to this plugin
-        // while ReaComp on the same track gets it. Records what the host hands
-        // us for the first blocks; delete once the routing question is closed.
-        // AI-TODO: remove by 2026-10 — the REAPER question is answered (stale mmap),
-        // this stays only until one more host is checked.
-        // Behind a feature because it allocates, which process() must not do —
-        // `process_does_not_allocate` fails the moment it is compiled in.
-        #[cfg(feature = "host_probe")]
-        {
-            use core::sync::atomic::{AtomicUsize, Ordering as DbgO};
-            static N: AtomicUsize = AtomicUsize::new(0);
-            let n = N.fetch_add(1, DbgO::Relaxed);
-            if n % 470 == 0 {
-                let frames = audio.frames_count() as usize;
-                let mut line = format!("blk {n} frames={frames} sc_present={sc_present}");
-                for pi in 0..3u32 {
-                    match audio.input_port(pi as usize) {
-                        None => line.push_str(&format!(" port{pi}=absent")),
-                        Some(prt) => {
-                            let mut d = format!(" port{pi}=[");
-                            if let Some(ch) = prt.channels().ok().and_then(|c| c.into_f32()) {
-                                for ci in 0..6u32 {
-                                    match ch.channel(ci) {
-                                        Some(b) => {
-                                            let m = b.iter().take(frames).fold(0.0f32, |a, &v| a.max(v.abs()));
-                                            d.push_str(&format!("{m:.4} "));
-                                        }
-                                        None => break,
-                                    }
-                                }
-                            } else {
-                                d.push_str("not-f32");
-                            }
-                            d.push(']');
-                            line.push_str(&d);
-                        }
-                    }
-                }
-                line.push('\n');
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
-                    .open("/tmp/sdsp_compressor_ports.log") { let _ = f.write_all(line.as_bytes()); }
-            }
-        }
 
         // ---- Process main port (index 0) ----
         if let Some(mut main_pair) = audio.port_pair(0) {
@@ -554,26 +522,26 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     &mut max_gr_db,
                 );
             } else {
-                let n = l_read.len();
-                for i in 0..n {
-                    let dry = l_read[i];
-                    let (out, gr) = process_sample_mono(
-                        &mut self.detector, &mut self.sc_hpf_state_l, sc_hpf_freq,
-                        &mut self.look_l,
-                        &mut self.smooth_threshold, &mut self.smooth_ratio,
-                        &mut self.smooth_attack, &mut self.smooth_release,
-                        &mut self.smooth_knee, &mut self.smooth_makeup,
-                        &mut self.smooth_mix, &mut self.smooth_lookahead,
-                        &mut self.smooth_ceiling,
-                        dry, sr,
-                        threshold_target, ratio_target, attack_target, release_target,
-                        knee_target, makeup_target, mix_target,
-                        lookahead_ms_target, ceiling_target,
-                        range_target,
-                    );
-                    l_write[i] = out;
-                    if gr < max_gr_db { max_gr_db = gr; }
-                    push_scope(self, dry.abs().max(1e-9), out.abs().max(1e-9), gr);
+                // Mono: run the one true engine with R = L. The write-back
+                // uses only L; the scratch R keeps the block's in/out split.
+                // Always Some — set at activate, put back below every call.
+                if let (Some(mut r_in), Some(mut r_out)) =
+                    (self.mono_r_in.take(), self.mono_r_out.take())
+                {
+                let n = l_read.len().min(r_in.len());
+                r_in[..n].copy_from_slice(&l_read[..n]);
+                process_stereo_block(
+                    self, &l_read[..n], &mut l_write[..n], &r_in[..n], &mut r_out[..n], sr,
+                    threshold_target, ratio_target, attack_target, release_target,
+                    knee_target, makeup_target, mix_target,
+                    lookahead_ms_target, ceiling_target, link_target,
+                    os_mode, curve, range_target, hold_target,
+                    sc_hpf_freq, sc_present, auto_rel,
+                    ms_mode,
+                    &mut max_gr_db,
+                );
+                self.mono_r_in = Some(r_in);
+                self.mono_r_out = Some(r_out);
                 }
             }
         }
@@ -677,10 +645,9 @@ fn process_stereo_block(
         let env_db = 20.0 * env.max(1e-9).log10();
         let mut gr_db = compressor_gain_db_curve(env_db, threshold, ratio, knee, curve);
 
-        // Range — hard floor on how much GR is applied. 0 = no clamp.
-        if range_target > 0.05 {
-            gr_db = gr_db.max(-range_target);
-        }
+        // Range — hard floor on GR. Single source of the rule (incl. the
+        // 0.05 dB deadband): synth_core::dsp_blocks::apply_range.
+        gr_db = superduper_synth_core::dsp_blocks::apply_range(gr_db, range_target);
 
         // Hold — when the static curve has stopped asking for more GR
         // (compressing → released stage), keep the previous GR latched
@@ -785,7 +752,6 @@ fn push_scope(p: &mut PluginAudioProcessor<'_>, in_lin: f32, out_lin: f32, gr_db
 
 
 
-#[allow(clippy::too_many_arguments)]
 fn process_sample_mono(
     detector: &mut EnvelopeDetector,
     sc_hpf_state: &mut f32,

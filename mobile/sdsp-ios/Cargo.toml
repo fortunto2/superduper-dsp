@@ -19,6 +19,3 @@ superduper-synth-core = { path = "../../synth-core", default-features = false }
 # the supermass reverb Net's AudioUnit::tick directly in the FX chain.
 fundsp = "0.23"
 
-[profile.release]
-opt-level = 3
-lto = true

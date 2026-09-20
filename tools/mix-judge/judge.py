@@ -62,12 +62,16 @@ def content_dist(ref, sub, sr, win=0.25, lag_ms=50):
         if x.std() < 1e-9 or y.std() < 1e-9:
             continue
         y0 = y - y.mean()
-        c = np.correlate(y0, x - x.mean(), mode='valid')
+        x0 = x - x.mean()
+        c = np.correlate(y0, x0, mode='valid')
         # Нормировка энергией ИМЕННО совпавшего окна на каждом лаге, а не y[:W]:
         # при меняющемся уровне фиксированное окно завышало знаменатель и
         # честная сдача читалась как потеря содержания.
-        e = np.convolve(y0 * y0, np.ones(W), mode='valid')
-        c /= (np.sqrt(np.sum((x - x.mean()) ** 2)) * np.sqrt(e) + 1e-12)
+        # Sliding window energy via cumsum: np.convolve with a W-long boxcar
+        # is O(len*W) — ~4e10 MAC over a 3-minute track; this is O(len).
+        cs = np.concatenate(([0.0], np.cumsum(y0 * y0)))
+        e = cs[W:] - cs[:-W]
+        c /= (np.sqrt(np.sum(x0 ** 2)) * np.sqrt(np.maximum(e, 0.0)) + 1e-12)
         rs.append(float(np.max(np.abs(c))))
     return 1.0 - float(np.median(rs)) if rs else 1.0
 

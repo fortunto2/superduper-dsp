@@ -619,18 +619,24 @@ pub fn preset_text_to_value<'a>(
 /// "release", never "re-key". The latch resets with the processor (a new
 /// `SidechainSnapshot` at activate), so un-routing a key mid-session keys
 /// zeros until reactivation — the acceptable edge of this trade.
+/// Where the key is coming from — resolved once, then stable. An enum
+/// instead of two booleans after the two-flag version needed a paragraph to
+/// explain why its fallback had stopped copying after one block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeySource {
+    /// Nothing non-silent has arrived on any key path yet.
+    Unknown,
+    /// The declared sidechain port delivered audio; it owns the key forever.
+    DeclaredPort,
+    /// The host left the declared port silent and the key lives on main-port
+    /// channels 3/4 (REAPER hands a 4-channel track to the MAIN port).
+    MainCh34,
+}
+
 pub struct SidechainSnapshot {
     pub l: Box<[f32]>,
     pub r: Box<[f32]>,
-    /// Latched by the DECLARED sidechain port. Once true, the fallback below
-    /// is never consulted again — a host that routes properly owns the key.
-    routed: bool,
-    /// Latched by the main-port channels-3/4 fallback. Kept separate from
-    /// `routed` on purpose: the first version used one flag, and the fallback
-    /// turned itself off after one block — its own guard read the latch it
-    /// had just set, so the key went silent 10 ms into playback while
-    /// sc_present stayed true.
-    fb_routed: bool,
+    src: KeySource,
 }
 
 impl SidechainSnapshot {
@@ -638,13 +644,12 @@ impl SidechainSnapshot {
         Self {
             l: vec![0.0; max_frames].into_boxed_slice(),
             r: vec![0.0; max_frames].into_boxed_slice(),
-            routed: false,
-            fb_routed: false,
+            src: KeySource::Unknown,
         }
     }
 
     pub fn routed(&self) -> bool {
-        self.routed || self.fb_routed
+        self.src != KeySource::Unknown
     }
 
     /// Snapshot input port `port` for this block and return the latched
@@ -658,64 +663,62 @@ impl SidechainSnapshot {
         let n_frames = (audio.frames_count() as usize).min(self.l.len());
         self.l[..n_frames].fill(0.0);
         self.r[..n_frames].fill(0.0);
+
         let mut got_key = false;
         if let Some(sc_port) = audio.input_port(port as usize) {
             if let Some(chans) = sc_port.channels()?.into_f32() {
-                if let Some(l) = chans.channel(0) {
-                    let n = n_frames.min(l.len());
-                    self.l[..n].copy_from_slice(&l[..n]);
-                    if l.iter().take(n).any(|&x| x != 0.0) {
-                        self.routed = true;
-                        got_key = true;
-                    }
-                }
-                if let Some(r) = chans.channel(1) {
-                    let n = n_frames.min(r.len());
-                    self.r[..n].copy_from_slice(&r[..n]);
-                    if r.iter().take(n).any(|&x| x != 0.0) {
-                        self.routed = true;
-                        got_key = true;
-                    }
-                } else {
-                    self.r[..n_frames].copy_from_slice(&self.l[..n_frames]);
+                if Self::copy_pair(&mut self.l, &mut self.r, &chans, 0, 1, n_frames,
+                                   self.src == KeySource::DeclaredPort) {
+                    self.src = KeySource::DeclaredPort;
+                    got_key = true;
                 }
             }
         }
         // Host fallback: REAPER hands a 4-channel track to the MAIN port and
-        // leaves the declared sidechain port silent, so channels 3/4 carry the
-        // key that channels 1/2 of port 1 were supposed to. Measured in
-        // REAPER 7.77: with the key proven to reach track channels 3/4, the
-        // compressor's gain reduction still correlated -0.69 with its own
-        // input and +0.20 with the key — it was detecting off the main input.
-        // Only consulted while the latch is still open and this block brought
-        // nothing on the real port, so a host that routes properly never
-        // reaches this path.
-        if !got_key && !self.routed {
+        // leaves the declared sidechain port silent, so channels 3/4 carry
+        // the key. Copies EVERY block while the declared port has never
+        // delivered (the copy IS the key); the latch only decides
+        // sc_present. A host that routes properly never reaches this path.
+        if !got_key && self.src != KeySource::DeclaredPort {
             if let Some(main) = audio.input_port(0) {
                 if let Some(chans) = main.channels()?.into_f32() {
-                    if let Some(l) = chans.channel(2) {
-                        // Copy every block, not only on the block that first
-                        // carries signal — the latch decides sc_present, the
-                        // copy IS the key from here on.
-                        let n = n_frames.min(l.len());
-                        self.l[..n].copy_from_slice(&l[..n]);
-                        if l.iter().take(n).any(|&x| x != 0.0) {
-                            self.fb_routed = true;
-                        }
-                        match chans.channel(3) {
-                            Some(r) => {
-                                let n = n_frames.min(r.len());
-                                self.r[..n].copy_from_slice(&r[..n]);
-                                if r.iter().take(n).any(|&x| x != 0.0) {
-                                    self.fb_routed = true;
-                                }
-                            }
-                            None => self.r[..n_frames].copy_from_slice(&self.l[..n_frames]),
-                        }
+                    if Self::copy_pair(&mut self.l, &mut self.r, &chans, 2, 3, n_frames,
+                                       self.src == KeySource::MainCh34) {
+                        self.src = KeySource::MainCh34;
                     }
                 }
             }
         }
-        Ok(self.routed || self.fb_routed)
+        Ok(self.src != KeySource::Unknown)
+    }
+
+    /// Copy channels `li`/`ri` into the key buffers (mono key mirrored into
+    /// both lanes) and report whether anything non-silent arrived. The
+    /// non-zero scan is skipped once `latched` — after the first hit it is
+    /// pure waste (~100k compares/s at 512-frame blocks).
+    fn copy_pair<'b>(
+        dst_l: &mut [f32],
+        dst_r: &mut [f32],
+        chans: &clack_plugin::process::audio::InputChannels<'b, f32>,
+        li: u32,
+        ri: u32,
+        n_frames: usize,
+        latched: bool,
+    ) -> bool {
+        let Some(l) = chans.channel(li) else { return latched };
+        let n = n_frames.min(l.len());
+        dst_l[..n].copy_from_slice(&l[..n]);
+        let mut hot = latched || l.iter().take(n).any(|&x| x != 0.0);
+        match chans.channel(ri) {
+            Some(r) => {
+                let n2 = n_frames.min(r.len());
+                dst_r[..n2].copy_from_slice(&r[..n2]);
+                if !hot {
+                    hot = r.iter().take(n2).any(|&x| x != 0.0);
+                }
+            }
+            None => dst_r[..n].copy_from_slice(&dst_l[..n]),
+        }
+        hot
     }
 }

@@ -8,7 +8,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_CEILING, P_DITHER, P_INPUT, P_LOOKAHEAD, P_RELEASE, P_TRUE_PEAK, PARAMS, SharedParams};
+use crate::{P_CEILING, P_DITHER, P_INPUT, P_RELEASE, P_TRUE_PEAK, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 400;
@@ -102,8 +102,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             ui.label(egui::RichText::new(format!("S {} LUFS", fmt(st))).color(core_gui::GREEN).monospace());
             ui.label(egui::RichText::new(format!("I {} LUFS", fmt(li))).color(core_gui::GREEN_BRIGHT).monospace());
             let tp_col = if tp > -1.0 { egui::Color32::from_rgb(255, 90, 70) } else { core_gui::GREEN_BRIGHT };
-            let tps = if tp.is_finite() { format!("TP {tp:5.1} dBTP") } else { "TP    -- dBTP".to_string() };
-            ui.label(egui::RichText::new(tps).color(tp_col).monospace());
+            ui.label(egui::RichText::new(format!("TP {} dBTP", fmt(tp))).color(tp_col).monospace());
             if ui.button(egui::RichText::new("reset").monospace()).clicked() {
                 state.shared.meter_reset.store(true, Ordering::Relaxed);
             }
@@ -117,7 +116,6 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             });
             core_gui::section(ui, "Envelope", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_RELEASE], &PARAMS[P_RELEASE], &state.shared.dirty_params[P_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RELEASE);
-                core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOKAHEAD);
             });
             core_gui::section(ui, "Detection", |ui| {
                 core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_TRUE_PEAK], &PARAMS[P_TRUE_PEAK], &state.shared.dirty_params[P_TRUE_PEAK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_TRUE_PEAK);

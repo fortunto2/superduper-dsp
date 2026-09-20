@@ -164,10 +164,8 @@ impl Graph {
         // A corrupt row_start table must be an error, not an index-out-of-bounds
         // panic: this runs behind extern "C" on iOS, where a panic aborts the
         // app instead of returning the documented null.
-        for i in 0..n {
-            if starts[i] > starts[i + 1] || starts[i + 1] as usize > e {
-                return Err(bad("row_start out of order or past the edge count"));
-            }
+        if starts.windows(2).any(|w| w[0] > w[1]) || starts[n] as usize > e {
+            return Err(bad("row_start out of order or past the edge count"));
         }
         o += (n + 1) * 4;
         let all_targets: Vec<u32> = (0..e).map(|i| u32_at(bytes, o + i * 4).unwrap()).collect();

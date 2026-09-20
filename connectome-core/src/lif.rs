@@ -184,8 +184,14 @@ impl Lif {
             let graph = &self.graph;
             let spiked = &self.spiked;
             let scale = p.weight_scale;
-            self.accumulator.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
-                let base = c * CHUNK;
+            // Work scales with the CHUNK COUNT (every worker rescans all
+            // spiking rows), so split by thread count, not by the cell-update
+            // CHUNK: 17 range-scans where 8 would do is 2x wasted edge reads.
+            // Determinism is untouched — any destination partition sums each
+            // target in spiked order.
+            let range = self.accumulator.len().div_ceil(rayon::current_num_threads().max(1)).max(1);
+            self.accumulator.par_chunks_mut(range).enumerate().for_each(|(c, out)| {
+                let base = c * range;
                 let end = base + out.len();
                 out.iter_mut().for_each(|a| *a = 0.0);
                 for &src in spiked {

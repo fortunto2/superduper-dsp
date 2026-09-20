@@ -139,3 +139,14 @@ makes the result yours rather than a copy.
 `balance.py`), converged to within 1 dB on six of seven bands. `build_rpp.py` +
 `apply_fx.py` put the same mix into REAPER for hand work, reading the settings
 from the very TOML the render used, so there is one source of truth.
+
+## Снятие партий в MIDI
+
+Ноты, сетку и деление на инструменты снимает MuScriptor по полному миксу, стемы
+не нужны, и барабаны приходят в GM-карте прямо для нашего Drum. На этом же
+Gesaffelstein: темп 102.994 против измеренного 102.985, бас G1, кик 51 доля
+подряд без пропусков. Чему нельзя верить — velocity (все ноты 100), длительности
+(педальную ноту дробит на атаки) и названиям инструментов.
+
+Команды, размеры моделей, скорость на Apple Silicon и проверка результата —
+скилл **audio-to-midi**. Пример: `demos8/ref/hateorglory_main40.mid`.

@@ -478,6 +478,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // AI-NOTE: temporary — REAPER never delivers the key to this plugin
         // while ReaComp on the same track gets it. Records what the host hands
         // us for the first blocks; delete once the routing question is closed.
+        // AI-TODO: remove by 2026-10 — the REAPER question is answered (stale mmap),
+        // this stays only until one more host is checked.
         // Behind a feature because it allocates, which process() must not do —
         // `process_does_not_allocate` fails the moment it is compiled in.
         #[cfg(feature = "host_probe")]

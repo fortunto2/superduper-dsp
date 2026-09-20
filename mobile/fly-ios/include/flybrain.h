@@ -1,7 +1,9 @@
 // C ABI for the connectome simulation running inside Flykeeper.
 //
 // Threading: create/destroy/load on the main thread. `fly_step` is called from the render
-// loop. No call here allocates after `fly_create`, so the step is safe to run at frame rate.
+// loop. After `fly_create` the per-cell buffers are never reallocated; a step still
+// allocates small per-chunk spike lists (a few KB on a quiet brain), so it is frame-rate
+// safe in practice but not allocation-free in the malloc sense.
 #ifndef FLYBRAIN_H
 #define FLYBRAIN_H
 #include <stdint.h>

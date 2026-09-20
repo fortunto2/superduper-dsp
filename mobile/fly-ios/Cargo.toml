@@ -15,6 +15,3 @@ crate-type = ["staticlib"]
 # Simulation only — no gui, no clack, nothing that pulls a windowing stack onto iOS.
 connectome-core = { path = "../../connectome-core" }
 
-[profile.release]
-opt-level = 3
-lto = true

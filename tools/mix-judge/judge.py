@@ -61,9 +61,13 @@ def content_dist(ref, sub, sr, win=0.25, lag_ms=50):
         y = b[max(0, st - L):min(n, st + W + L)]
         if x.std() < 1e-9 or y.std() < 1e-9:
             continue
-        c = np.correlate(y - y.mean(), x - x.mean(), mode='valid')
-        c /= (np.sqrt(np.sum((x - x.mean()) ** 2))
-              * np.sqrt(np.sum((y[:W] - y[:W].mean()) ** 2)) + 1e-12)
+        y0 = y - y.mean()
+        c = np.correlate(y0, x - x.mean(), mode='valid')
+        # Нормировка энергией ИМЕННО совпавшего окна на каждом лаге, а не y[:W]:
+        # при меняющемся уровне фиксированное окно завышало знаменатель и
+        # честная сдача читалась как потеря содержания.
+        e = np.convolve(y0 * y0, np.ones(W), mode='valid')
+        c /= (np.sqrt(np.sum((x - x.mean()) ** 2)) * np.sqrt(e) + 1e-12)
         rs.append(float(np.max(np.abs(c))))
     return 1.0 - float(np.median(rs)) if rs else 1.0
 
@@ -94,7 +98,7 @@ def align(ref, sub, sr, max_lag_s=0.5):
     N=1<<int(np.ceil(np.log2(2*n)))
     c=np.fft.irfft(np.fft.rfft(b-b.mean(),N)*np.conj(np.fft.rfft(a-a.mean(),N)),N)
     c=np.concatenate([c[-L:], c[:L+1]])
-    lag=int(np.argmax(c))-L
+    lag=int(np.argmax(np.abs(c)))-L   # |c|: полярно-инвертированная, но верная сдача не должна ловить ложный лаг
     if lag>0:      sub2=sub[lag:]
     elif lag<0:    sub2=np.vstack([np.zeros((-lag,)+sub.shape[1:]), sub])
     else:          sub2=sub

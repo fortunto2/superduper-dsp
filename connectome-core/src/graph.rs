@@ -12,7 +12,9 @@ pub enum GraphError {
     MalformedRow { line: usize, text: String },
     /// An edge pointing at a neuron that never appears as a source or target elsewhere.
     /// Dropping it silently is how a thresholded export quietly loses a quarter of its
-    /// graph, so it is an error rather than a filter.
+    /// graph. HONESTY NOTE: no constructor raises this yet — thresholded loads still
+    /// filter silently. The variant stays so the contract is visible; raising it is
+    /// pending a decision on whether legacy exports must start failing.
     DanglingNode { line: usize, id: u64 },
     /// Zero edges survived. An empty graph integrates perfectly and proves nothing, so it
     /// is refused at load rather than at the first confusing receipt.
@@ -49,7 +51,8 @@ pub struct Graph {
     /// `row_start[i]..row_start[i + 1]` indexes the out-edges of neuron `i`.
     pub row_start: Vec<u32>,
     pub targets: Vec<u32>,
-    /// Synapse counts, normalised to a per-edge conductance at load.
+    /// Raw synapse counts as f32. NOT normalised at load — `weight_scale` in
+    /// `LifParams` is where counts become conductance.
     pub weights: Vec<f32>,
     /// Dense index → original connectome id, so a finding can be looked up in Codex.
     pub ids: Vec<u64>,
@@ -64,7 +67,9 @@ impl Graph {
         self.targets.len()
     }
 
-    /// Every constructor leaves each row's targets sorted ascending; `Lif::step` depends on it.
+    /// CSV loads sort each row's targets ascending; `from_fcb` trusts the file
+    /// and does NOT re-sort. Nothing in `Lif::step` depends on the order — do not
+    /// build on it without adding the check here.
     ///
     /// Parse `pre_id,post_id,syn_count`, keeping edges at or above `threshold` synapses.
     ///
@@ -156,6 +161,14 @@ impl Graph {
         let ids: Vec<u64> = (0..n).map(|i| u64::from_le_bytes(bytes[o + i * 8..o + i * 8 + 8].try_into().unwrap())).collect();
         o += n * 8;
         let starts: Vec<u32> = (0..=n).map(|i| u32_at(bytes, o + i * 4).unwrap()).collect();
+        // A corrupt row_start table must be an error, not an index-out-of-bounds
+        // panic: this runs behind extern "C" on iOS, where a panic aborts the
+        // app instead of returning the documented null.
+        for i in 0..n {
+            if starts[i] > starts[i + 1] || starts[i + 1] as usize > e {
+                return Err(bad("row_start out of order or past the edge count"));
+            }
+        }
         o += (n + 1) * 4;
         let all_targets: Vec<u32> = (0..e).map(|i| u32_at(bytes, o + i * 4).unwrap()).collect();
         o += e * 4;

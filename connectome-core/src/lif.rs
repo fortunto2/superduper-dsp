@@ -63,7 +63,6 @@ pub struct Lif {
     rate: Vec<f32>,
     /// Per-thread scatter targets for the parallel step, kept between steps: allocating
     /// 550 KB per thread per millisecond is not free.
-    locals: Vec<Vec<f32>>,
     seed: u64,
     steps: u64,
     total_spikes: u64,
@@ -118,7 +117,6 @@ impl Lif {
             spiked: Vec::with_capacity(n / 8),
             accumulator: vec![0.0; n],
             rate: vec![0.0; n],
-            locals: Vec::new(),
             seed,
             steps: 0,
             total_spikes: 0,
@@ -171,35 +169,34 @@ impl Lif {
         // fired is what keeps this cheap: a fly brain is quiet most of the time, so this
         // touches a few percent of the edges per step rather than all of them.
         if parallel && self.spiked.len() >= 256 {
-            // Parallel over sources. The cost here is a cache miss per spiking row, and
-            // splitting the rows across threads is what divides that latency; a split by
-            // destination would make every thread miss on every row. Each thread scatters
-            // into its own accumulator (reused, not reallocated), then the accumulators are
-            // summed in parallel slices.
-            let threads = rayon::current_num_threads();
-            if self.locals.len() != threads || self.locals.first().map_or(true, |l| l.len() != n) {
-                self.locals = (0..threads).map(|_| vec![0.0f32; n]).collect();
-            }
+            // Parallel over DESTINATION ranges, not over sources. The earlier
+            // source-split version summed each target's contributions grouped
+            // by thread-chunk, so f32 addition order — and therefore the spike
+            // train of a chaotic system — depended on rayon's thread count.
+            // Here every worker walks the same spiked list in the same order
+            // and keeps only the targets in its own accumulator slice: the
+            // sum for any given cell is always taken in spiked order, whatever
+            // the machine. That is what makes a receipt from a phone checkable
+            // against a Mac. Costs: each worker scans every spiking row (reads
+            // scale with thread count), but only spiking rows — a few percent
+            // of edges on a quiet brain — and the per-thread scratch vectors
+            // (threads × n floats, ~4.5 MB on the full tier) are gone.
             let graph = &self.graph;
-            let per_thread = self.spiked.len().div_ceil(threads).max(64);
             let spiked = &self.spiked;
             let scale = p.weight_scale;
-            self.locals.par_iter_mut().enumerate().for_each(|(t, acc)| {
-                acc.iter_mut().for_each(|a| *a = 0.0);
-                let Some(srcs) = spiked.chunks(per_thread).nth(t) else { return };
-                for &src in srcs {
+            self.accumulator.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
+                let base = c * CHUNK;
+                let end = base + out.len();
+                out.iter_mut().for_each(|a| *a = 0.0);
+                for &src in spiked {
                     let lo = graph.row_start[src as usize] as usize;
                     let hi = graph.row_start[src as usize + 1] as usize;
                     for i in lo..hi {
-                        acc[graph.targets[i] as usize] += graph.weights[i] * scale;
+                        let t = graph.targets[i] as usize;
+                        if t >= base && t < end {
+                            out[t - base] += graph.weights[i] * scale;
+                        }
                     }
-                }
-            });
-            let locals = &self.locals;
-            self.accumulator.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
-                let base = c * CHUNK;
-                for (k, o) in out.iter_mut().enumerate() {
-                    *o = locals.iter().map(|l| l[base + k]).sum();
                 }
             });
         } else {
@@ -302,6 +299,10 @@ impl Lif {
     }
 
     pub fn reset(&mut self, seed: u64) {
+        // Stimulus is cleared too: a touch injected before reset must not keep
+        // driving cells after it, or the run is no longer reproducible from
+        // its seed — which is the whole reason reset takes one.
+        self.stimulus.iter_mut().for_each(|s| *s = 0.0);
         self.v.iter_mut().for_each(|v| *v = self.params.v_rest);
         self.refractory.iter_mut().for_each(|r| *r = 0.0);
         self.rate.iter_mut().for_each(|r| *r = 0.0);

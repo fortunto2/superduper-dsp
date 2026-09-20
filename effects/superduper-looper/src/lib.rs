@@ -260,7 +260,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         init_logging();
         let sr = cfg.sample_rate as f32;
         slog!("activate sr={}", sr);
-        slog!("looper activate sr={}", sr);
         let cap = (sr * MAX_LOOP_SECONDS) as usize;
         let max_frames = cfg.max_frames_count as usize;
         Ok(Self {

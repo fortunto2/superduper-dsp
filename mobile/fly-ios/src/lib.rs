@@ -130,13 +130,16 @@ fn bytemuck_free_flatten(p: &[[f32; 3]]) -> &[f32] {
     unsafe { std::slice::from_raw_parts(p.as_ptr() as *const f32, p.len() * 3) }
 }
 
-/// Another brain over the same wiring: a second fly costs its state, about 2.8 MB on the
-/// full connectome, and not another copy of the 31 MB graph. Null if `from` is null.
+/// Another brain over the same wiring: a second fly costs its state (~2.8 MB on the full
+/// connectome) plus a copy of the anatomy positions (~1.7 MB), not another copy of the
+/// 31 MB graph. The positions MUST come along: fly_copy_positions() returning 0 is the
+/// documented "synthetic brain" signal, and a shared fly over a real .fcb is not one.
+/// Null if `from` is null.
 #[no_mangle]
 pub extern "C" fn fly_create_shared(from: *const FlyBrain, seed: u64) -> *mut FlyBrain {
     let Some(b) = (unsafe { from.as_ref() }) else { return std::ptr::null_mut() };
     let sim = Lif::new(b.sim.shared_graph(), *b.sim.params(), seed);
-    Box::into_raw(Box::new(FlyBrain { sim, synthetic: b.synthetic, positions: Vec::new() }))
+    Box::into_raw(Box::new(FlyBrain { sim, synthetic: b.synthetic, positions: b.positions.clone() }))
 }
 
 #[no_mangle]

@@ -8,6 +8,8 @@ members = [
     "sdk-macros",
     "sdk-build",
     "synth-core",
+    "connectome-core",
+    "mobile/fly-ios",
     "effects/example-passthrough",
     "effects/superduper-reverb",
     "effects/superduper-supermass",
@@ -46,7 +48,7 @@ members = [
     "tools/sdsp-chain",
     "tools/sdsp-test-kit",
     "tools/sdsp-mash",
-    "tools/nam-test","tools/nam-bench","tools/wave-pitch-bench",
+    "tools/nam-test","tools/nam-bench","tools/wave-pitch-bench","tools/pitch-bench","tools/sdsp-tune",
     "mobile/sdsp-ios",
 ]
 exclude = [

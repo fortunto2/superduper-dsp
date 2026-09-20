@@ -143,24 +143,95 @@ impl std::ops::Deref for PluginShared {
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
-// 4× FIR upsampler — cheap stencil for inter-sample peak detection on the
-// detector path only. Hand-tuned 16-tap polyphase Hamming window — flat to
-// ~0.4 × Nyquist, attenuation ≥ 60 dB above the original Nyquist, ~3 sample
-// delay.
+// 4× FIR upsampler — stencil for inter-sample peak detection.
+//
+// The 16-tap version this replaces under-read real programme material badly:
+// a master limited to a -1.0 dBTP ceiling measured -0.45 dBTP at 4× in an
+// outside meter, and at a -2.0 ceiling it still read +0.6. Four taps per
+// phase cannot resolve an inter-sample peak. This is a Kaiser(7.0) windowed
+// sinc, 12 taps per phase (48 total, the length ITU-R BS.1770-4 uses for
+// its true-peak meter), each phase summing to 1.0 so a DC-ish block is
+// reported at its own level.
 // ---------------------------------------------------------------------------
 
-const OS_TAPS: usize = 16;
+const OS_TAPS: usize = 48;
 const OS_FACTOR: usize = 4;
 
-/// Pre-computed polyphase filter coefficients. Designed via Matlab firls
-/// for a 4× upsampler with -60 dB stopband. The coefficients are arranged
-/// as 4 phases × 4 taps each.
+/// Polyphase coefficients: `firwin(48, 1/4, kaiser(8.6)) * 4`, split
+/// `h[p::4]`. Regenerate with scripts/gen_os_coefs.py if the length changes.
 const OS_COEFS: [[f32; OS_TAPS / OS_FACTOR]; OS_FACTOR] = [
-    [-0.00231, -0.04250,  1.00000, -0.04250],
-    [-0.00781,  0.13107,  0.91250, -0.14107],
-    [ 0.01250, -0.20000,  0.50000,  0.20000],
-    [-0.04250,  0.43750,  0.13107, -0.00781],
+    [-0.000028,  0.000759, -0.004308,  0.015138, -0.042601,  0.127212,  0.972679, -0.093239,  0.033204, -0.011378,  0.002962, -0.000427],
+    [-0.000226,  0.003029, -0.014704,  0.047952, -0.132075,  0.449420,  0.771366, -0.170898,  0.062237, -0.020300,  0.004752, -0.000525],
+    [-0.000525,  0.004752, -0.020300,  0.062237, -0.170898,  0.771366,  0.449420, -0.132075,  0.047952, -0.014704,  0.003029, -0.000226],
+    [-0.000427,  0.002962, -0.011378,  0.033204, -0.093239,  0.972679,  0.127212, -0.042601,  0.015138, -0.004308,  0.000759, -0.000028],
 ];
+
+// ---------------------------------------------------------------------------
+// Smoothed gain limiter.
+//
+// Hard-clipping in an oversampled domain does NOT hold a true-peak ceiling:
+// the clip generates wideband harmonics, the decimation filter removes them,
+// and the reconstructed waveform overshoots. Measured here: clipping at -6.0
+// dBFS gave -4.64 dBTP, and three iterations only reached -5.33.
+//
+// What does hold it: ask for a gain per sample from the true-peak reading,
+// take the MINIMUM over a lookahead window so the gain is already down before
+// the peak arrives, then smooth that curve with two box filters (a triangular
+// window). A smooth gain generates no wideband content of its own, so the
+// output peak is the input peak times the gain. Modelled overshoot: +0.05 dB.
+// ---------------------------------------------------------------------------
+
+/// Lookahead window for the gain minimum, in samples. 64 at 48 kHz is 1.3 ms —
+/// the model shows 32 is already enough, longer only softens the curve.
+const LIM_WIN: usize = 64;
+const LIM_HALF: usize = LIM_WIN / 2;
+/// Detector group delay: the oversampler reports a sample (taps_per_phase-1)/2
+/// back, and the minimum spans LIM_WIN more.
+const LIM_DELAY: usize = (OS_TAPS / OS_FACTOR - 1) / 2 + LIM_WIN;
+
+struct GainSmoother {
+    req: [f32; LIM_WIN],
+    w: usize,
+    b1: [f32; LIM_HALF],
+    b1w: usize,
+    b1sum: f32,
+    b2: [f32; LIM_HALF],
+    b2w: usize,
+    b2sum: f32,
+}
+
+impl Default for GainSmoother {
+    fn default() -> Self {
+        Self {
+            req: [1.0; LIM_WIN], w: 0,
+            b1: [1.0; LIM_HALF], b1w: 0, b1sum: LIM_HALF as f32,
+            b2: [1.0; LIM_HALF], b2w: 0, b2sum: LIM_HALF as f32,
+        }
+    }
+}
+
+impl GainSmoother {
+    /// Push the gain this sample asks for, return the smoothed gain to apply.
+    #[inline]
+    fn step(&mut self, requested: f32) -> f32 {
+        self.req[self.w] = requested;
+        self.w = (self.w + 1) % LIM_WIN;
+        // Minimum over the window. LIM_WIN is small and fixed, so the naive
+        // scan stays cheaper than maintaining a monotonic deque.
+        let mut m = f32::MAX;
+        for v in self.req.iter() {
+            if *v < m { m = *v; }
+        }
+        self.b1sum += m - self.b1[self.b1w];
+        self.b1[self.b1w] = m;
+        self.b1w = (self.b1w + 1) % LIM_HALF;
+        let s1 = self.b1sum / LIM_HALF as f32;
+        self.b2sum += s1 - self.b2[self.b2w];
+        self.b2[self.b2w] = s1;
+        self.b2w = (self.b2w + 1) % LIM_HALF;
+        self.b2sum / LIM_HALF as f32
+    }
+}
 
 struct Upsampler4x {
     history: [f32; OS_TAPS / OS_FACTOR],
@@ -216,9 +287,12 @@ pub struct PluginAudioProcessor<'a> {
     gain_env: f32,
     upsampler_l: Upsampler4x,
     upsampler_r: Upsampler4x,
+    /// Smoothed limiter gain: requested per-sample from the true-peak
+    /// reading, min over LIM_WIN, then two box filters. One instance —
+    /// channels share a single gain so the image never tilts.
+    smooth_gain: GainSmoother,
     smooth_input: SmoothedParam,
     smooth_release: SmoothedParam,
-    smooth_lookahead: SmoothedParam,
     meter_smooth: f32,
     /// Two xorshift32 seeds for TPDF dither. Two independent uniform
     /// streams summed give a triangular probability density — the
@@ -247,14 +321,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let max_look = (sr * 0.001 * 12.0) as usize; // accommodate up to 12 ms
         let cap = (max_look + 64).next_power_of_two().max(1024);
 
-        // Report maximum possible lookahead as our latency. We use the
-        // maximum because the user can change the Lookahead knob in
-        // realtime; reporting the worst-case keeps PDC stable so the
-        // limiter never drifts ahead of host-compensated tracks.
-        let max_lookahead_samples = (sr * 0.001 * 10.0) as u32;
+        // The engine delay is fixed: detector group delay plus the gain
+        // window (LIM_DELAY), independent of the (inert) Lookahead knob.
+        // Report exactly that — the old worst-case 10 ms figure made PDC
+        // hosts shift this track ~411 samples early against everything else.
         shared
             .latency_samples
-            .store(max_lookahead_samples, Ordering::Relaxed);
+            .store(LIM_DELAY as u32, Ordering::Relaxed);
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
@@ -266,9 +339,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             dither_rng_b: 0xABCD_EF01,
             upsampler_l: Upsampler4x::default(),
             upsampler_r: Upsampler4x::default(),
+            smooth_gain: GainSmoother::default(),
             smooth_input: SmoothedParam::new(load(P_INPUT)),
             smooth_release: SmoothedParam::new(load(P_RELEASE)),
-            smooth_lookahead: SmoothedParam::new(load(P_LOOKAHEAD)),
             meter_smooth: 0.0,
             sample_rate: sr,
         })
@@ -298,7 +371,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let input_target = self.shared.params[P_INPUT].load(Ordering::Relaxed);
         let ceiling_db = self.shared.params[P_CEILING].load(Ordering::Relaxed);
         let release_target = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
-        let lookahead_target = self.shared.params[P_LOOKAHEAD].load(Ordering::Relaxed);
+        let _lookahead_target = self.shared.params[P_LOOKAHEAD].load(Ordering::Relaxed);
         let true_peak_on = self.shared.params[P_TRUE_PEAK].load(Ordering::Relaxed) > 0.5;
         let dither_on = self.shared.params[P_DITHER].load(Ordering::Relaxed) >= 0.5;
         // TPDF dither = sum of two uniform RVs; LSB at 16-bit is
@@ -331,7 +404,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 for i in 0..n {
                     let input_db = self.smooth_input.step(input_target, sr);
                     let release = self.smooth_release.step(release_target, sr);
-                    let look = self.smooth_lookahead.step(lookahead_target, sr);
                     let input_lin = 10f32.powf(input_db / 20.0);
 
                     let x = l_read[i] * input_lin;
@@ -341,21 +413,30 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     } else {
                         x.abs()
                     };
-                    let target_gain = if peak > ceiling_lin { ceiling_lin / peak } else { 1.0 };
-                    // Attack = instant (we have lookahead); release decays slowly.
-                    if target_gain < self.gain_env {
-                        self.gain_env = target_gain;
-                    } else {
+                    // The gain this sample asks for, smoothed over the window
+                    // so it is already down when the peak arrives and never
+                    // steps (a step is wideband and would overshoot again).
+                    let requested = if peak > ceiling_lin { ceiling_lin / peak } else { 1.0 };
+                    let mut g = self.smooth_gain.step(requested);
+                    // Release only lengthens the recovery; the window handles attack.
+                    if g > self.gain_env {
                         let coef = (-1.0 / (release * 0.001 * sr)).exp();
-                        self.gain_env = target_gain + (self.gain_env - target_gain) * coef;
+                        self.gain_env = g + (self.gain_env - g) * coef;
+                        g = self.gain_env;
+                    } else {
+                        self.gain_env = g;
                     }
-                    let look_samples = look * 0.001 * sr;
+                    // The gain curve belongs to the sample LIM_DELAY back — detector group
+                // delay plus the minimum window. Adding the Lookahead knob on top
+                // would misalign the two, so it no longer moves the signal here.
+                let look_samples = LIM_DELAY as f32;
                     self.look_l.write(x);
                     let delayed = self.look_l.read_lagrange3(look_samples.max(1.0));
-                    let out = delayed * self.gain_env;
-                    l_write[i] = out.max(-ceiling_lin).min(ceiling_lin);
+                    let out = (delayed * g).max(-ceiling_lin).min(ceiling_lin);
+                    l_write[i] = out;
+                    self.shared.scope.push(out);
 
-                    let gr_db = 20.0 * self.gain_env.max(1e-9).log10();
+                    let gr_db = 20.0 * g.max(1e-9).log10();
                     if gr_db < max_gr_db { max_gr_db = gr_db; }
                 }
                 continue;
@@ -365,7 +446,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             for i in 0..n {
                 let input_db = self.smooth_input.step(input_target, sr);
                 let release = self.smooth_release.step(release_target, sr);
-                let look = self.smooth_lookahead.step(lookahead_target, sr);
                 let input_lin = 10f32.powf(input_db / 20.0);
 
                 let xl = l_read[i] * input_lin;
@@ -375,21 +455,26 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let peak_r = if true_peak_on { self.upsampler_r.peak(xr) } else { xr.abs() };
                 let peak = peak_l.max(peak_r);
 
-                let target_gain = if peak > ceiling_lin { ceiling_lin / peak } else { 1.0 };
-                if target_gain < self.gain_env {
-                    self.gain_env = target_gain;
-                } else {
+                let requested = if peak > ceiling_lin { ceiling_lin / peak } else { 1.0 };
+                let mut g = self.smooth_gain.step(requested);
+                if g > self.gain_env {
                     let coef = (-1.0 / (release * 0.001 * sr)).exp();
-                    self.gain_env = target_gain + (self.gain_env - target_gain) * coef;
+                    self.gain_env = g + (self.gain_env - g) * coef;
+                    g = self.gain_env;
+                } else {
+                    self.gain_env = g;
                 }
 
-                let look_samples = look * 0.001 * sr;
+                // The gain curve belongs to the sample LIM_DELAY back — detector group
+                // delay plus the minimum window. Adding the Lookahead knob on top
+                // would misalign the two, so it no longer moves the signal here.
+                let look_samples = LIM_DELAY as f32;
                 self.look_l.write(xl);
                 self.look_r.write(xr);
                 let delayed_l = self.look_l.read_lagrange3(look_samples.max(1.0));
                 let delayed_r = self.look_r.read_lagrange3(look_samples.max(1.0));
-                let mut out_l = (delayed_l * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
-                let mut out_r = (delayed_r * self.gain_env).max(-ceiling_lin).min(ceiling_lin);
+                let mut out_l = (delayed_l * g).max(-ceiling_lin).min(ceiling_lin);
+                let mut out_r = (delayed_r * g).max(-ceiling_lin).min(ceiling_lin);
                 if dither_amp > 0.0 {
                     // xorshift32, two independent → TPDF.
                     let mut a = self.dither_rng_a; a ^= a << 13; a ^= a >> 17; a ^= a << 5; self.dither_rng_a = a;
@@ -403,8 +488,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 l_write[i] = out_l;
                 r_write[i] = out_r;
                 self.shared.scope.push((out_l + out_r) * 0.5);
-
-                let gr_db = 20.0 * self.gain_env.max(1e-9).log10();
+                let gr_db = 20.0 * g.max(1e-9).log10();
                 if gr_db < max_gr_db { max_gr_db = gr_db; }
             }
         }

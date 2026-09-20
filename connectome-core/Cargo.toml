@@ -1,0 +1,23 @@
+# The shared connectome engine: a CSR graph and a leaky integrate-and-fire step.
+# Deliberately dependency-free apart from an RNG — this crate compiles for
+# aarch64-apple-ios, so nothing here may pull in gui, clack, egui or a windowing stack.
+[package]
+name = "connectome-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Connectome graph loading and leaky integrate-and-fire simulation, portable to iOS"
+
+[lib]
+name = "connectome_core"
+crate-type = ["rlib"]
+
+[dependencies]
+# Seeded and reproducible: a run that cannot be repeated cannot be tested. The step's own
+# noise is counter-based (see lif.rs) so it stays reproducible across thread counts; rand is
+# for the synthetic graph.
+rand = { version = "0.8", default-features = false, features = ["small_rng", "std"] }
+# The step is embarrassingly parallel per neuron; on a phone that is the difference between
+# a third of real time and real time for the full brain. Plain std threads, fine on iOS.
+rayon = "1"
+

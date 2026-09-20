@@ -174,7 +174,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         slog!(
-            "activate: sr={}, frames={}..={}",
+            "activate sr={}, frames={}..={}",
             audio_config.sample_rate, audio_config.min_frames_count, audio_config.max_frames_count
         );
         let mut net = supermass::build_wet();

@@ -236,7 +236,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        slog!("activate: sr={}", audio_config.sample_rate);
+        slog!("activate sr={}", audio_config.sample_rate);
         let sr = audio_config.sample_rate as f32;
         let max_samples = (sr * MAX_DELAY_SECONDS) as usize;
 

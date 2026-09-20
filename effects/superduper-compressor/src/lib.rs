@@ -475,6 +475,50 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // releases while a routed key is silent (the bug the latch fixes);
         // verified via sdsp-chain render + envelope measurement only.
         let sc_present = self.sc.capture(&mut audio, 1)?;
+        // AI-NOTE: temporary — REAPER never delivers the key to this plugin
+        // while ReaComp on the same track gets it. Records what the host hands
+        // us for the first blocks; delete once the routing question is closed.
+        // AI-TODO: remove by 2026-10 — the REAPER question is answered (stale mmap),
+        // this stays only until one more host is checked.
+        // Behind a feature because it allocates, which process() must not do —
+        // `process_does_not_allocate` fails the moment it is compiled in.
+        #[cfg(feature = "host_probe")]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as DbgO};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let n = N.fetch_add(1, DbgO::Relaxed);
+            if n % 470 == 0 {
+                let frames = audio.frames_count() as usize;
+                let mut line = format!("blk {n} frames={frames} sc_present={sc_present}");
+                for pi in 0..3u32 {
+                    match audio.input_port(pi as usize) {
+                        None => line.push_str(&format!(" port{pi}=absent")),
+                        Some(prt) => {
+                            let mut d = format!(" port{pi}=[");
+                            if let Some(ch) = prt.channels().ok().and_then(|c| c.into_f32()) {
+                                for ci in 0..6u32 {
+                                    match ch.channel(ci) {
+                                        Some(b) => {
+                                            let m = b.iter().take(frames).fold(0.0f32, |a, &v| a.max(v.abs()));
+                                            d.push_str(&format!("{m:.4} "));
+                                        }
+                                        None => break,
+                                    }
+                                }
+                            } else {
+                                d.push_str("not-f32");
+                            }
+                            d.push(']');
+                            line.push_str(&d);
+                        }
+                    }
+                }
+                line.push('\n');
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
+                    .open("/tmp/sdsp_compressor_ports.log") { let _ = f.write_all(line.as_bytes()); }
+            }
+        }
 
         // ---- Process main port (index 0) ----
         if let Some(mut main_pair) = audio.port_pair(0) {

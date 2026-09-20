@@ -1,4 +1,4 @@
-use crate::{P_ATTACK, P_KNEE, P_MAKEUP, P_MIX, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, PARAMS};
+use crate::{P_ATTACK, P_CURVE, P_RANGE, P_KNEE, P_MAKEUP, P_MIX, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, PARAMS};
 
 superduper_dsp_sdk::define_preset!(PARAMS);
 
@@ -64,6 +64,27 @@ pub static PRESETS: &[Preset] = &[
         (P_MAKEUP, 0.0),
         (P_SC_HPF, 0.0),
         (P_MIX, 1.0),
+    ]),
+
+    // Voice Duck — music under a voice, the job a broadcast ducker does.
+    // The point is Range: it caps how far the bed can drop no matter how loud
+    // the take got, so the mix never breathes. ReaComp and the UAD emulations
+    // have no such control — there you set depth by guessing threshold and
+    // ratio, and a shouted line ducks twice as deep as a spoken one.
+    // Slow-ish attack keeps consonants from punching a hole, the long release
+    // brings the bed back between phrases instead of per syllable, and the
+    // HPF stops the singer's chest notes from doing the triggering.
+    Preset::from_overrides("Voice Duck", &[
+        (P_THRESHOLD, -30.0),
+        (P_RATIO, 10.0),
+        (P_ATTACK, 12.0),
+        (P_RELEASE, 350.0),
+        (P_KNEE, 6.0),
+        (P_MAKEUP, 0.0),
+        (P_SC_HPF, 100.0),
+        (P_MIX, 1.0),
+        (P_RANGE, 3.0),
+        (P_CURVE, 2.0),
     ]),
 
     // Parallel "NY" — heavy compression at 50/50 mix for thickness on drums.

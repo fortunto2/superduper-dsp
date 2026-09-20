@@ -252,7 +252,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        slog!("activate: sr={}", audio_config.sample_rate);
+        slog!("activate sr={}", audio_config.sample_rate);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let sr = audio_config.sample_rate as f32;
         let mut me = Self {

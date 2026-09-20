@@ -209,6 +209,17 @@ plugin = "limiter"
 params = { Input = 0.0, Ceiling = -1.0, Release = 60.0, "True Peak" = 1.0 }
 ```
 
+Since 2026-09-19 the limiter actually holds its ceiling: a smoothed-gain
+engine keeps true peak within 0.1 dB of the setting (it used to overshoot by
+up to 1.6 dB). Set `Ceiling` to the number you want on the meter — no more
+padding it 1.5 dB low — and expect ~70 samples more latency, which the host
+compensates. **Anything mastered before that date may read hotter than its
+ceiling: re-measure old renders before re-releasing them.** Two more master
+rules paid for in blood: the **master fader stays at 0** (a pulled-down
+fader eats the limiter's ceiling downstream and looks exactly like a broken
+limiter), and never judge a change by re-rendering non-deterministic synths
+— free-running LFOs made two identical renders differ by 9.8 dB per frame.
+
 **Aim for −9 to −11 LUFS, not −7.** Past that point every extra dB comes
 straight out of the crest factor: measured on this project, pushing to −7.9 LUFS
 flattened three drops to within 0.1 dB of each other and undid the arrangement.

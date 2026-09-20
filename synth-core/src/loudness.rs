@@ -261,15 +261,47 @@ fn lufs_to_mean_square(lufs: f32) -> f64 {
 }
 
 /// True-peak detector — per ITU-R BS.1770-4 Annex 2: 4× oversampling
-/// with a polyphase windowed-sinc FIR (12 taps per phase, 48-tap
-/// prototype), tracks the max absolute interpolated sample in dBTP.
+/// with a polyphase windowed-sinc FIR (24 taps per phase), tracks the max
+/// absolute interpolated sample in dBTP.
 ///
-/// The previous implementation "interpolated" linearly — but a linear
+/// The first implementation "interpolated" linearly — but a linear
 /// interpolation between two samples is bounded by their maximum, so it
 /// could never see an inter-sample peak at all (it was a plain sample-peak
 /// meter). Heavily limited masters true-peak 0.5–1 dB above their sample
 /// ceiling, which is exactly what it missed.
-const TP_TAPS: usize = 12;
+///
+/// 12 taps was the second try, and it UNDER-reported — the dangerous
+/// direction, because the listener gets the clipping the meter promised
+/// wasn't there. Measured against a ×32 band-limited reconstruction
+/// (deviation from truth, minus = under-report):
+///
+/// ```text
+///                            12@0.92  12@1.0   24@0.92  48@1.0
+/// tanh clip, 0.94 Nyquist     -0.230   -0.067   +0.203   -0.876
+/// a real limited master       -0.041   -0.068   -0.028   +0.086
+/// sine fs/4 (analytic oracle) +0.005   -0.041   -0.004   +0.000
+/// ```
+///
+/// 24 taps at the same 0.92 bandwidth is the closest of the eight tested,
+/// and a second seat (an independent C++ implementation on a different
+/// signal) put it at -0.162 dB against a ×32 band-limited reconstruction,
+/// versus -0.572 for 12 taps.
+///
+/// Read the table as "these signals", not "these filters". The 48-tap
+/// column above under-reports by 0.876 dB here, yet over-reports by
+/// 2.296 dB on the other seat's aliased clip — same filter, opposite
+/// sign, because the signal differs. What survives across both stands is
+/// narrower and is the only claim worth trusting: **12 taps errs
+/// downward on high-frequency material**, and downward is the dangerous
+/// direction, since the listener gets clipping the meter promised was
+/// not there.
+///
+/// A cheap-plus-wide two-arm scheme (switch filters when energy above
+/// 0.92 Nyquist is high) was proposed and rejected: 24 taps costs twice
+/// 12 and a seventh of 48, and a switching threshold is one more thing
+/// to calibrate wrong. Revisit if a signal turns up where 24@0.92
+/// under-reports by more than 0.3 dB; none of those tested does.
+const TP_TAPS: usize = 24;
 
 pub struct TruePeakDetector {
     peak: f32,
@@ -288,13 +320,16 @@ impl TruePeakDetector {
             let frac = (k + 1) as f64 * 0.25;
             let mut sum = 0.0f64;
             for (m, tap) in phase.iter_mut().enumerate() {
-                // Interpolation point sits `frac` after history index 5
+                // Interpolation point sits `frac` after the centre tap
                 // (newest sample = index 0 in read order, see process_stereo).
-                let x = m as f64 - (5.0 + frac);
+                let x = m as f64 - (TP_TAPS as f64 / 2.0 - 1.0 + frac);
                 // Slightly band-limited sinc (0.92 × Nyquist): a full-band
-                // 12-tap windowed sinc rings > +1 dB on synthetic Nyquist
+                // short windowed sinc rings > +1 dB on synthetic Nyquist
                 // content; 0.92 tames the ringing with negligible effect on
                 // program material (matches ffmpeg ebur128 within ~0.2 dB).
+                // Kept at 24 taps: see the table above — widening the band
+                // helps the synthetic clip and hurts real masters, so the
+                // bandwidth stays and the length is what changed.
                 const BW: f64 = 0.92;
                 let sinc = if x.abs() < 1e-12 {
                     BW

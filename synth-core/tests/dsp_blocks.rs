@@ -253,6 +253,34 @@ fn true_peak_catches_intersample_overshoot() {
     );
 }
 
+// Two-sided oracle. The test above is a one-sided threshold (`> -0.5`), so
+// it passes just as happily on a detector that over-reports by 5 dB — and
+// over-reporting is exactly what a short windowed-sinc does when its DC
+// normalization overshoots. The analytic answer here is known, so assert
+// the value, not an inequality: an fs/4 sine at phase π/4 and amplitude
+// 0.5 has samples at ±0.3536 and a true peak of exactly 0.5, i.e. -6.0206
+// dBTP, 3.01 dB above sample peak.
+//
+// Faded in over 100 samples on purpose: a hard start is a step, and a step
+// genuinely rings in the band-limited reconstruction (~+0.11 dB measured),
+// which would be a property of the test signal, not of the detector.
+#[test]
+fn true_peak_matches_analytic_oracle_both_ways() {
+    use superduper_synth_core::loudness::TruePeakDetector;
+    let mut tp = TruePeakDetector::new();
+    for i in 0..48_000usize {
+        let fade = (i as f32 / 100.0).min(1.0);
+        let s = 0.5 * fade
+            * (std::f32::consts::PI * 0.5 * i as f32 + std::f32::consts::PI * 0.25).sin();
+        tp.process_stereo(s, s);
+    }
+    let db = tp.dbtp();
+    assert!(
+        (db - -6.0206).abs() < 0.1,
+        "fs/4 sine @ π/4, A=0.5 true-peaks at exactly -6.0206 dBTP; got {db}"
+    );
+}
+
 // DC-ish input must not report phantom overshoot (interpolator
 // normalization). Fade the DC in over 100 samples — a hard 0→0.5 step
 // genuinely true-peaks above its plateau (Gibbs in the bandlimited

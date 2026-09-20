@@ -186,7 +186,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         init_logging();
         let sr = audio_config.sample_rate as f32;
-        slog!("chorus activate sr={}", sr);
+        slog!("activate sr={}", sr);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         // Maximum delay capacity = centre + depth swing + lookahead margin.
         // 30 ms centre + 25 ms swing = ~55 ms; round to 64 ms for safety.

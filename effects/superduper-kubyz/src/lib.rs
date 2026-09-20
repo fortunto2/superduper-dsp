@@ -45,6 +45,10 @@ use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
+use superduper_dsp_sdk::slog;
+
+/// Per-plugin log file: `~/.superduper-dsp/kubyz.log`. Idempotent.
+fn init_logging() { superduper_dsp_sdk::log::init("kubyz"); }
 use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams, SmoothedParam, midi_note_to_hz};
 
 use presets::{presets, KubyzPreset, N_HARMONICS, PRESET_COUNT};
@@ -771,6 +775,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sr = audio_config.sample_rate as f32;
+        slog!("activate sr={}", sr);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
             shared,
@@ -1156,6 +1161,8 @@ impl DefaultPluginFactory for SuperDuperKubyz {
         .with_features([INSTRUMENT, STEREO, SYNTHESIZER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
+        init_logging();
+        slog!("new_shared: Kubyz — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
         // Try the auto-saved "last edited" snapshot — overridden by
         // PluginStateImpl::load if the host provides project state.

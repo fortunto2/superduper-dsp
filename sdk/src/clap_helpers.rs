@@ -649,6 +649,7 @@ impl SidechainSnapshot {
         let n_frames = (audio.frames_count() as usize).min(self.l.len());
         self.l[..n_frames].fill(0.0);
         self.r[..n_frames].fill(0.0);
+        let mut got_key = false;
         if let Some(sc_port) = audio.input_port(port as usize) {
             if let Some(chans) = sc_port.channels()?.into_f32() {
                 if let Some(l) = chans.channel(0) {
@@ -656,6 +657,7 @@ impl SidechainSnapshot {
                     self.l[..n].copy_from_slice(&l[..n]);
                     if l.iter().take(n).any(|&x| x != 0.0) {
                         self.routed = true;
+                        got_key = true;
                     }
                 }
                 if let Some(r) = chans.channel(1) {
@@ -663,9 +665,39 @@ impl SidechainSnapshot {
                     self.r[..n].copy_from_slice(&r[..n]);
                     if r.iter().take(n).any(|&x| x != 0.0) {
                         self.routed = true;
+                        got_key = true;
                     }
                 } else {
                     self.r[..n_frames].copy_from_slice(&self.l[..n_frames]);
+                }
+            }
+        }
+        // Host fallback: REAPER hands a 4-channel track to the MAIN port and
+        // leaves the declared sidechain port silent, so channels 3/4 carry the
+        // key that channels 1/2 of port 1 were supposed to. Measured in
+        // REAPER 7.77: with the key proven to reach track channels 3/4, the
+        // compressor's gain reduction still correlated -0.69 with its own
+        // input and +0.20 with the key — it was detecting off the main input.
+        // Only consulted while the latch is still open and this block brought
+        // nothing on the real port, so a host that routes properly never
+        // reaches this path.
+        if !got_key && !self.routed {
+            if let Some(main) = audio.input_port(0) {
+                if let Some(chans) = main.channels()?.into_f32() {
+                    if let Some(l) = chans.channel(2) {
+                        let n = n_frames.min(l.len());
+                        if l.iter().take(n).any(|&x| x != 0.0) {
+                            self.l[..n].copy_from_slice(&l[..n]);
+                            self.routed = true;
+                            match chans.channel(3) {
+                                Some(r) => {
+                                    let n = n_frames.min(r.len());
+                                    self.r[..n].copy_from_slice(&r[..n]);
+                                }
+                                None => self.r[..n_frames].copy_from_slice(&self.l[..n_frames]),
+                            }
+                        }
+                    }
                 }
             }
         }

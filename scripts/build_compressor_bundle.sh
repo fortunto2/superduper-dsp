@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-cargo build --release -p superduper-compressor
+cargo build --release -p superduper-compressor ${SDSP_FEATURES:+--features "$SDSP_FEATURES"}
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
 DYLIB="$TARGET_ROOT/release/libsuperduper_compressor.dylib"
 [[ -f "$DYLIB" ]] || { echo "ERROR: dylib not found"; exit 1; }

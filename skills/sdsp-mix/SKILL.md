@@ -105,9 +105,12 @@ Kick itself gets a 30 Hz high-pass; nothing musical lives below that.
 
 ### 3. Mono under 120 Hz
 
-Wide bass smears on club systems and cancels in mono. `midside` plugin, or keep
-sub sources mono by construction. `mixcheck` prints side/mid — under 120 Hz it
-should be strongly negative.
+One insert now: SuperDuper Mid/Side, `Mono Below = 120` (a 2nd-order HP on
+the side signal; 0 = off). Known-answer on a pure-side test tone: 60 Hz side
+down 12.3 dB with the crossover at 120, 1 kHz side untouched to 0.01 dB,
+nothing leaks into the mid. Put it on the master right after the tone EQ —
+it is the direct answer to "side energy below 120 Hz" reading hot in a mix
+measurement.
 
 ### 4. Cut a pocket for the voice
 

@@ -64,6 +64,11 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 2, name: b"Mid Gain", min: -24.0, max: 24.0, default: 0.0, unit: "dB" },
     ParamDef { id: 3, name: b"Sid Gain", min: -24.0, max: 24.0, default: 0.0, unit: "dB" },
     ParamDef { id: 4, name: b"Output",   min: -24.0, max: 12.0, default: 0.0, unit: "dB" },
+    // Frequency below which the sides are summed to mono (2nd-order HP on
+    // the side signal). 0 = off. The one knob that answers "is my low end
+    // club-safe" — added 2026-09-20 after hand-measuring a mix whose sub
+    // stereo turned out to live entirely in return tails.
+    ParamDef { id: 5, name: b"Mono Below", min: 0.0, max: 400.0, default: 0.0, unit: "Hz" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -77,6 +82,7 @@ pub const P_WIDTH: usize = 1;
 pub const P_MID: usize = 2;
 pub const P_SIDE: usize = 3;
 pub const P_OUTPUT: usize = 4;
+pub const P_MONO_BELOW: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -139,6 +145,10 @@ pub struct PluginAudioProcessor<'a> {
     smooth_mid: SmoothedParam,
     smooth_side: SmoothedParam,
     smooth_output: SmoothedParam,
+    /// HP on the SIDE channel for Mono Below. One biquad, mono — the side
+    /// signal is a single lane by construction.
+    side_hp: superduper_synth_core::dsp_blocks::Biquad,
+    side_hp_freq: f32,
     sample_rate: f32,
 }
 
@@ -164,6 +174,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_mid: SmoothedParam::new(load(P_MID)),
             smooth_side: SmoothedParam::new(load(P_SIDE)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
+            side_hp: Default::default(),
+            side_hp_freq: 0.0,
             sample_rate: sr,
         })
     }
@@ -192,6 +204,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let mid_db_t = load(P_MID);
         let side_db_t = load(P_SIDE);
         let output_db_t = load(P_OUTPUT);
+        let mono_below_t = load(P_MONO_BELOW);
+        // Coefficients follow the knob outside the sample loop; 20 Hz is the
+        // audible floor, anything under it means "off".
+        if mono_below_t >= 20.0 {
+            if (mono_below_t - self.side_hp_freq).abs() > 0.5 {
+                self.side_hp.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
+                self.side_hp_freq = mono_below_t;
+            }
+        } else if self.side_hp_freq != 0.0 {
+            self.side_hp.clear();
+            self.side_hp_freq = 0.0;
+        }
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
@@ -237,7 +261,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     // Default / Width: encode → scale → decode.
                     _ => {
                         let m = (li + ri) * 0.5 * mid_lin;
-                        let s = (li - ri) * 0.5 * side_lin * width;
+                        let mut s = (li - ri) * 0.5 * side_lin * width;
+                        if self.side_hp_freq > 0.0 {
+                            s = self.side_hp.process(s);
+                        }
                         (m + s, m - s)
                     }
                 };

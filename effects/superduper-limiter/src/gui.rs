@@ -92,6 +92,22 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         draw_gr_meter(ui, &state.shared);
         ui.add_space(2.0);
         draw_headroom_meter(ui, &state.shared);
+        // Output loudness readout — the question a mastering limiter exists
+        // to answer, without leaving the plugin for an external meter.
+        ui.horizontal(|ui| {
+            let st = state.shared.lufs_short_term.load(Ordering::Relaxed);
+            let li = state.shared.lufs_integrated.load(Ordering::Relaxed);
+            let tp = state.shared.true_peak_dbtp.load(Ordering::Relaxed);
+            let fmt = |v: f32| if v <= -99.0 { "  --".to_string() } else { format!("{v:5.1}") };
+            ui.label(egui::RichText::new(format!("S {} LUFS", fmt(st))).color(core_gui::GREEN).monospace());
+            ui.label(egui::RichText::new(format!("I {} LUFS", fmt(li))).color(core_gui::GREEN_BRIGHT).monospace());
+            let tp_col = if tp > -1.0 { egui::Color32::from_rgb(255, 90, 70) } else { core_gui::GREEN_BRIGHT };
+            let tps = if tp.is_finite() { format!("TP {tp:5.1} dBTP") } else { "TP    -- dBTP".to_string() };
+            ui.label(egui::RichText::new(tps).color(tp_col).monospace());
+            if ui.button(egui::RichText::new("reset").monospace()).clicked() {
+                state.shared.meter_reset.store(true, Ordering::Relaxed);
+            }
+        });
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {

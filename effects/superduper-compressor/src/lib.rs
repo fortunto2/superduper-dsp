@@ -569,6 +569,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         threshold_target, ratio_target, attack_target, release_target,
                         knee_target, makeup_target, mix_target,
                         lookahead_ms_target, ceiling_target,
+                        range_target,
                     );
                     l_write[i] = out;
                     if gr < max_gr_db { max_gr_db = gr; }
@@ -803,6 +804,7 @@ fn process_sample_mono(
     threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
     knee_target: f32, makeup_target: f32, mix_target: f32,
     lookahead_ms_target: f32, ceiling_target: f32,
+    range_target: f32,
 ) -> (f32, f32) {
     let threshold = sm_thr.step(threshold_target, sr);
     let ratio = sm_rat.step(ratio_target, sr);
@@ -823,7 +825,13 @@ fn process_sample_mono(
     }
     let env = detector.process(key.abs(), sr, attack, release);
     let env_db = 20.0 * env.max(1e-9).log10();
-    let gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
+    let mut gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
+    // Range applies on the mono path too. It didn't until 2026-09-20: a mono
+    // track showed -23.9 dB GR with Range at 6.2, because only the stereo
+    // block clamped — the knob silently meant nothing in mono.
+    if range_target > 0.05 {
+        gr_db = gr_db.max(-range_target);
+    }
     let total_db = gr_db + makeup;
     let gain_lin = 10f32.powf(total_db / 20.0);
 

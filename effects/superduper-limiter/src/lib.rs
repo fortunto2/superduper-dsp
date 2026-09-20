@@ -110,6 +110,15 @@ pub struct SharedParamsInner {
     /// `activate()` based on the maximum lookahead the user could dial in
     /// (10 ms) so changing the knob mid-session doesn't break PDC.
     pub latency_samples: std::sync::atomic::AtomicU32,
+    /// BS.1770 meters on the OUTPUT — a mastering limiter is where "am I at
+    /// target" gets asked, and this session answered it with offline scripts
+    /// all day. Published every 100 ms block.
+    pub lufs_short_term: AtomicF32,
+    pub lufs_integrated: AtomicF32,
+    pub true_peak_dbtp: AtomicF32,
+    /// GUI sets it, the processor swaps it false and resets the integrated
+    /// measurement + true-peak hold.
+    pub meter_reset: std::sync::atomic::AtomicBool,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -129,6 +138,10 @@ impl PluginShared {
                 gain_reduction_db: AtomicF32::new(0.0),
                 headroom_db: AtomicF32::new(0.3),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
+                lufs_short_term: AtomicF32::new(-100.0),
+                lufs_integrated: AtomicF32::new(-100.0),
+                true_peak_dbtp: AtomicF32::new(f32::NEG_INFINITY),
+                meter_reset: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -291,6 +304,8 @@ pub struct PluginAudioProcessor<'a> {
     /// reading, min over LIM_WIN, then two box filters. One instance —
     /// channels share a single gain so the image never tilts.
     smooth_gain: GainSmoother,
+    loudness: superduper_synth_core::loudness::LoudnessMeter,
+    out_tp: superduper_synth_core::loudness::TruePeakDetector,
     smooth_input: SmoothedParam,
     smooth_release: SmoothedParam,
     meter_smooth: f32,
@@ -340,6 +355,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             upsampler_l: Upsampler4x::default(),
             upsampler_r: Upsampler4x::default(),
             smooth_gain: GainSmoother::default(),
+            loudness: superduper_synth_core::loudness::LoudnessMeter::new(sr),
+            out_tp: superduper_synth_core::loudness::TruePeakDetector::new(),
             smooth_input: SmoothedParam::new(load(P_INPUT)),
             smooth_release: SmoothedParam::new(load(P_RELEASE)),
             meter_smooth: 0.0,
@@ -380,6 +397,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         let ceiling_lin = 10f32.powf(ceiling_db / 20.0);
         let mut max_gr_db: f32 = 0.0;
+        if self.shared.meter_reset.swap(false, Ordering::Relaxed) {
+            self.loudness.reset();
+            self.out_tp.reset();
+        }
+        let mut meter_rolled = false;
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
@@ -435,6 +457,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     let out = (delayed * g).max(-ceiling_lin).min(ceiling_lin);
                     l_write[i] = out;
                     self.shared.scope.push(out);
+                    self.out_tp.process_stereo(out, out);
+                    if self.loudness.process_stereo(out, out) { meter_rolled = true; }
 
                     let gr_db = 20.0 * g.max(1e-9).log10();
                     if gr_db < max_gr_db { max_gr_db = gr_db; }
@@ -488,6 +512,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 l_write[i] = out_l;
                 r_write[i] = out_r;
                 self.shared.scope.push((out_l + out_r) * 0.5);
+                self.out_tp.process_stereo(out_l, out_r);
+                if self.loudness.process_stereo(out_l, out_r) { meter_rolled = true; }
                 let gr_db = 20.0 * g.max(1e-9).log10();
                 if gr_db < max_gr_db { max_gr_db = gr_db; }
             }
@@ -503,6 +529,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         self.shared
             .gain_reduction_db
             .store(self.meter_smooth, Ordering::Relaxed);
+        if meter_rolled {
+            self.shared.lufs_short_term.store(self.loudness.short_term_lufs(), Ordering::Relaxed);
+            self.shared.lufs_integrated.store(self.loudness.integrated_lufs(), Ordering::Relaxed);
+            self.shared.true_peak_dbtp.store(self.out_tp.dbtp(), Ordering::Relaxed);
+        }
         // Headroom = ceiling - (ceiling × gain_env). With the limiter
         // engaged the ratio collapses to ceiling × 1 = ceiling and
         // headroom → 0. When idle gain_env = 1 → effectively no

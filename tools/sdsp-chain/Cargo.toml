@@ -40,6 +40,7 @@ superduper-wave       = { path = "../../effects/superduper-wave" }
 superduper-kubyz      = { path = "../../effects/superduper-kubyz" }
 superduper-pad        = { path = "../../effects/superduper-pad" }
 superduper-drum       = { path = "../../effects/superduper-drum" }
+superduper-sampler    = { path = "../../effects/superduper-sampler" }
 
 superduper-synth-core = { path = "../../synth-core" }
 superduper-dsp-sdk    = { path = "../../sdk" }

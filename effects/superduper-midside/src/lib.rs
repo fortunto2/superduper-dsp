@@ -69,13 +69,16 @@ pub const PARAMS: &[ParamDef] = &[
     // club-safe" — added 2026-09-20 after hand-measuring a mix whose sub
     // stereo turned out to live entirely in return tails.
     ParamDef { id: 5, name: b"Mono Below", min: 0.0, max: 400.0, default: 0.0, unit: "Hz" },
+    // 0 = 12 dB/oct (one biquad), 1 = 24 dB/oct (two cascaded — Linkwitz-Riley
+    // shape, for club material where second order leaves audible side rumble).
+    ParamDef { id: 6, name: b"MB Slope", min: 0.0, max: 1.0, default: 0.0, unit: "" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
 /// the host with IS_STEPPED so it quantises automation instead of sweeping
 /// through the intermediate values — a ramp across a preset selector otherwise
 /// recalls every kit between the two endpoints.
-const STEPPED_PARAMS: &[u32] = &[0];
+const STEPPED_PARAMS: &[u32] = &[0, 6];
 
 pub const P_MODE: usize = 0;
 pub const P_WIDTH: usize = 1;
@@ -83,6 +86,7 @@ pub const P_MID: usize = 2;
 pub const P_SIDE: usize = 3;
 pub const P_OUTPUT: usize = 4;
 pub const P_MONO_BELOW: usize = 5;
+pub const P_MB_SLOPE: usize = 6;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -148,7 +152,9 @@ pub struct PluginAudioProcessor<'a> {
     /// HP on the SIDE channel for Mono Below. One biquad, mono — the side
     /// signal is a single lane by construction.
     side_hp: superduper_synth_core::dsp_blocks::Biquad,
+    side_hp2: superduper_synth_core::dsp_blocks::Biquad,
     side_hp_freq: f32,
+    side_hp_slope24: bool,
     sample_rate: f32,
 }
 
@@ -175,7 +181,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_side: SmoothedParam::new(load(P_SIDE)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
             side_hp: Default::default(),
+            side_hp2: Default::default(),
             side_hp_freq: 0.0,
+            side_hp_slope24: false,
             sample_rate: sr,
         })
     }
@@ -205,15 +213,19 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let side_db_t = load(P_SIDE);
         let output_db_t = load(P_OUTPUT);
         let mono_below_t = load(P_MONO_BELOW);
+        let slope24 = load(P_MB_SLOPE) >= 0.5;
         // Coefficients follow the knob outside the sample loop; 20 Hz is the
         // audible floor, anything under it means "off".
         if mono_below_t >= 20.0 {
-            if (mono_below_t - self.side_hp_freq).abs() > 0.5 {
+            if (mono_below_t - self.side_hp_freq).abs() > 0.5 || slope24 != self.side_hp_slope24 {
                 self.side_hp.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
+                self.side_hp2.set_hpf(sr, mono_below_t, core::f32::consts::FRAC_1_SQRT_2);
                 self.side_hp_freq = mono_below_t;
+                self.side_hp_slope24 = slope24;
             }
         } else if self.side_hp_freq != 0.0 {
             self.side_hp.clear();
+            self.side_hp2.clear();
             self.side_hp_freq = 0.0;
         }
 
@@ -264,6 +276,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let mut s = (li - ri) * 0.5 * side_lin * width;
                         if self.side_hp_freq > 0.0 {
                             s = self.side_hp.process(s);
+                            if self.side_hp_slope24 {
+                                s = self.side_hp2.process(s);
+                            }
                         }
                         (m + s, m - s)
                     }

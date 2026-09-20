@@ -453,6 +453,11 @@ fn instruments() -> Vec<InstrumentSpec> {
                          presets: || superduper_pad::presets::PRESETS.iter().map(|p| p.name).collect() },
         InstrumentSpec { key: "drum",  params: superduper_drum::PARAMS,
                          presets: || superduper_drum::presets::PRESETS.iter().map(|p| p.name).collect() },
+        // Params-only entry: the chain cannot render a sampler (it needs the
+        // sample bank scan), but --params/--presets must answer — this exact
+        // lookup failing cost a session a trip into the source for the ids.
+        InstrumentSpec { key: "sampler", params: superduper_sampler::PARAMS,
+                         presets: Vec::new },
     ]
 }
 

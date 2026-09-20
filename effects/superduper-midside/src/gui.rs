@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{PARAMS, P_MID, P_MODE, P_MONO_BELOW, P_OUTPUT, P_SIDE, P_WIDTH, SharedParams};
+use crate::{PARAMS, P_MB_SLOPE, P_MID, P_MODE, P_MONO_BELOW, P_OUTPUT, P_SIDE, P_WIDTH, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 340;
@@ -128,6 +128,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MID], &PARAMS[P_MID], &state.shared.dirty_params[P_MID], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MID);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_SIDE], &PARAMS[P_SIDE], &state.shared.dirty_params[P_SIDE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_SIDE);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MONO_BELOW], &PARAMS[P_MONO_BELOW], &state.shared.dirty_params[P_MONO_BELOW], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MONO_BELOW);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_MB_SLOPE], &PARAMS[P_MB_SLOPE], &state.shared.dirty_params[P_MB_SLOPE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MB_SLOPE);
             });
 
             core_gui::section(ui, "Output", |ui| {

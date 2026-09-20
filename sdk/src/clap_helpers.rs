@@ -622,7 +622,15 @@ pub fn preset_text_to_value<'a>(
 pub struct SidechainSnapshot {
     pub l: Box<[f32]>,
     pub r: Box<[f32]>,
+    /// Latched by the DECLARED sidechain port. Once true, the fallback below
+    /// is never consulted again — a host that routes properly owns the key.
     routed: bool,
+    /// Latched by the main-port channels-3/4 fallback. Kept separate from
+    /// `routed` on purpose: the first version used one flag, and the fallback
+    /// turned itself off after one block — its own guard read the latch it
+    /// had just set, so the key went silent 10 ms into playback while
+    /// sc_present stayed true.
+    fb_routed: bool,
 }
 
 impl SidechainSnapshot {
@@ -631,11 +639,12 @@ impl SidechainSnapshot {
             l: vec![0.0; max_frames].into_boxed_slice(),
             r: vec![0.0; max_frames].into_boxed_slice(),
             routed: false,
+            fb_routed: false,
         }
     }
 
     pub fn routed(&self) -> bool {
-        self.routed
+        self.routed || self.fb_routed
     }
 
     /// Snapshot input port `port` for this block and return the latched
@@ -685,22 +694,28 @@ impl SidechainSnapshot {
             if let Some(main) = audio.input_port(0) {
                 if let Some(chans) = main.channels()?.into_f32() {
                     if let Some(l) = chans.channel(2) {
+                        // Copy every block, not only on the block that first
+                        // carries signal — the latch decides sc_present, the
+                        // copy IS the key from here on.
                         let n = n_frames.min(l.len());
+                        self.l[..n].copy_from_slice(&l[..n]);
                         if l.iter().take(n).any(|&x| x != 0.0) {
-                            self.l[..n].copy_from_slice(&l[..n]);
-                            self.routed = true;
-                            match chans.channel(3) {
-                                Some(r) => {
-                                    let n = n_frames.min(r.len());
-                                    self.r[..n].copy_from_slice(&r[..n]);
+                            self.fb_routed = true;
+                        }
+                        match chans.channel(3) {
+                            Some(r) => {
+                                let n = n_frames.min(r.len());
+                                self.r[..n].copy_from_slice(&r[..n]);
+                                if r.iter().take(n).any(|&x| x != 0.0) {
+                                    self.fb_routed = true;
                                 }
-                                None => self.r[..n_frames].copy_from_slice(&self.l[..n_frames]),
                             }
+                            None => self.r[..n_frames].copy_from_slice(&self.l[..n_frames]),
                         }
                     }
                 }
             }
         }
-        Ok(self.routed)
+        Ok(self.routed || self.fb_routed)
     }
 }

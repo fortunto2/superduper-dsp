@@ -87,6 +87,14 @@ stage, and plot `20*log10(env_ducked/env_dry)` against the kick envelope: the
 curve must sit at −depth while the kick sounds and return to 0 before the next
 beat. A flat line at −depth is a fader, not a duck.
 
+And when the A/B says **0.00 dB difference**, check the DRY state before
+blaming the routing (measured 2026-09-23): with the music loud enough that its
+own dry-fallback GR also slams into the Range cap, keyed and un-keyed states
+are BOTH exactly −Range — identical by construction, and the duck is invisible
+to any off/on comparison. For the verification render set Range 0 (or drop the
+music below threshold); the same rig then showed a 9.4 dB duck in an offline
+render. The plugin and REAPER's ch3/4 routing were never the problem.
+
 **Fixed 2026-08-27, worth remembering:** the keyed plugins used to decide
 "sidechain routed?" per 256-frame block by checking for non-zero samples — so
 between kick hits the silent key handed detection back to the MAIN input, and

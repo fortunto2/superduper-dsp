@@ -79,6 +79,10 @@ broken limiter).
   `lsof -p $(pgrep -x REAPER) | grep <name>` and compare the inode with
   `ls -i` on disk. The `[bNNNNN]` in a saved project's FX name LIES — three
   "sidechain is broken" hunts were a stale mmap, the code was fine.
+- **A duck A/B can be blind by construction**: if the bus is loud enough that
+  its dry-fallback GR also hits the Range cap, keyed and un-keyed both read
+  exactly −Range → measured difference 0.00 dB with a perfectly working
+  sidechain. Verify with Range 0, then put Range back.
 - A stale `request_*.json` in `mcp_bridge_data/` replays on the next start —
   a leftover Quit request closes REAPER at launch and looks like a crash.
 - Verify a chain survived a restart before re-tweaking it: enabled flags and

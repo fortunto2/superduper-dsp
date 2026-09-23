@@ -1,12 +1,13 @@
 ---
 name: sdsp-chain
-description: Render SuperDuper DSP plugin chains headlessly from the CLI — no REAPER, no DAW. Multi-track mixing, per-stage sidechains, time-varying parameter automation, params by name, per-stage LUFS/dBTP/RMS. Use when the user wants to process WAVs through our CLAP plugins reproducibly (mastering chains, sound-design demos, "voice → kubyz" renders, CI render farms, A/B recipes). Do NOT use for single-plugin audition (use `sdsp-runner`), REAPER session work (reaper-daw skill), or writing the plugins themselves (superduper-plugin skill).
+description: Render SuperDuper DSP plugin chains headlessly from the CLI — no REAPER, no DAW. Multi-track mixing, per-stage sidechains, time-varying parameter automation, params by name, per-stage LUFS/dBTP/RMS, and PLAYABLE INSTRUMENTS (wave/kubyz/pad/drum/sampler/ambient/wind) driven by a notes list in the TOML. Use when the user wants to process WAVs through our CLAP plugins reproducibly (mastering chains, sound-design demos, "voice → kubyz" renders, CI render farms, A/B recipes). Do NOT use for single-plugin audition (use `sdsp-runner`), REAPER session work (reaper-daw skill), or writing the plugins themselves (superduper-plugin skill).
 ---
 
 # sdsp-chain — headless renderer for plugin chains
 
 `tools/sdsp-chain` in `/Users/rustam/Music/1music/superduper-dsp/` statically links
-**15** of our CLAP plugins and renders a whole arrangement from one TOML file. Same
+**22 effects + 7 instruments** of our CLAP plugins and renders a whole arrangement
+from one TOML file — including playing the instruments from a notes list. Same
 DSP REAPER would load, in one process: no DAW, no plugin scan, no GUI. This is the
 engine a future GUI app is meant to sit on.
 
@@ -36,6 +37,46 @@ The binary lands at `$CARGO_TARGET_DIR/release/sdsp-chain` (this machine:
 
 `in.wav`/`out.wav` are optional: a config with `[[track]]` entries carries its own
 inputs, and `out = "…"` in the config sets the destination.
+
+## Instrument tracks — play wave/kubyz/pad/drum/sampler/ambient/wind
+
+A `[[track]]` can be an instrument render instead of a WAV:
+
+```toml
+[[track]]
+name = "drone"
+instrument = "kubyz"            # wave / kubyz / pad / drum / sampler / ambient / wind
+preset = 1                      # factory preset INDEX (see --presets <key>)
+params = { Output = 0.8 }       # by name, real units — overrides the preset
+notes = [[0.0, 8.0, 45, 100],   # [start_s, dur_s, midi_note, velocity 0..127]
+         [8.0, 8.0, 48, 90]]    # velocity optional, default 100
+
+  [[track.stage]]               # effects on top, same as any track
+  plugin = "reverb"
+```
+
+Verified working (measured 2026-09-23): pitch lands on the note (wave A3 →
+220.0 Hz), NoteOff releases (−16 dB into the tail), presets actually switch
+(Triangle vs Reese: 0.125 vs 0.362 energy above 1 kHz), and the sampler
+decodes its `Sample` slot headlessly.
+
+- **Preset/sample recall is main-thread work**, so the render runs a setup
+  pass first (one block with the events + the main-thread callback), then the
+  real pass where user `params` are re-sent — params always override the preset.
+- **wave without `preset` plays `~/.superduper-dsp/wave/last.json`** — whatever
+  was last edited in the GUI. Set `preset` for reproducible renders (the CLI
+  prints a note when you don't).
+- **ambient ignores notes** (autonomous drone): set `duration_s` on the track.
+- **wind here = its Instrument mode** (8-voice poly); as a `[[track.stage]]`
+  plugin it is the Overlay effect. Same key "wind", two roles.
+- **drum**: write GM notes (36 kick, 38 snare, 39 clap, 42/44 hat closed,
+  46 open) — the default Note Map handles GM first.
+- **sampler**: pick the shot with `params = { Sample = <index> }` — index is
+  the (pack, path)-sorted position from the bank scan.
+- An all-instrument config has no WAV to take the rate from: `sample_rate =
+  48000` at the top level (that is also the default).
+- Track length = last note end (or `duration_s`), plus global `tail_s` for
+  releases and reverb tails.
 
 ## Params are addressed BY NAME, in real units
 

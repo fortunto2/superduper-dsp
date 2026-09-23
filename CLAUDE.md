@@ -496,7 +496,10 @@ from host BPM read out of `CoreEventSpace::Transport` events.
   plays a WAV file through it to cpal output. Single-plugin testing.
   Effects only — synth/MIDI plugins won't make sound (no MIDI events).
 - **`tools/sdsp-chain`** — headless renderer for plugin chains, and the
-  intended engine under a future GUI app. Statically links **15** plugins.
+  intended engine under a future GUI app. Statically links **22 effects + 7
+  instruments**; instruments are PLAYABLE from the TOML (`instrument = "kubyz"`
+  + `notes = [[start_s, dur_s, midi, vel], …]`, `preset = <index>` recalled via
+  a main-thread setup pass — details in the `sdsp-chain` skill).
   Beyond a serial chain it now does: **multi-track mixing** (`[[track]]` with
   its own input/chain/gain, summed, then `[[master]]` stages), **per-stage
   sidechains** (`sidechain = "voice.wav"`, which is what Formant's Follow mode

@@ -62,7 +62,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use clack_common::events::event_types::ParamValueEvent;
+use clack_common::events::event_types::{NoteOffEvent, NoteOnEvent, ParamValueEvent};
 use clack_common::events::Pckn;
 use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::log::{HostLog, HostLogImpl, LogSeverity};
@@ -188,6 +188,20 @@ struct StageIo<'a> {
 }
 
 type RenderFn = fn(&ParamSet, &AutoSet, StageIo<'_>) -> Audio;
+
+/// One scheduled note, resolved to absolute sample positions.
+#[derive(Clone, Copy)]
+struct NoteEv {
+    on: usize,
+    off: usize,
+    key: u16,
+    /// CLAP velocity, 0..1.
+    vel: f64,
+}
+
+/// Renders an instrument from notes alone: no input audio exists yet, the
+/// instrument IS the source. `preset` is (param id, preset index).
+type InstRenderFn = fn(&ParamSet, Option<(u32, f64)>, &[NoteEv], usize, f64) -> Audio;
 
 struct PluginSpec {
     key: &'static str,
@@ -406,6 +420,240 @@ impl_stage!(stage_harmonic,   superduper_harmonic::SuperDuperHarmonic,     "co.s
 impl_stage!(stage_wind,       superduper_wind::SuperDuperWind,             "co.superduperai.wind",       "/sdsp-chain/wind");
 impl_stage!(stage_soothe,     superduper_soothe::SuperDuperSoothe,         "co.superduperai.soothe",     "/sdsp-chain/sth");
 
+macro_rules! impl_instrument {
+    ($fn_name:ident, $plugin_ty:path, $bundle_id:literal, $entry_path:literal, $n_in:expr) => {
+        fn $fn_name(
+            params: &ParamSet,
+            preset: Option<(u32, f64)>,
+            notes: &[NoteEv],
+            frames: usize,
+            sr: f64,
+        ) -> Audio {
+            let entry = PluginEntry::load_from_clack::<SinglePluginEntry<$plugin_ty>>(
+                concat_cstr!($entry_path),
+            )
+            .expect("plugin entry");
+            let host_info =
+                HostInfo::new("sdsp-chain", "SuperDuperAI", "https://superduperai.co", "0.1")
+                    .unwrap();
+            let mut plugin = PluginInstance::<TH>::new(
+                |_| TS,
+                |_| (),
+                &entry,
+                concat_cstr!($bundle_id),
+                &host_info,
+            )
+            .expect("instantiate");
+
+            let block = BLOCK as usize;
+            let n_blocks = (frames + block - 1) / block;
+            let padded = n_blocks * block;
+            let n_in: usize = $n_in; // audio input ports the plugin declares (fed silence)
+
+            let mut stopped = plugin
+                .activate(
+                    |_, _| (),
+                    PluginAudioConfiguration {
+                        sample_rate: sr,
+                        min_frames_count: BLOCK,
+                        max_frames_count: BLOCK,
+                    },
+                )
+                .expect("activate");
+
+            // Setup pass: preset recall and sample loading are main-thread
+            // operations by design — the audio thread only detects the param
+            // move and requests a callback (sdk preset_recall_target /
+            // pending-sample). One block carries every param plus the Preset
+            // event, then the main-thread callback applies them. The render
+            // pass re-sends the user params so they override whatever the
+            // preset loaded.
+            {
+                let stopped_in = stopped;
+                let stopped_back = std::thread::scope(|s| {
+                    s.spawn(move || {
+                        let mut proc =
+                            stopped_in.start_processing().expect("start_processing");
+                        let mut in_ports = AudioPorts::with_capacity(2, n_in.max(1));
+                        let mut out_ports = AudioPorts::with_capacity(2, 1);
+                        let mut evs = EventBuffer::new();
+                        for (id, v) in params.iter() {
+                            evs.push(&ParamValueEvent::new(
+                                0,
+                                ClapId::new(*id),
+                                Pckn::new(0u16, 0u16, 0u16, 0u32),
+                                *v,
+                                Cookie::empty(),
+                            ));
+                        }
+                        if let Some((pid, pval)) = preset {
+                            evs.push(&ParamValueEvent::new(
+                                0,
+                                ClapId::new(pid),
+                                Pckn::new(0u16, 0u16, 0u16, 0u32),
+                                pval,
+                                Cookie::empty(),
+                            ));
+                        }
+                        let inputs = InputEvents::from_buffer(&evs);
+                        let mut out_evs = EventBuffer::new();
+                        let mut outputs = OutputEvents::from_buffer(&mut out_evs);
+                        let mut z_l = vec![0.0f32; block];
+                        let mut z_r = vec![0.0f32; block];
+                        let mut bufs = Vec::with_capacity(n_in);
+                        if n_in > 0 {
+                            bufs.push(AudioPortBuffer {
+                                latency: 0,
+                                channels: AudioPortBufferType::f32_input_only(
+                                    [
+                                        InputChannel::variable(z_l.as_mut_slice()),
+                                        InputChannel::variable(z_r.as_mut_slice()),
+                                    ]
+                                    .into_iter(),
+                                ),
+                            });
+                        }
+                        let input_audio = in_ports.with_input_buffers(bufs);
+                        let mut o_l = vec![0.0f32; block];
+                        let mut o_r = vec![0.0f32; block];
+                        let mut out_chans: [&mut [f32]; 2] = [&mut o_l, &mut o_r];
+                        let mut output_audio =
+                            out_ports.with_output_buffers([AudioPortBuffer {
+                                latency: 0,
+                                channels: AudioPortBufferType::f32_output_only(
+                                    out_chans.iter_mut().map(|b| &mut **b),
+                                ),
+                            }]);
+                        proc.process(
+                            &input_audio,
+                            &mut output_audio,
+                            &inputs,
+                            &mut outputs,
+                            None,
+                            None,
+                        )
+                        .expect("process");
+                        proc.stop_processing()
+                    })
+                    .join()
+                    .expect("setup thread")
+                });
+                stopped = stopped_back;
+                plugin.call_on_main_thread_callback();
+            }
+
+            let mut out_l = vec![0.0f32; padded];
+            let mut out_r = vec![0.0f32; padded];
+            let out_l_ref = &mut out_l;
+            let out_r_ref = &mut out_r;
+
+            let stopped_back = std::thread::scope(|s| {
+                s.spawn(move || {
+                    let mut proc = stopped.start_processing().expect("start_processing");
+                    let mut in_ports = AudioPorts::with_capacity(2, n_in.max(1));
+                    let mut out_ports = AudioPorts::with_capacity(2, 1);
+
+                    for blk in 0..n_blocks {
+                        let start = blk * block;
+                        let end = start + block;
+
+                        // CLAP wants events in time order within the block.
+                        let mut timed: Vec<(u32, usize, bool)> = Vec::new();
+                        for (i, n) in notes.iter().enumerate() {
+                            if n.on >= start && n.on < end {
+                                timed.push(((n.on - start) as u32, i, true));
+                            }
+                            if n.off >= start && n.off < end {
+                                timed.push(((n.off - start) as u32, i, false));
+                            }
+                        }
+                        timed.sort_by_key(|e| e.0);
+
+                        let mut evs = EventBuffer::new();
+                        if blk == 0 {
+                            for (id, v) in params.iter() {
+                                evs.push(&ParamValueEvent::new(
+                                    0,
+                                    ClapId::new(*id),
+                                    Pckn::new(0u16, 0u16, 0u16, 0u32),
+                                    *v,
+                                    Cookie::empty(),
+                                ));
+                            }
+                        }
+                        for (off, i, is_on) in timed {
+                            let n = &notes[i];
+                            let pckn = Pckn::new(0u16, 0u16, n.key, 0u32);
+                            if is_on {
+                                evs.push(&NoteOnEvent::new(off, pckn, n.vel));
+                            } else {
+                                evs.push(&NoteOffEvent::new(off, pckn, 1.0));
+                            }
+                        }
+                        let inputs = InputEvents::from_buffer(&evs);
+                        let mut out_evs = EventBuffer::new();
+                        let mut outputs = OutputEvents::from_buffer(&mut out_evs);
+
+                        let mut z_l = vec![0.0f32; block];
+                        let mut z_r = vec![0.0f32; block];
+                        let mut bufs = Vec::with_capacity(n_in);
+                        if n_in > 0 {
+                            bufs.push(AudioPortBuffer {
+                                latency: 0,
+                                channels: AudioPortBufferType::f32_input_only(
+                                    [
+                                        InputChannel::variable(z_l.as_mut_slice()),
+                                        InputChannel::variable(z_r.as_mut_slice()),
+                                    ]
+                                    .into_iter(),
+                                ),
+                            });
+                        }
+                        let input_audio = in_ports.with_input_buffers(bufs);
+
+                        let l_buf = &mut out_l_ref[start..end];
+                        let r_buf = &mut out_r_ref[start..end];
+                        let mut out_chans: [&mut [f32]; 2] = [l_buf, r_buf];
+                        let mut output_audio =
+                            out_ports.with_output_buffers([AudioPortBuffer {
+                                latency: 0,
+                                channels: AudioPortBufferType::f32_output_only(
+                                    out_chans.iter_mut().map(|b| &mut **b),
+                                ),
+                            }]);
+                        proc.process(
+                            &input_audio,
+                            &mut output_audio,
+                            &inputs,
+                            &mut outputs,
+                            None,
+                            None,
+                        )
+                        .expect("process");
+                    }
+                    proc.stop_processing()
+                })
+                .join()
+                .expect("audio thread")
+            });
+            plugin.deactivate(stopped_back);
+
+            out_l.truncate(frames);
+            out_r.truncate(frames);
+            Audio { l: out_l, r: out_r, sr }
+        }
+    };
+}
+
+impl_instrument!(inst_wave,    superduper_wave::SuperDuperWave,       "co.superduperai.wave",    "/sdsp-chain/iwav", 0);
+impl_instrument!(inst_kubyz,   superduper_kubyz::SuperDuperKubyz,     "co.superduperai.kubyz",   "/sdsp-chain/ikub", 0);
+impl_instrument!(inst_pad,     superduper_pad::SuperDuperPad,         "co.superduperai.pad",     "/sdsp-chain/ipad", 0);
+impl_instrument!(inst_drum,    superduper_drum::SuperDuperDrum,       "co.superduperai.drum",    "/sdsp-chain/idrm", 0);
+impl_instrument!(inst_sampler, superduper_sampler::SuperDuperSampler, "co.superduperai.sampler", "/sdsp-chain/ismp", 0);
+impl_instrument!(inst_ambient, superduper_ambient::SuperDuperAmbient, "co.superduperai.ambient", "/sdsp-chain/iamb", 0);
+// Wind declares one in-place stereo pair (Overlay mode reads it) — feed silence.
+impl_instrument!(inst_wind,    superduper_wind::SuperDuperWind,       "co.superduperai.wind",    "/sdsp-chain/iwnd", 1);
+
 fn registry() -> &'static [PluginSpec] {
     &[
         PluginSpec { key: "eq",         params: superduper_eq::PARAMS,         presets: || superduper_eq::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_eq,         sidechain: false },
@@ -434,31 +682,62 @@ fn registry() -> &'static [PluginSpec] {
     ]
 }
 
-/// Instruments can't be rendered by the chain (no MIDI here), but their tables
-/// are exactly what you need when setting their parameters from a DAW over MCP —
-/// so introspection covers them too, and `--list` says which is which.
+/// A playable instrument: `[[track]] instrument = "<key>"` + `notes` renders it
+/// headlessly — the note events go down the same per-block event path the
+/// automation already uses. Introspection (`--params`/`--presets`) reads the
+/// same tables.
 struct InstrumentSpec {
     key: &'static str,
     params: &'static [ParamDef],
     presets: fn() -> Vec<&'static str>,
+    render: InstRenderFn,
 }
 
 fn instruments() -> Vec<InstrumentSpec> {
     vec![
         InstrumentSpec { key: "wave",  params: superduper_wave::PARAMS,
-                         presets: || superduper_wave::presets::PRESETS.iter().map(|p| p.name).collect() },
+                         presets: || superduper_wave::presets::PRESETS.iter().map(|p| p.name).collect(),
+                         render: inst_wave },
         InstrumentSpec { key: "kubyz", params: superduper_kubyz::PARAMS,
-                         presets: || superduper_kubyz::presets::presets().iter().map(|p| p.name).collect() },
+                         presets: || superduper_kubyz::presets::presets().iter().map(|p| p.name).collect(),
+                         render: inst_kubyz },
         InstrumentSpec { key: "pad",   params: superduper_pad::PARAMS,
-                         presets: || superduper_pad::presets::PRESETS.iter().map(|p| p.name).collect() },
+                         presets: || superduper_pad::presets::PRESETS.iter().map(|p| p.name).collect(),
+                         render: inst_pad },
         InstrumentSpec { key: "drum",  params: superduper_drum::PARAMS,
-                         presets: || superduper_drum::presets::PRESETS.iter().map(|p| p.name).collect() },
-        // Params-only entry: the chain cannot render a sampler (it needs the
-        // sample bank scan), but --params/--presets must answer — this exact
-        // lookup failing cost a session a trip into the source for the ids.
+                         presets: || superduper_drum::presets::PRESETS.iter().map(|p| p.name).collect(),
+                         render: inst_drum },
+        // The sampler scans its bank at instantiation and decodes the `Sample`
+        // slot on the main-thread callback — both happen inside the render's
+        // setup pass, so it plays headlessly too.
         InstrumentSpec { key: "sampler", params: superduper_sampler::PARAMS,
-                         presets: Vec::new },
+                         presets: Vec::new,
+                         render: inst_sampler },
+        // Autonomous drone — ignores notes, needs `duration_s` on the track.
+        InstrumentSpec { key: "ambient", params: superduper_ambient::PARAMS,
+                         presets: || superduper_ambient::presets::PRESETS.iter().map(|p| p.name).collect(),
+                         render: inst_ambient },
+        // Wind is also a registry effect (Overlay mode); as an instrument it
+        // plays its 8-voice poly engine.
+        InstrumentSpec { key: "wind",  params: superduper_wind::PARAMS,
+                         presets: || superduper_wind::presets::PRESETS.iter().map(|p| p.name).collect(),
+                         render: inst_wind },
     ]
+}
+
+/// resolve_param over a bare table (instruments aren't PluginSpecs).
+fn resolve_param_in(label: &str, table: &'static [ParamDef], key: &str) -> Result<u32, String> {
+    if let Some(d) = table.iter().find(|d| param_name(d).eq_ignore_ascii_case(key)) {
+        return Ok(d.id);
+    }
+    if let Ok(id) = key.parse::<u32>() {
+        if table.iter().any(|d| d.id == id) {
+            return Ok(id);
+        }
+        return Err(format!("'{label}' has no param id {id} (it has {})", table.len()));
+    }
+    let names: Vec<&str> = table.iter().map(param_name).collect();
+    Err(format!("'{label}' has no param named '{key}'. Params: {}", names.join(", ")))
 }
 
 /// Params + presets for anything we know about, effect or instrument.
@@ -559,6 +838,43 @@ fn interp_at(points: &[(f32, f64)], t: f32) -> f64 {
     }
 }
 
+/// `[[start_s, dur_s, midi, velocity?], …]` → (start, dur, key, CLAP vel 0..1).
+/// Velocity is MIDI 0..127, default 100.
+fn parse_notes(raw: &[toml::Value], label: &str) -> Result<Vec<(f64, f64, u16, f64)>, String> {
+    let num = |x: &toml::Value| x.as_float().or_else(|| x.as_integer().map(|i| i as f64));
+    let mut out = Vec::new();
+    for (i, item) in raw.iter().enumerate() {
+        let row = item.as_array().ok_or_else(|| {
+            format!("track '{label}': notes[{i}] must be [start_s, dur_s, midi, velocity?]")
+        })?;
+        if row.len() < 3 || row.len() > 4 {
+            return Err(format!(
+                "track '{label}': notes[{i}] has {} values, expected 3 or 4",
+                row.len()
+            ));
+        }
+        let vals: Option<Vec<f64>> = row.iter().map(num).collect();
+        let vals = vals.ok_or_else(|| {
+            format!("track '{label}': notes[{i}] values must be numbers")
+        })?;
+        let (start, dur, midi) = (vals[0], vals[1], vals[2]);
+        let vel = vals.get(3).copied().unwrap_or(100.0);
+        if !(0.0..=127.0).contains(&midi) || midi.fract() != 0.0 {
+            return Err(format!(
+                "track '{label}': notes[{i}] midi note {midi} must be an integer 0..127"
+            ));
+        }
+        if start < 0.0 || dur <= 0.0 {
+            return Err(format!(
+                "track '{label}': notes[{i}] needs start ≥ 0 and dur > 0 (got {start}, {dur})"
+            ));
+        }
+        out.push((start, dur, midi as u16, (vel / 127.0).clamp(0.0, 1.0)));
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(out)
+}
+
 // ===========================================================================
 // Config
 // ===========================================================================
@@ -572,6 +888,10 @@ struct Config {
     /// ring out instead of being cut at the last input sample.
     #[serde(default)]
     tail_s: f64,
+    /// Render rate when NO track reads a WAV (instrument-only configs).
+    /// With any WAV in the mix, the WAV's rate wins. Default 48000.
+    #[serde(default)]
+    sample_rate: Option<f64>,
     /// Default sidechain key for every sidechain-capable stage.
     #[serde(default)]
     sidechain: Option<String>,
@@ -607,6 +927,24 @@ struct TrackCfg {
     /// WAV for this track; omitted means the CLI input.
     #[serde(default)]
     input: Option<String>,
+    /// Play a bundled instrument instead of reading a WAV: wave / kubyz / pad /
+    /// drum / sampler / ambient / wind. Mutually exclusive with `input`.
+    #[serde(default)]
+    instrument: Option<String>,
+    /// Factory preset INDEX for the instrument (see `--presets <key>`).
+    #[serde(default)]
+    preset: Option<f64>,
+    /// Notes: `[[start_s, dur_s, midi_note, velocity], …]` — velocity 0..127,
+    /// optional (default 100). Ambient ignores notes.
+    #[serde(default)]
+    notes: Vec<toml::Value>,
+    /// Instrument params, by name in real units — same rules as a stage's.
+    #[serde(default)]
+    params: toml::Table,
+    /// Track length in seconds. Required for ambient (it has no notes to
+    /// derive one from); for other instruments it extends past the last note.
+    #[serde(default)]
+    duration_s: Option<f64>,
     #[serde(default)]
     sidechain: Option<String>,
     #[serde(default)]
@@ -888,7 +1226,7 @@ fn real_main() -> Result<(), String> {
                     if s.sidechain { "   (has sidechain input)" } else { "" }
                 );
             }
-            println!("\nInstruments (introspection only — the chain has no MIDI):");
+            println!("\nInstruments ([[track]] instrument = \"<key>\" + notes = [[start_s, dur_s, midi, vel], …]):");
             for i in instruments() {
                 println!("  {:<11} {:>2} params, {} presets", i.key, i.params.len(), (i.presets)().len());
             }
@@ -950,9 +1288,22 @@ fn real_main() -> Result<(), String> {
     println!("Config: {}", config_path.display());
 
     // ---- Assemble the track list ------------------------------------------
+    struct InstrJob {
+        key: String,
+        render: InstRenderFn,
+        params: ParamSet,
+        preset: Option<(u32, f64)>,
+        /// (start_s, dur_s, midi key, CLAP velocity 0..1)
+        notes: Vec<(f64, f64, u16, f64)>,
+        duration_s: Option<f64>,
+    }
+
     struct Track {
         name: String,
         audio: Audio,
+        /// Present when this track is an instrument render rather than a WAV.
+        /// The audio is rendered once the mix length and rate are known.
+        instr: Option<InstrJob>,
         stages: Vec<ResolvedStage>,
         sidechain: Option<String>,
         gain_db: f64,
@@ -976,6 +1327,7 @@ fn real_main() -> Result<(), String> {
         tracks.push(Track {
             name: "input".into(),
             audio: load_input(&input)?,
+            instr: None,
             stages,
             sidechain: None,
             gain_db: 0.0,
@@ -985,15 +1337,104 @@ fn real_main() -> Result<(), String> {
         });
     } else {
         for (i, t) in cfg.track.iter().enumerate() {
-            let path = match (&t.input, &cli_input) {
-                (Some(p), _) => PathBuf::from(p),
-                (None, Some(p)) => p.clone(),
-                (None, None) => {
+            let tname = t.name.clone().unwrap_or_else(|| format!("track {}", i + 1));
+            let (audio, instr) = if let Some(ikey) = &t.instrument {
+                if t.input.is_some() {
                     return Err(format!(
-                        "track {} has no `input` and no CLI input was given",
-                        t.name.clone().unwrap_or_else(|| (i + 1).to_string())
-                    ))
+                        "track '{tname}': `instrument` and `input` are mutually exclusive"
+                    ));
                 }
+                let ispec = instruments()
+                    .into_iter()
+                    .find(|s| s.key == ikey.as_str())
+                    .ok_or_else(|| {
+                        let keys: Vec<&str> = instruments().iter().map(|s| s.key).collect();
+                        format!(
+                            "track '{tname}': unknown instrument '{ikey}'. Available: {}",
+                            keys.join(", ")
+                        )
+                    })?;
+                let notes = parse_notes(&t.notes, &tname)?;
+                if notes.is_empty() && ikey != "ambient" {
+                    return Err(format!(
+                        "track '{tname}': instrument '{ikey}' needs \
+                         `notes = [[start_s, dur_s, midi, velocity], …]`"
+                    ));
+                }
+                if ikey == "ambient" && t.duration_s.is_none() {
+                    return Err(format!(
+                        "track '{tname}': ambient plays without notes — set `duration_s`"
+                    ));
+                }
+                let mut params = ParamSet::new();
+                for (key, val) in t.params.iter() {
+                    let v = val
+                        .as_float()
+                        .or_else(|| val.as_integer().map(|x| x as f64))
+                        .or_else(|| val.as_bool().map(|b| if b { 1.0 } else { 0.0 }))
+                        .ok_or_else(|| format!("{ikey}.{key}: expected a number"))?;
+                    let id = resolve_param_in(ikey, ispec.params, key)?;
+                    if let Some(d) = ispec.params.iter().find(|d| d.id == id) {
+                        if v < d.min || v > d.max {
+                            eprintln!(
+                                "  warning: {ikey}.{} = {v} is outside {}..{} and will be clamped",
+                                param_name(d), d.min, d.max
+                            );
+                        }
+                    }
+                    params.push((id, v));
+                }
+                let preset = match t.preset {
+                    Some(idx) => {
+                        let pd = ispec
+                            .params
+                            .iter()
+                            .find(|d| param_name(d).eq_ignore_ascii_case("Preset"))
+                            .ok_or_else(|| format!(
+                                "track '{tname}': '{ikey}' has no Preset param — set `params` instead"
+                            ))?;
+                        let n = (ispec.presets)().len();
+                        if idx < 0.0 || idx > n.saturating_sub(1) as f64 {
+                            eprintln!(
+                                "  warning: {ikey} preset {idx} is outside 0..{} and will be clamped",
+                                n.saturating_sub(1)
+                            );
+                        }
+                        Some((pd.id, idx))
+                    }
+                    None => {
+                        if ikey == "wave" {
+                            eprintln!(
+                                "  note: wave without `preset` renders whatever \
+                                 ~/.superduper-dsp/wave/last.json holds — set `preset` \
+                                 for a reproducible timbre"
+                            );
+                        }
+                        None
+                    }
+                };
+                (
+                    Audio::silence(0, 0.0),
+                    Some(InstrJob {
+                        key: ikey.clone(),
+                        render: ispec.render,
+                        params,
+                        preset,
+                        notes,
+                        duration_s: t.duration_s,
+                    }),
+                )
+            } else {
+                let path = match (&t.input, &cli_input) {
+                    (Some(p), _) => PathBuf::from(p),
+                    (None, Some(p)) => p.clone(),
+                    (None, None) => {
+                        return Err(format!(
+                            "track '{tname}' has no `input`, no `instrument`, and no CLI input"
+                        ))
+                    }
+                };
+                (load_input(&path)?, None)
             };
             let mut stages = Vec::new();
             for st in &t.stage {
@@ -1029,8 +1470,9 @@ fn real_main() -> Result<(), String> {
                 stages.push(resolve_stage(&cfg_stage)?);
             }
             tracks.push(Track {
-                name: t.name.clone().unwrap_or_else(|| format!("track {}", i + 1)),
-                audio: load_input(&path)?,
+                name: tname,
+                audio,
+                instr,
                 stages,
                 sidechain: t.sidechain.clone(),
                 gain_db: t.gain_db.unwrap_or(0.0),
@@ -1042,19 +1484,54 @@ fn real_main() -> Result<(), String> {
     }
 
     // ---- Sample rate + length ---------------------------------------------
-    let sr = tracks[0].audio.sr;
+    // Instrument tracks have no rate of their own: the first WAV's rate wins,
+    // and an all-instrument config falls back to `sample_rate` (default 48k).
+    let sr = tracks
+        .iter()
+        .find(|t| t.instr.is_none())
+        .map(|t| t.audio.sr)
+        .unwrap_or_else(|| cfg.sample_rate.unwrap_or(48_000.0));
     for t in &tracks {
-        if (t.audio.sr - sr).abs() > 1.0 {
+        if t.instr.is_none() && (t.audio.sr - sr).abs() > 1.0 {
             return Err(format!(
-                "track '{}' is {} Hz but '{}' is {sr} Hz — all inputs must share a rate",
-                t.name, t.audio.sr, tracks[0].name
+                "track '{}' is {} Hz but the render is {sr} Hz — all inputs must share a rate",
+                t.name, t.audio.sr
             ));
         }
     }
     let tail = (cfg.tail_s.max(0.0) * sr) as usize;
-    let frames = tracks.iter().map(|t| t.audio.frames()).max().unwrap_or(0) + tail;
+    let needed = |t: &Track| -> usize {
+        match &t.instr {
+            Some(j) => {
+                let end = j
+                    .notes
+                    .iter()
+                    .map(|n| n.0 + n.1)
+                    .fold(0.0f64, f64::max)
+                    .max(j.duration_s.unwrap_or(0.0));
+                (end * sr).ceil() as usize
+            }
+            None => t.audio.frames(),
+        }
+    };
+    let frames = tracks.iter().map(needed).max().unwrap_or(0) + tail;
     for t in tracks.iter_mut() {
-        t.audio.resize(frames);
+        if let Some(job) = t.instr.take() {
+            let evs: Vec<NoteEv> = job
+                .notes
+                .iter()
+                .map(|&(s, d, k, v)| NoteEv {
+                    on: (s * sr) as usize,
+                    off: (((s + d) * sr) as usize).min(frames.saturating_sub(1)),
+                    key: k,
+                    vel: v,
+                })
+                .collect();
+            println!("── {} ← {} ({} notes)", t.name, job.key, evs.len());
+            t.audio = (job.render)(&job.params, job.preset, &evs, frames, sr);
+        } else {
+            t.audio.resize(frames);
+        }
     }
     println!(
         "Rate: {sr:.0} Hz   Length: {:.2} s ({} tracks, {} master stages)",

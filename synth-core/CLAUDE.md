@@ -69,8 +69,13 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
   model; matching it exactly would need 160 ms of lookahead. Selected in
   superduper-tune by the `Model` param. Core ML variant + conversion recipe:
   `~/Music/1music/swiftf0-coreml/`.
-- **`pvoc`** — STFT phase vocoder (smbPitchShift-style: true-frequency per bin,
-  bins moved to `k·α`, phase re-accumulated, iFFT + OLA). Moved here from
+- **`pvoc`** — STFT phase vocoder (smbPitchShift-style true frequency per bin,
+  **Laroche-Dolson identity phase locking**: peak-defined regions move rigidly
+  by the peak's bin shift, phase accumulates at the peak only, the region's
+  bins lock to it with their analysis offsets; formant envelope = 8-bin boxcar
+  cascaded with `smooth_proportional`, iFFT + OLA). Guarded by
+  `superduper-pitch/tests/locking_quality.rs` (tone 50.7 dB, formant 41 Hz)
+  and `tests/epoch_snap.rs` (no PSOLA crossover on smooth mono). Moved here from
   `effects/superduper-pitch` so **Tune** and the iOS staticlib can reach it —
   an effect crate depending on another effect crate would have been a new and
   wrong direction. The compatibility re-export under `superduper_pitch::pvoc`
@@ -126,7 +131,8 @@ This is the repeatable "rebuild my DSP for iPhone" step. `wave_osc.rs` is the wo
   `tick(in, out)` per sample.
 - **`gui`** (feature `gui`, gated) — shared egui_baseview helpers for every
   effect plugin's UI: `ResizeBridge`, `install_default_style`, `section`,
-  `param_row`, `preset_combo`, `top_bar`. Pulls in `egui` and
+  `param_row`, `preset_combo`, `top_bar`, `loudness_row` (the one BS.1770
+  M/S/I + dBTP readout row — Limiter and Spectrum both draw it). Pulls in `egui` and
   `atomic_float` only when feature is enabled.
 
 ## Adding a new shared block

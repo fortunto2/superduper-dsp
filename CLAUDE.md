@@ -113,8 +113,11 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
     weighted OLA.
   - **Track** (phase vocoder, `pvoc.rs`) — transposes **polyphony**: whole
     mixes, chords, drums, a full song (change the key of a track). STFT
-    smbPitchShift-style (realfft, N=2048/H=512), true-freq per bin → move bins to
-    `k·α`, phase re-accumulate, iFFT+OLA. **Correct OLA normalisation** (raw
+    smbPitchShift-style (realfft, N=2048/H=512) with **Laroche-Dolson identity
+    phase locking** (2026-09-24): magnitude peaks define regions, each region
+    moves rigidly by its peak's bin shift, phase accumulates only at the peak
+    and the region's bins lock to it — single tone +3 st signal-to-junk
+    36.8 → 50.7 dB, smooth mono at 24 st −2.3 → −38.0 dB, iFFT+OLA. **Correct OLA normalisation** (raw
     `|X|`, ÷Hann²-COLA 1.5 → identity ≈ unity peak, was a 2.67× overshoot that
     clipped drums) + **spectral-flux transient detection → phase reset** (sharp
     attacks, less phasiness). Optional envelope-shift formant. RT-safe.
@@ -398,14 +401,17 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   `synth-core/src/drum_voices.rs` (the crate re-exports them as `voices`).
 - **superduper-sampler** — polyphonic WAV player with YIN pitch tuner,
   multi-mode SVF filter (LP/HP/BP/Notch), reverse playback,
-  velocity→amp/cutoff, click-to-audition on the waveform.
+  velocity→amp/cutoff, click-to-audition on the waveform. **8 factory
+  presets** (One-Shot / 808 Long / Tight Chop / Looped Pad / Reverse Swell /
+  Vinyl Stab / Sub Bass) — playback character only: `apply_preset` never
+  touches the `Sample` slot, which belongs to the session's bank.
 
 All 31 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
 
-- **Preset selector param** (synths: Wave/Drum/Kubyz/Pad) — a stepped
+- **Preset selector param** (synths: Wave/Drum/Kubyz/Pad/Sampler) — a stepped
   `"Preset"` CLAP param appended last in `PARAMS` lets a host/agent
   (producer-pal/MCP, automation) recall a whole preset — wavetable, voice
   timbre, drum kit — without the GUI. Shared plumbing in
@@ -415,7 +421,7 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
   (allocating) `apply_preset(idx)` runs on the **main thread** in
   `on_main_thread()` + the main-thread `flush`. `apply_preset` marks every
   param dirty (lesson 21d) so the host/LOM reflects the recall. Indices:
-  Wave 37, Pad 14, Drum 27, Kubyz 19. **Gotcha:** if a plugin's presets
+  Wave 37, Pad 14, Drum 27, Kubyz 19, Sampler 21. **Gotcha:** if a plugin's presets
   const-build from `PARAMS.len()`, referencing `PRESETS.len()` in the const
   `PARAMS` table is a const-eval cycle (E0391) — break it with a separate
   `const PRESET_COUNT` + a `const _: () = assert!(...)` sync guard.

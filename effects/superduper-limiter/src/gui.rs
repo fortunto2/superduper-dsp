@@ -94,19 +94,14 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         draw_headroom_meter(ui, &state.shared);
         // Output loudness readout — the question a mastering limiter exists
         // to answer, without leaving the plugin for an external meter.
-        ui.horizontal(|ui| {
-            let st = state.shared.lufs_short_term.load(Ordering::Relaxed);
-            let li = state.shared.lufs_integrated.load(Ordering::Relaxed);
-            let tp = state.shared.true_peak_dbtp.load(Ordering::Relaxed);
-            let fmt = |v: f32| if v <= -99.0 { "  --".to_string() } else { format!("{v:5.1}") };
-            ui.label(egui::RichText::new(format!("S {} LUFS", fmt(st))).color(core_gui::GREEN).monospace());
-            ui.label(egui::RichText::new(format!("I {} LUFS", fmt(li))).color(core_gui::GREEN_BRIGHT).monospace());
-            let tp_col = if tp > -1.0 { egui::Color32::from_rgb(255, 90, 70) } else { core_gui::GREEN_BRIGHT };
-            ui.label(egui::RichText::new(format!("TP {} dBTP", fmt(tp))).color(tp_col).monospace());
-            if ui.button(egui::RichText::new("reset").monospace()).clicked() {
-                state.shared.meter_reset.store(true, Ordering::Relaxed);
-            }
-        });
+        core_gui::loudness_row(
+            ui,
+            None, // a limiter answers S/I, not the 400 ms momentary
+            state.shared.lufs_short_term.load(Ordering::Relaxed),
+            state.shared.lufs_integrated.load(Ordering::Relaxed),
+            state.shared.true_peak_dbtp.load(Ordering::Relaxed),
+            Some(&state.shared.meter_reset),
+        );
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {

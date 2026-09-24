@@ -335,6 +335,49 @@ pub fn draw_scope(ui: &mut egui::Ui, scope: &LiveScope, rect: egui::Rect, sample
 /// Far more informative on synths than the raw waveform: you see exactly
 /// which harmonics are loud, where the filter is, and how unison spread
 /// pulls the partials into clusters.
+/// One-line BS.1770 loudness readout — `M / S / I` LUFS plus true peak,
+/// with TP turning red above −1 dBTP. The same row the Limiter and
+/// Spectrum meters used to hand-roll separately. `momentary: None` skips
+/// the M slot (a limiter answers S/I); `reset: Some(flag)` draws a reset
+/// button that raises the flag for the audio thread.
+pub fn loudness_row(
+    ui: &mut egui::Ui,
+    momentary: Option<f32>,
+    short_term: f32,
+    integrated: f32,
+    true_peak_dbtp: f32,
+    reset: Option<&std::sync::atomic::AtomicBool>,
+) {
+    let fmt = |v: f32| {
+        if !v.is_finite() || v <= -99.0 { "  −∞".to_string() } else { format!("{v:>5.1}") }
+    };
+    ui.horizontal(|ui| {
+        if let Some(m) = momentary {
+            ui.label(egui::RichText::new(format!("M {} LUFS", fmt(m))).color(GREEN).monospace());
+            ui.add_space(8.0);
+        }
+        ui.label(egui::RichText::new(format!("S {} LUFS", fmt(short_term))).color(GREEN).monospace());
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!("I {} LUFS", fmt(integrated))).color(GREEN_BRIGHT).monospace(),
+        );
+        ui.add_space(12.0);
+        let tp_col = if true_peak_dbtp.is_finite() && true_peak_dbtp > -1.0 {
+            egui::Color32::from_rgb(255, 90, 70)
+        } else {
+            GREEN_BRIGHT
+        };
+        ui.label(
+            egui::RichText::new(format!("TP {} dBTP", fmt(true_peak_dbtp))).color(tp_col).monospace(),
+        );
+        if let Some(r) = reset {
+            if ui.button(egui::RichText::new("reset").monospace()).clicked() {
+                r.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
+}
+
 pub fn draw_spectrum_strip(
     ui: &mut egui::Ui,
     scope: &LiveScope,

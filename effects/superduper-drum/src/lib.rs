@@ -2,8 +2,9 @@
 //!
 //! Six voices (Kick, Snare, Hat Closed, Hat Open, Clap, Cowbell) all
 //! synthesised — no samples, no fixtures. Each voice has its own
-//! tiny synthesis recipe inside `voices.rs`; this file is the CLAP
-//! glue: param table, MIDI routing, voice trigger logic, audio mixdown.
+//! tiny synthesis recipe in `synth_core::drum_voices` (shared with iOS);
+//! this file is the CLAP glue: param table, MIDI routing, voice trigger
+//! logic, audio mixdown.
 //!
 //! ## Ecosystem integration: note passthrough
 //!
@@ -24,8 +25,8 @@
 
 pub mod gui;
 pub mod presets;
-// Drum voice DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the old `voices`
-// path so every reference keeps working; old src/voices.rs is now dead (left in place).
+// Drum voice DSP lives in synth-core (so iOS/live2play reuses it). Re-export
+// under the old `voices` path so every reference keeps working.
 pub use superduper_synth_core::drum_voices as voices;
 
 use atomic_float::AtomicF32;

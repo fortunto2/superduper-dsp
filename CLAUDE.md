@@ -390,8 +390,7 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   written elsewhere — a GM loop, a DAW export — lost its hats (42/46) and
   clap (39) without a sound or a warning. GM wins the single collision at
   note 40 (GM Electric Snare vs. white-key E hat). Voices live in
-  `synth-core/src/drum_voices.rs`; the crate's own `src/voices.rs` is a
-  dead copy left behind by the move and is not compiled.
+  `synth-core/src/drum_voices.rs` (the crate re-exports them as `voices`).
 - **superduper-sampler** — polyphonic WAV player with YIN pitch tuner,
   multi-mode SVF filter (LP/HP/BP/Notch), reverse playback,
   velocity→amp/cutoff, click-to-audition on the waveform.

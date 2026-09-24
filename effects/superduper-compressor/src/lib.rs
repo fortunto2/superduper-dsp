@@ -483,9 +483,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let mut max_gr_db: f32 = 0.0;
 
         // ---- Snapshot the sidechain port (index 1) before touching main ----
-        // AI-TODO: two-port clack-host e2e in sdsp-test-kit asserting GR
-        // releases while a routed key is silent (the bug the latch fixes);
-        // verified via sdsp-chain render + envelope measurement only.
+        // AI-NOTE: keying, latch persistence and release-on-silent-key are
+        // pinned by tests/sidechain_e2e.rs (two-port clack-host e2e).
         let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Process main port (index 0) ----

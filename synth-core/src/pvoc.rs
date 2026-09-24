@@ -15,7 +15,7 @@
 
 use crate::dsp_blocks::LatencyDelay;
 use crate::psola::PitchParams;
-use crate::spectral::StftProcessor;
+use crate::spectral::{smooth_proportional, StftProcessor};
 use realfft::num_complex::Complex;
 
 /// FFT window. 2048 @ 48 kHz = 23 Hz/bin — enough resolution for bass in a mix.
@@ -55,8 +55,13 @@ struct PitchScratch {
     ana_freq: Box<[f32]>,
     ana_phase: Box<[f32]>,
     syn_magn: Box<[f32]>,
-    syn_freq: Box<[f32]>,
+    syn_phase: Box<[f32]>,
     env: Box<[f32]>,
+    env_shifted: Box<[f32]>,
+    /// Peak bin indices for the Laroche-Dolson regions of this frame.
+    peaks: Vec<u32>,
+    /// Prefix-sum scratch for `smooth_proportional`.
+    prefix: Box<[f64]>,
 }
 impl PitchScratch {
     fn new() -> Self {
@@ -66,8 +71,11 @@ impl PitchScratch {
             ana_freq: z(),
             ana_phase: z(),
             syn_magn: z(),
-            syn_freq: z(),
+            syn_phase: z(),
             env: z(),
+            env_shifted: z(),
+            peaks: Vec::with_capacity(HALF + 1),
+            prefix: vec![0.0f64; HALF + 2].into_boxed_slice(),
         }
     }
 }
@@ -121,54 +129,149 @@ fn pitch_frame(
     }
     let onset = total > 1e-4 && flux > 0.40 * total;
 
-    // --- pitch shift: move bin k → round(k·α) ---
+    // --- pitch shift with Laroche-Dolson identity phase locking ---
+    //
+    // Independent per-bin phase accumulation lets the bins of one partial
+    // drift apart, which is the classic phase-vocoder "phasiness". Instead:
+    // find the magnitude peaks, treat each peak's region (valley to valley)
+    // as one rigid partial, move the WHOLE region by the peak's integer bin
+    // shift, accumulate phase only at the peak, and lock every other bin of
+    // the region to the peak with its analysis phase offset (Laroche &
+    // Dolson 1999, "identity phase locking"). Measured on this file's own
+    // test (locking_quality.rs): single tone +3 st signal-to-junk 36.8 →
+    // see the assert baselines there.
     for v in sc.syn_magn.iter_mut() {
         *v = 0.0;
     }
-    for v in sc.syn_freq.iter_mut() {
+    for v in sc.syn_phase.iter_mut() {
         *v = 0.0;
     }
-    for k in 0..=HALF {
-        let index = (k as f32 * alpha).round() as usize;
-        if index <= HALF {
-            sc.syn_magn[index] += sc.ana_magn[k];
-            sc.syn_freq[index] = sc.ana_freq[k] * alpha;
+
+    // Peaks: larger than 2 neighbours each side (spectrum edges can't peak).
+    sc.peaks.clear();
+    for k in 2..HALF - 1 {
+        let m = sc.ana_magn[k];
+        if m > 0.0
+            && m >= sc.ana_magn[k - 1]
+            && m >= sc.ana_magn[k - 2]
+            && m > sc.ana_magn[k + 1]
+            && m > sc.ana_magn[k + 2]
+        {
+            sc.peaks.push(k as u32);
+        }
+    }
+
+    if sc.peaks.is_empty() {
+        // Silence (or near-): nothing to lock, nothing to move.
+        for k in 0..=HALF {
+            st.sum_phase[k] = sc.ana_phase[k];
+            syn[k] = Complex::new(0.0, 0.0);
+        }
+        return;
+    }
+
+    let n_peaks = sc.peaks.len();
+    for pi in 0..n_peaks {
+        let kp = sc.peaks[pi] as usize;
+        // Region: from the valley before this peak to the valley after it.
+        let lo = if pi == 0 {
+            0
+        } else {
+            let prev = sc.peaks[pi - 1] as usize;
+            let mut v = prev + 1;
+            for j in prev + 1..kp {
+                if sc.ana_magn[j] < sc.ana_magn[v] {
+                    v = j;
+                }
+            }
+            v
+        };
+        let hi = if pi + 1 == n_peaks {
+            HALF
+        } else {
+            let next = sc.peaks[pi + 1] as usize;
+            let mut v = kp + 1;
+            for j in kp + 1..next {
+                if sc.ana_magn[j] < sc.ana_magn[v] {
+                    v = j;
+                }
+            }
+            v.saturating_sub(1)
+        };
+
+        // The whole region moves by the peak's integer shift, so adjacent
+        // bins of a partial stay adjacent.
+        let tp = (kp as f32 * alpha).round() as isize;
+        if tp < 0 || tp > HALF as isize {
+            continue;
+        }
+        let shift = tp - kp as isize;
+
+        // Peak phase: accumulate from the peak's true frequency × α, at the
+        // peak's target bin (or take the analysis phase on a transient).
+        let peak_phase = if onset {
+            sc.ana_phase[kp]
+        } else {
+            let target_freq = sc.ana_freq[kp] * alpha;
+            let mut tmp = target_freq - tp as f32 * freq_per_bin;
+            tmp /= freq_per_bin;
+            tmp = core::f32::consts::TAU * tmp / osamp;
+            tmp += tp as f32 * expct;
+            st.sum_phase[tp as usize] + tmp
+        };
+
+        for k in lo..=hi {
+            let t = k as isize + shift;
+            if !(0..=HALF as isize).contains(&t) {
+                continue;
+            }
+            let t = t as usize;
+            if sc.ana_magn[k] > sc.syn_magn[t] {
+                // On collision the louder contribution keeps the phase.
+                sc.syn_phase[t] = peak_phase + (sc.ana_phase[k] - sc.ana_phase[kp]);
+            }
+            sc.syn_magn[t] += sc.ana_magn[k];
         }
     }
 
     // --- optional formant (envelope) shift by β ---
     if (beta - 1.0).abs() > 1e-3 {
-        const W: usize = 8;
-        for k in 0..=HALF {
-            let lo = k.saturating_sub(W);
-            let hi = (k + W).min(HALF);
-            let mut s = 0.0;
-            for j in lo..=hi {
-                s += sc.syn_magn[j];
+        // Envelope = fixed 8-bin boxcar (the floor: never narrower than the
+        // spacing of low harmonics, or the "envelope" traces the comb
+        // itself) cascaded with frequency-proportional smoothing (the top
+        // needs a much wider window than the bottom). Measured on the vowel
+        // counter-shift test: proportional alone read the comb below ~1 kHz.
+        {
+            const W: usize = 8;
+            let mut acc = 0.0f64;
+            sc.prefix[0] = 0.0;
+            for k in 0..=HALF {
+                acc += sc.syn_magn[k] as f64;
+                sc.prefix[k + 1] = acc;
             }
-            sc.env[k] = s / (hi - lo + 1) as f32 + 1e-9;
+            for k in 0..=HALF {
+                let lo = k.saturating_sub(W);
+                let hi = (k + W).min(HALF);
+                sc.env_shifted[k] =
+                    ((sc.prefix[hi + 1] - sc.prefix[lo]) / (hi - lo + 1) as f64) as f32;
+            }
         }
+        smooth_proportional(&sc.env_shifted, &mut sc.env, 0.08, &mut sc.prefix);
         for k in 0..=HALF {
             let src = (k as f32 / beta).round() as usize;
-            let shifted_env = if src <= HALF { sc.env[src] } else { 0.0 };
-            sc.syn_magn[k] *= shifted_env / sc.env[k];
+            let shifted = if src <= HALF { sc.env[src] } else { 0.0 };
+            sc.env_shifted[k] = shifted;
+        }
+        for k in 0..=HALF {
+            sc.syn_magn[k] *= sc.env_shifted[k] / (sc.env[k] + 1e-9);
         }
     }
 
-    // --- synthesis: accumulate phase (or reset on a transient) ---
+    // --- synthesis: write the locked phases, remember them for continuity ---
     for k in 0..=HALF {
         let magn = sc.syn_magn[k];
-        if onset {
-            st.sum_phase[k] = sc.ana_phase[k];
-        } else {
-            let mut tmp = sc.syn_freq[k];
-            tmp -= k as f32 * freq_per_bin;
-            tmp /= freq_per_bin;
-            tmp = core::f32::consts::TAU * tmp / osamp;
-            tmp += k as f32 * expct;
-            st.sum_phase[k] += tmp;
-        }
-        let phase = st.sum_phase[k];
+        let phase = if magn > 0.0 { sc.syn_phase[k] } else { st.sum_phase[k] };
+        st.sum_phase[k] = phase;
         syn[k] = Complex::new(magn * phase.cos(), magn * phase.sin());
     }
 }

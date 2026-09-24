@@ -352,18 +352,17 @@ fn forced_voice_survives_the_wrong_material() {
 ///               24.00        -28.2    -2.3
 /// ```
 ///
-/// So above ~7 st on smooth mono, Auto now routes to the WORSE engine, by up
-/// to 26 dB at ±24 st. Pitch shifts ±24 st, so this is a real use case.
-///
-/// The obvious rule — prefer PSOLA above some |shift| when the material has no
-/// epochs — is NOT shipped, because it could not be verified where it matters
-/// most: PSOLA cannot do polyphony at all, and `noise_to_harmonic` cannot
-/// judge a chord (it scores one harmonic grid, so a triad measures +1 dB at
-/// its own input). A rule that might route chords into PSOLA on the strength
-/// of an unmeasured assumption is worse than the gap it closes. Fixing this
-/// needs a polyphony-capable metric first.
+/// **Update 2026-09-24: the crossover is gone.** Laroche-Dolson identity
+/// phase locking in `pvoc` removed the with-shift degradation the table
+/// records (12 st: −17.9 → −50.2, 24 st: −2.3 → −38.0 measured by this
+/// test), so the vocoder now beats gated PSOLA on smooth mono at EVERY
+/// shift and Auto's "smooth → pvoc" routing is right across the range.
+/// The shift-aware routing rule discussed above is therefore not needed.
+/// This test keeps the claim honest in the other direction: if a pvoc
+/// change brings the crossover back, Auto is silently routing to the worse
+/// engine again above it, and this fails.
 #[test]
-fn auto_is_shift_blind_and_that_now_costs_something() {
+fn pvoc_beats_psola_on_smooth_mono_at_every_shift() {
     use superduper_synth_core::pitch_engine::{Mode, PitchEngine};
     let x = smooth(2.5);
     let render_mode = |st: f32, m: Mode| {
@@ -396,7 +395,11 @@ fn auto_is_shift_blind_and_that_now_costs_something() {
             crossover = Some(st);
         }
     }
-    let st = crossover.expect("PSOLA never overtakes — the limitation described above is gone");
-    println!("crossover at {st} st; Auto stays on pvoc regardless, by design for now");
-    assert!(st >= 4.0, "the crossover moved down to {st} st — the routing gap is now wider than recorded");
+    if let Some(st) = crossover {
+        panic!(
+            "PSOLA overtakes pvoc again at {st} st — phase locking regressed, and \
+             Auto now routes smooth material to the worse engine above that shift"
+        );
+    }
+    println!("no crossover: pvoc wins at every shift, Auto's smooth→pvoc routing is right everywhere");
 }

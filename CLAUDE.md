@@ -140,8 +140,13 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
     Verified: Voice +12 → ×2, −12 → ×0.5, Formant +7 raises centroid with f0
     fixed, no clicks (max Δsample < 0.02); Track transposes a C-E-G triad +2 st
     (all tones move, originals gone), identity peak 1.0×; key detection on
-    I-IV-V-I progressions; Match interval correct. **TODO (item 5, deferred):**
-    Laroche-Dolson phase-locking + cepstral formant-preservation for Track.
+    I-IV-V-I progressions; Match interval correct. **Done 2026-09-24:**
+    Laroche-Dolson identity phase locking in Track (single tone +3 st
+    signal-to-junk 36.8 → 50.7 dB, smooth mono at 24 st −2.3 → −38.0 dB —
+    the PSOLA crossover is gone) + boxcar⊗proportional formant envelope
+    (counter-shift centroid error 133 → 41 Hz); cepstral liftering measured
+    equivalent at this window size and was not kept. Guarded by
+    `tests/locking_quality.rs` and `epoch_snap.rs`.
 - **superduper-tune** *(new)* — autotune / pitch correction. Reuses the **shared
   TD-PSOLA engine** (`synth_core::psola::PitchShifter`, extracted from Pitch so
   both plugins — and iOS — share one copy) + the shared YIN tracker. Measures the

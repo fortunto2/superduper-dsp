@@ -15,6 +15,8 @@
 //! sdsp-tune fix voice.wav out.wav             # analyse + correct to C major
 //! sdsp-tune fix voice.wav out.wav --key A --scale minor --amount 0.8
 //! sdsp-tune fix voice.wav out.wav --apply voice.notes.txt   # your edits
+//! sdsp-tune edit voice.notes.txt              # show the notes, numbered
+//! sdsp-tune edit voice.notes.txt 5=D#3 7=+1 12..14=-2 @31.2=sung
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -266,11 +268,209 @@ fn draw(path: &Path, frames: &[Frame], notes: &[Note], conf_gate: f32) -> Result
 }
 
 // ---------------------------------------------------------------------------
+// `edit` — change targets in a note list from the command line
+// ---------------------------------------------------------------------------
+
+/// One parsed row of a notes file, enough to rewrite it.
+struct NoteRow {
+    idx: usize,
+    start: f32,
+    dur: f32,
+    sung_name: String,
+    sung_cents: f32,
+    /// `-` means "leave as sung".
+    target: String,
+    vibrato: f32,
+}
+
+impl NoteRow {
+    fn sung_st(&self) -> f32 {
+        melody::parse_pitch(&self.sung_name).unwrap_or(0.0) + self.sung_cents / 100.0
+    }
+    fn target_st(&self) -> f32 {
+        if self.target == "-" {
+            self.sung_st()
+        } else {
+            melody::parse_pitch(&self.target).unwrap_or(self.sung_st())
+        }
+    }
+    fn to_line(&self) -> String {
+        let target_st = self.target_st();
+        format!(
+            "{:5}  {:8.3}  {:6.3}  {:>4} {:+6.0}c  {:>6}  {:+7.0}c  {:6.0}c",
+            self.idx,
+            self.start,
+            self.dur,
+            self.sung_name,
+            self.sung_cents,
+            self.target,
+            (self.sung_st() - target_st) * 100.0,
+            self.vibrato,
+        )
+    }
+}
+
+fn parse_rows(text: &str) -> Result<Vec<NoteRow>, String> {
+    let mut rows = Vec::new();
+    for (ln, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let c: Vec<&str> = line.split_whitespace().collect();
+        if c.len() < 8 {
+            return Err(format!("line {}: expected 8 columns, got {}", ln + 1, c.len()));
+        }
+        let num = |s: &str| s.trim_end_matches('c').parse::<f32>();
+        rows.push(NoteRow {
+            idx: c[0].parse().map_err(|_| format!("line {}: bad index {:?}", ln + 1, c[0]))?,
+            start: num(c[1]).map_err(|_| format!("line {}: bad start", ln + 1))?,
+            dur: num(c[2]).map_err(|_| format!("line {}: bad dur", ln + 1))?,
+            sung_name: c[3].to_string(),
+            sung_cents: num(c[4]).map_err(|_| format!("line {}: bad cents", ln + 1))?,
+            target: c[5].to_string(),
+            vibrato: num(c[7]).map_err(|_| format!("line {}: bad vibrato", ln + 1))?,
+        });
+    }
+    Ok(rows)
+}
+
+/// Apply one `WHO=WHAT` spec. WHO: `5`, `3..7`, `all`, `@12.3` (the note
+/// sounding at that second, else the nearest start). WHAT: a note name or
+/// MIDI number (absolute), `+N`/`-N` semitones relative to the current
+/// target, or `sung`/`-` (leave the note as sung). Returns the indices it
+/// changed.
+fn apply_spec(rows: &mut [NoteRow], spec: &str) -> Result<Vec<usize>, String> {
+    let (who, what) = spec
+        .split_once('=')
+        .ok_or_else(|| format!("{spec:?}: expected WHO=TARGET (e.g. 5=D#3, 3..7=+1, @12.3=sung)"))?;
+
+    let sel: Vec<usize> = if who.eq_ignore_ascii_case("all") {
+        (0..rows.len()).collect()
+    } else if let Some(t) = who.strip_prefix('@') {
+        let t: f32 = t.parse().map_err(|_| format!("{who:?}: bad time"))?;
+        let inside = rows
+            .iter()
+            .position(|r| t >= r.start && t <= r.start + r.dur)
+            .or_else(|| {
+                rows.iter()
+                    .enumerate()
+                    .min_by(|a, b| {
+                        (a.1.start - t).abs().total_cmp(&(b.1.start - t).abs())
+                    })
+                    .map(|(i, _)| i)
+            })
+            .ok_or("no notes in the file")?;
+        vec![inside]
+    } else if let Some((a, b)) = who.split_once("..") {
+        let a: usize = a.parse().map_err(|_| format!("{who:?}: bad range"))?;
+        let b: usize = b.parse().map_err(|_| format!("{who:?}: bad range"))?;
+        if b >= rows.len() || a > b {
+            return Err(format!("{who:?}: notes go 0..{}", rows.len().saturating_sub(1)));
+        }
+        (a..=b).collect()
+    } else {
+        let i: usize = who.parse().map_err(|_| format!("{who:?}: bad note index"))?;
+        if i >= rows.len() {
+            return Err(format!("note {i} does not exist (0..{})", rows.len().saturating_sub(1)));
+        }
+        vec![i]
+    };
+
+    for &i in &sel {
+        let row = &mut rows[i];
+        if what.eq_ignore_ascii_case("sung") || what == "-" {
+            row.target = "-".into();
+        } else if let Some(rel) = what
+            .strip_prefix('+')
+            .map(|v| (v, 1.0))
+            .or_else(|| what.strip_prefix('-').map(|v| (v, -1.0)))
+        {
+            let (v, sign) = rel;
+            let st: f32 = v.parse().map_err(|_| format!("{what:?}: bad relative shift"))?;
+            row.target = melody::note_name(row.target_st() + sign * st);
+        } else {
+            melody::parse_pitch(what).ok_or_else(|| format!("{what:?}: not a note, MIDI number, +N/-N, or sung"))?;
+            row.target = what.to_uppercase();
+        }
+    }
+    Ok(sel)
+}
+
+const NOTES_HEADER: &str = "# sdsp-tune note list — edit the `target` column and re-run with --apply\n\
+    # target: a note name (A4, C#3) or a MIDI number; `-` leaves the note alone\n\
+    #\n\
+    #  idx     start      dur       sung        target     error   vibrato\n";
+
+fn rows_to_text(rows: &[NoteRow]) -> String {
+    let mut s = String::from(NOTES_HEADER);
+    for r in rows {
+        s.push_str(&r.to_line());
+        s.push('\n');
+    }
+    s
+}
+
+fn cmd_edit(path: &Path, specs: &[String]) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut rows = parse_rows(&text)?;
+
+    if specs.is_empty() {
+        // Just show the list, with the off-pitch ones flagged.
+        for r in &rows {
+            let err = (r.sung_st() - r.target_st()) * 100.0;
+            let flag = if err.abs() > 20.0 { "  <- off" } else { "" };
+            println!("{}{flag}", r.to_line());
+        }
+        println!(
+            "\nedit: sdsp-tune edit {} 5=D#3 7=+1 3..7=-2 @12.3=sung all=+12",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let mut touched = Vec::new();
+    for spec in specs {
+        let before: Vec<String> = rows.iter().map(|r| r.target.clone()).collect();
+        for i in apply_spec(&mut rows, spec)? {
+            if rows[i].target != before[i] {
+                touched.push((i, before[i].clone()));
+            }
+        }
+    }
+
+    if touched.is_empty() {
+        println!("nothing changed");
+        return Ok(());
+    }
+    std::fs::write(path, rows_to_text(&rows)).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (i, old) in &touched {
+        let r = &rows[*i];
+        println!(
+            "{:5}  {:8.3}s  {:>4} {:+5.0}c   {} -> {}",
+            r.idx, r.start, r.sung_name, r.sung_cents, old, r.target
+        );
+    }
+    println!(
+        "\n{} target(s) changed. Render with:\n  sdsp-tune fix <in.wav> <out.wav> --apply {}",
+        touched.len(),
+        path.display()
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 
 fn usage() {
     println!("Usage:");
     println!("  sdsp-tune analyse <in.wav> [opts]           notes + PNG only");
     println!("  sdsp-tune fix <in.wav> <out.wav> [opts]     analyse, correct, render");
+    println!("  sdsp-tune edit <notes.txt>                  show the note list, numbered");
+    println!("  sdsp-tune edit <notes.txt> <spec>...        change targets in place:");
+    println!("                        5=D#3 (or MIDI number)   set note 5");
+    println!("                        7=+1  7=-2               shift from current target");
+    println!("                        3..7=+12  all=-12        ranges");
+    println!("                        @12.3=sung               the note at 12.3 s, back to as-sung");
     println!();
     println!("Options:");
     println!("  --key <C..B>          key root for scale snapping (default C)");
@@ -365,6 +565,10 @@ fn run() -> Result<(), String> {
             let o = argv.get(2).ok_or("fix needs an output wav")?;
             (true, PathBuf::from(p), Some(PathBuf::from(o)), argv[3..].to_vec())
         }
+        "edit" => {
+            let p = argv.get(1).ok_or("edit needs a notes.txt (from analyse)")?;
+            return cmd_edit(Path::new(p), &argv[2..]);
+        }
         _ => {
             usage();
             return Ok(());
@@ -453,5 +657,60 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("sdsp-tune: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    fn sample() -> Vec<NoteRow> {
+        parse_rows(
+            "    0     0.100   0.500    A3    -34c      A3      +34c      12c\n\
+                 1     0.700   0.300    C4     +8c       -        +0c       5c\n\
+                 2     1.100   0.400   D#4    -12c      E4      -88c      20c\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn roundtrip_survives_reparse_and_feeds_apply() {
+        let rows = sample();
+        let text = rows_to_text(&rows);
+        let again = parse_rows(&text).unwrap();
+        assert_eq!(rows.len(), again.len());
+        for (a, b) in rows.iter().zip(&again) {
+            assert_eq!(a.target, b.target);
+            assert!((a.sung_st() - b.sung_st()).abs() < 0.02);
+        }
+        // The rewritten file must still be readable by melody::parse_notes —
+        // that is the contract with `fix --apply`.
+        let mut notes = vec![
+            melody::Note { start_s: 0.1, end_s: 0.6, first: 0, last: 1, sung_st: 56.66, target_st: 57.0, range_cents: 12.0 },
+            melody::Note { start_s: 0.7, end_s: 1.0, first: 2, last: 3, sung_st: 60.08, target_st: 60.0, range_cents: 5.0 },
+            melody::Note { start_s: 1.1, end_s: 1.5, first: 4, last: 5, sung_st: 62.88, target_st: 64.0, range_cents: 20.0 },
+        ];
+        melody::parse_notes(&text, &mut notes).unwrap();
+        assert!((notes[0].target_st - 57.0).abs() < 0.01);
+        assert!((notes[1].target_st - notes[1].sung_st).abs() < 0.01); // `-`
+    }
+
+    #[test]
+    fn specs_absolute_relative_range_time_sung() {
+        let mut r = sample();
+        apply_spec(&mut r, "0=C4").unwrap();
+        assert_eq!(r[0].target, "C4");
+        apply_spec(&mut r, "0=+2").unwrap();
+        assert_eq!(r[0].target, "D4");
+        apply_spec(&mut r, "0..1=-12").unwrap();
+        assert_eq!(r[0].target, "D3");
+        // note 1 was `-` (as sung, ~C4): −12 lands an octave under the SUNG pitch
+        assert_eq!(r[1].target, "C3");
+        apply_spec(&mut r, "@1.3=sung").unwrap();
+        assert_eq!(r[2].target, "-");
+        apply_spec(&mut r, "all=69").unwrap();
+        assert!(r.iter().all(|x| x.target == "69"));
+        assert!(apply_spec(&mut r, "9=C4").is_err());
+        assert!(apply_spec(&mut r, "0=xyz").is_err());
     }
 }

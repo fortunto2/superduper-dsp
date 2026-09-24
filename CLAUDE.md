@@ -534,8 +534,11 @@ from host BPM read out of `CoreEventSpace::Transport` events.
   latency is free offline. Closed loop on a real vocal: median |error| 20 → 6
   cents. Notes are corrected whole (median → target, vibrato kept),
   and the note list is an editable text file — change a `target`, re-run with
-  `--apply`, and only that note moves. That text file is the manual editing
-  surface until a GUI exists.
+  `--apply`, and only that note moves. **`sdsp-tune edit <notes.txt>`** edits it
+  from the CLI: no args = numbered list with off-pitch notes flagged;
+  `5=D#3` / `7=+1` / `3..7=-2` / `@12.3=sung` / `all=+12` rewrite targets in
+  place (error column recomputed) and print the diff. That is the manual
+  editing surface until a GUI exists.
 - **`tools/pitch-bench`** — put the two pitch detectors side by side. No args =
   synthetic suite with known f0 (accuracy in cents, octave-error rate, CPU);
   a WAV = agreement between them plus the timestamps where they disagree by an

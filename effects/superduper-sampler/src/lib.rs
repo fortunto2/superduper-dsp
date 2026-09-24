@@ -12,6 +12,7 @@
 
 pub mod bank;
 pub mod gui;
+pub mod presets;
 pub mod voice;
 
 use atomic_float::AtomicF32;
@@ -127,6 +128,11 @@ pub const PARAMS: &[ParamDef] = &[
     // added to the cutoff before the envelope. Positive = harder hit
     // is brighter; negative = harder hit is darker (rare but musical).
     ParamDef { id: 20, name: b"Vel>Cut",     min: -60.0, max: 60.0,   default: 0.0,     unit: "ST" },
+
+    // Stepped preset selector, appended last (the same recall pattern as
+    // Wave/Pad/Drum/Kubyz). apply_preset allocates nothing here but still
+    // runs on the main thread for consistency.
+    ParamDef { id: 21, name: b"Preset", min: 0.0, max: (presets::PRESET_COUNT - 1) as f64, default: 0.0, unit: "" },
 ];
 
 pub const P_SAMPLE: usize = 0;
@@ -150,6 +156,7 @@ pub const P_RESO: usize = 17;
 pub const P_ENV_CUTOFF: usize = 18;
 pub const P_VEL_AMP: usize = 19;
 pub const P_VEL_CUTOFF: usize = 20;
+pub const P_PRESET: usize = 21;
 
 // ---------------------------------------------------------------------------
 // Shared params + sample library
@@ -224,6 +231,26 @@ impl std::ops::Deref for PluginShared {
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
+
+/// Recall a factory preset — playback character only: the `Sample` slot is
+/// never touched (which sample is loaded belongs to the session, not to the
+/// preset), and the selector itself is written last so the host and MCP read
+/// the active index. Marks everything dirty (lesson 21d). Main thread only.
+pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
+    let Some(preset) = presets::PRESETS.get(preset_idx) else { return };
+    for (i, &v) in preset.values.iter().enumerate() {
+        if i == P_PRESET || i == P_SAMPLE { continue; }
+        if let Some(atom) = shared.params.get(i) {
+            atom.store(v, Ordering::Relaxed);
+            shared.dirty_params[i].store(true, Ordering::Relaxed);
+        }
+    }
+    if let Some(atom) = shared.params.get(P_PRESET) {
+        atom.store(preset_idx as f32, Ordering::Relaxed);
+    }
+    shared.dirty_params[P_PRESET].store(true, Ordering::Relaxed);
+    shared.active_preset.store(preset_idx as u32, Ordering::Relaxed);
+}
 
 /// GUI helper: refresh the library scan, pick the i-th sample, decode
 /// it and swap the active_sample Arc. Returns Ok(name) or Err(reason).
@@ -348,6 +375,13 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// when the Sample param moved; here (off the RT thread) we decode + swap.
     fn on_main_thread(&mut self) {
         maybe_load_pending_sample(&self.shared.inner);
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+            presets::PRESETS.len(),
+        ) {
+            apply_preset(&self.shared.inner, idx);
+        }
     }
 }
 
@@ -415,6 +449,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // forbidden here — we only request the callback (cheap, lock-free).
         let want = self.shared.params[P_SAMPLE].load(Ordering::Relaxed).round() as i32;
         if want >= 0 && want != self.shared.current_index.load(Ordering::Relaxed) {
+            self.host.shared().request_callback();
+        }
+        // Same wake for the Preset selector — recall is a main-thread concept.
+        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+            presets::PRESETS.len(),
+        )
+        .is_some()
+        {
             self.host.shared().request_callback();
         }
 
@@ -623,6 +667,15 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if pid == P_LOOP {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
         }
+        if pid == P_PRESET {
+            if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
+                |i| presets::PRESETS.get(i).map(|p| p.name),
+                v,
+                w,
+            ) {
+                return r;
+            }
+        }
         if pid == P_SAMPLE {
             // Show "Pack / file stem" instead of a number.
             let lib = self.shared.library.lock();
@@ -635,6 +688,15 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        if id.get() as usize == P_PRESET {
+            if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
+                presets::PRESETS.len(),
+                |i| presets::PRESETS.get(i).map(|p| p.name),
+                t,
+            ) {
+                return Some(v);
+            }
+        }
         ParamDef::parse_text(PARAMS, id, t)
     }
     fn flush(&mut self, ev: &InputEvents, _: &mut OutputEvents) {
@@ -643,6 +705,13 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         // thread may never run its request_callback, so honour a Sample-param
         // change right here too, off the RT path.
         maybe_load_pending_sample(&self.shared.inner);
+        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+            self.shared.params[P_PRESET].load(Ordering::Relaxed),
+            &self.shared.active_preset,
+            presets::PRESETS.len(),
+        ) {
+            apply_preset(&self.shared.inner, idx);
+        }
     }
 }
 

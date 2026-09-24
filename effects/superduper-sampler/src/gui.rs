@@ -40,6 +40,8 @@ struct GuiState {
     pack_filter: Option<String>,
     /// Text input buffer for the "add new sample folder" field.
     folder_input: String,
+    selected_preset: Option<usize>,
+    preset_names: Vec<&'static str>,
     /// Whether the "Sample Folders" panel is expanded — collapsed
     /// by default to stay out of the way during normal play.
     folders_expanded: bool,
@@ -86,6 +88,8 @@ pub fn open_window<P: HasRawWindowHandle>(
         pack_filter: None,
         folder_input: String::new(),
         folders_expanded: false,
+        selected_preset: None,
+        preset_names: crate::presets::PRESETS.iter().map(|p| p.name).collect(),
     };
     EguiWindow::open_parented(
         parent, settings, GraphicsConfig::default(), state,
@@ -104,13 +108,16 @@ pub fn open_window<P: HasRawWindowHandle>(
 
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
-        // Skip the preset combo on the top bar (we use it for samples)
-        let _ = core_gui::top_bar(
+        // Factory presets = playback character; the sample itself keeps its
+        // own dropdown below (a preset never swaps the loaded sample).
+        if let Some(i) = core_gui::top_bar(
             ui, "SuperDuper Sampler",
             env!("SDSP_BUILD_NUM"), env!("SDSP_BUILD_DATE"),
             &state.shared.bypass,
-            "sampler_dummy_combo", &[""][..], &mut None::<usize>,
-        );
+            "sampler_preset_combo", &state.preset_names, &mut state.selected_preset,
+        ) {
+            crate::apply_preset(&state.shared, i);
+        }
         core_gui::ab_init_bar(
             ui, &state.shared.ab_snapshot,
             &state.shared.params, PARAMS, &state.shared.dirty_params,

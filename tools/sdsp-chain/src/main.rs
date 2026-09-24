@@ -711,7 +711,7 @@ fn instruments() -> Vec<InstrumentSpec> {
         // slot on the main-thread callback — both happen inside the render's
         // setup pass, so it plays headlessly too.
         InstrumentSpec { key: "sampler", params: superduper_sampler::PARAMS,
-                         presets: Vec::new,
+                         presets: || superduper_sampler::presets::PRESETS.iter().map(|p| p.name).collect(),
                          render: inst_sampler },
         // Autonomous drone — ignores notes, needs `duration_s` on the track.
         InstrumentSpec { key: "ambient", params: superduper_ambient::PARAMS,

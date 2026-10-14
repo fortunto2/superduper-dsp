@@ -1,0 +1,138 @@
+# Instrument and mix presets for sdsp-score. Override the whole file with
+# SDSP_SCORE_INSTRUMENTS=<path>; paths below accept ~ and env overrides
+# (SDSP_SAMPLES, SDSP_FFMPEG, SDSP_CHAIN).
+
+samples_dir = "~/Music/SuperDuper Samples"
+ffmpeg = "ffmpeg"                          # rubberband beds prefer ffmpeg_full when it exists
+ffmpeg_full = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
+chain = "~/.cargo-target/release/sdsp-chain"
+sample_rate = 48000
+
+[seeds]
+notes = 7          # textures, velocities (--seed overrides)
+drums = 11         # drum humanisation
+
+# Stem gain, dB. A stem sits around -35..-40 LUFS so the master limiter lands
+# the mix near -20 LUFS.
+[role_gain]
+bass = -8.0
+pad = -5.0
+arp = -6.0
+lead = 2.0
+ostinato = -4.0
+thread = -10.0
+accent = 2.0
+drums = -6.0
+sub808 = -6.0
+bed = -6.0
+
+# Presets differ in loudness; without this trim the fit loop pushed Aulos
+# (wave14) up 8-11 dB every time. With it the correction stays within +-3 dB.
+[lead_trim]
+wave14 = 9.0
+kubyz1 = 2.0
+
+# Effect stages per role, sdsp-chain params by name.
+[[stages.bass]]
+plugin = "eq"
+params = { "Low Gain" = 1.5, "High Gain" = -6.0 }
+[[stages.bass]]
+plugin = "reverb"
+params = { Size = 0.6, Decay = 0.5, Damping = 0.7, Mix = 0.12 }
+
+[[stages.pad]]
+plugin = "chorus"
+params = { Mix = 0.3 }
+[[stages.pad]]
+plugin = "supermass"
+params = { Mix = 0.3, Width = 1.0, Tilt = 0.15 }
+[[stages.pad]]
+plugin = "reverb"
+params = { Size = 1.1, Decay = 0.8, Damping = 0.45, "Pre-Delay" = 30.0, Mix = 0.2 }
+
+[[stages.arp]]
+plugin = "delay"
+params = { Mix = 0.2 }
+[[stages.arp]]
+plugin = "reverb"
+params = { Size = 0.9, Decay = 0.6, Damping = 0.4, "Pre-Delay" = 20.0, Mix = 0.28 }
+
+[[stages.lead]]
+plugin = "delay"
+params = { Mix = 0.16 }
+[[stages.lead]]
+plugin = "reverb"
+params = { Size = 1.0, Decay = 0.7, Damping = 0.35, "Pre-Delay" = 45.0, Mix = 0.25 }
+
+[[stages.ostinato]]
+plugin = "reverb"
+params = { Size = 0.7, Decay = 0.5, Damping = 0.5, Mix = 0.18 }
+
+# thread and accent are played by the lead instrument and share its stages.
+
+[[master]]
+plugin = "compressor"
+params = { Threshold = -20.0, Ratio = 2.5, Attack = 15.0, Release = 380.0, Knee = 10.0, "SC HPF" = 1.0, Makeup = 4.0, Mix = 1.0 }
+[[master]]
+plugin = "eq"
+params = { "Low Gain" = -1.0, "High Gain" = 0.5 }
+[[master]]
+plugin = "limiter"
+params = { Input = 0.0, Ceiling = -1.5 }
+
+# Drum kits: part -> file under samples_dir. GM note per part is for score.mid.
+[kits.kubyz]
+kick = "kubyz-drumkit/kubyz_kick.wav"
+soft = "kubyz-drumkit/kubyz_kick_soft.wav"
+hat = "kubyz-drumkit/kubyz_hat.wav"
+open = "kubyz-drumkit/kubyz_hat_open.wav"
+rim = "kubyz-drumkit/kubyz_rim.wav"
+clap = "kubyz-drumkit/kubyz_clap.wav"
+tom = "kubyz-drumkit/kubyz_tom.wav"
+crash = "kubyz-drumkit/kubyz_chime.wav"
+
+[kits.cassette]
+kick = "Cassette808_Samples/Cassette808_BD01.wav"
+soft = "Cassette808_Samples/Cassette808_BD02.wav"
+hat = "Cassette808_Samples/Cassette808_HH_01.wav"
+open = "Cassette808_Samples/Cassette808_HHo_01.wav"
+rim = "Cassette808_Samples/Cassette808_Rim_01.wav"
+clap = "Cassette808_Samples/Cassette808_CP_01.wav"
+tom = "Cassette808_Samples/Cassette808_Tom02.wav"
+crash = "Cassette808_Samples/Cassette808_Cym01.wav"
+
+[kits.909]
+kick = "TR909all/909-BT0A0D0.WAV"
+soft = "TR909all/909-BT0A0A7.WAV"
+hat = "Cassette808_Samples/Cassette808_HH_01.wav"
+open = "Cassette808_Samples/Cassette808_HHo_01.wav"
+rim = "Cassette808_Samples/Cassette808_Rim_01.wav"
+clap = "TR909all/909-HANDCLP1.WAV"
+tom = "Cassette808_Samples/Cassette808_Tom02.wav"
+crash = "TR909all/909-CSHD0.WAV"
+
+[gm_drums]       # part -> GM note (SuperDuper Drum reads these with Note Map = Auto)
+kick = 36
+soft = 35
+rim = 38
+clap = 39
+hat = 42
+open = 46
+tom = 45
+crash = 49
+
+# RUST 808 Sub samples: midi note -> file name suffix
+[sub808]
+dir = "RUST 808"
+pattern = "RUST808 Sub {}.wav"
+notes = { 25 = "Cs1", 28 = "E1", 30 = "Fs1", 32 = "Gs1", 33 = "A1", 35 = "B1" }
+
+[gm_program]     # role -> GM program (0-based) for score.mid; track names carry our instrument
+lead = 73
+thread = 73
+accent = 73
+ostinato = 108
+arp = 46
+pad = 89
+bass = 38
+sub808 = 38

@@ -522,6 +522,12 @@ from host BPM read out of `CoreEventSpace::Transport` events.
   input file (it used to be hardcoded 44.1 kHz regardless of the material), the
   final partial block is no longer dropped, and `tail_s` appends silence so
   reverbs/pads ring out. Worked examples: `~/Music/1music/demos/*.toml`.
+- **`tools/sdsp-score`** (python, uv) — a theme (`theme.json`: key, chords,
+  motif or a Basic Pitch MIDI) becomes an arranged piece on our instruments:
+  song form (`--form "intro:8,verse:16,chorus:16,…"` / `--length 180`) or a
+  film's `form.json`, 8 textures, tempo per section, kit + 808, `score.mid`
+  (track per part, GM drums ch 10), stems via sdsp-chain, `check` in
+  short-term LUFS, optional `--fit`. See its README.
 - **`tools/sdsp-test-kit`** — the shared test harness. An in-process CLAP host
   (the clack-host boilerplate that used to be copy-pasted per plugin), a
   snapshot comparator, standard probes (level, peak, THD, aliasing, per-band
@@ -643,6 +649,7 @@ superduper-dsp/
   tools/kubyz_analyser/      Python FFT analyser → Rust preset snippet
   tools/sdsp-runner/         standalone CLAP host (file-in → cpal-out)
   tools/sdsp-chain/          headless multi-plugin chain runner (TOML config)
+  tools/sdsp-score/          theme → arranged score: form, MIDI, stems, check (python)
   tools/wave-inspect/        WAV-to-wavetable diagnostic CLI for Wave
   tools/vocal-inspect/       de-esser pipeline test harness
   tools/nam-test/            autotest harness for NAM models

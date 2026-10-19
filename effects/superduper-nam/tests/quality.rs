@@ -19,6 +19,9 @@ const SR: f64 = 48_000.0;
 
 #[test]
 fn quality_snapshot() {
+    // Measure the built-in preamp, not a community model from this machine's
+    // ~/.superduper-dsp/nam/: CI has none, so a snapshot taken with one never matches.
+    std::env::set_var("SUPERDUPER_NAM_FACTORY", "1");
     // Wider than the default: several plugins have noise sources or LFOs that
     // do not restart identically, and a snapshot that flaps teaches people to
     // ignore it.

@@ -34,6 +34,9 @@ fn every_note_sounds() {
 
 #[test]
 fn quality_snapshot() {
+    // Boot on the factory wavetable, not ~/.superduper-dsp/wave/last.json: that file is
+    // whatever was last drawn on one machine, and CI has none.
+    std::env::set_var("SUPERDUPER_WAVE_FACTORY", "1");
     let mut s = Suite::new("wave", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/quality.snap"))
         .default_tolerance(1.5);
 

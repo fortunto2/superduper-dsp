@@ -600,9 +600,43 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
     }
     let edges = superduper_dsp_sdk::bus::band_edges();
     let clashes = state.masking.top(4);
+    // Silent tracks (stopped, muted, not playing in this section) only crowd
+    // the legend; count them instead.
+    let audible = |t: &superduper_synth_core::mixmap::TrackSpectrum| t.rms_db > superduper_synth_core::mixmap::LOUD_DB;
+    let names: Vec<String> = state.bus_tracks.iter().filter(|t| !is_bus_name(&t.name)).map(|t| t.name.clone()).collect();
+    let color_of = |name: &str| TRACK_COLORS[names.iter().position(|n| n == name).unwrap_or(0) % TRACK_COLORS.len()];
+
+    // Legend and clash list first, the graph takes what is left: a legend that
+    // wraps to two lines can no longer push the list off the window.
+    ui.horizontal_wrapped(|ui| {
+        for t in state.bus_tracks.iter().filter(|t| audible(t)) {
+            let label = if is_bus_name(&t.name) { format!("{} (bus)", if t.name.is_empty() { "unnamed" } else { &t.name }) } else { t.name.clone() };
+            let col = if is_bus_name(&t.name) { Color32::from_gray(150) } else { color_of(&t.name) };
+            let on = state.focus.as_deref() == Some(t.name.as_str());
+            if ui.selectable_label(on, egui::RichText::new(format!("● {label}  {:.0} dB", t.rms_db)).color(col)).clicked() {
+                state.focus = if on { None } else { Some(t.name.clone()) };
+            }
+        }
+        let silent = state.bus_tracks.iter().filter(|t| !audible(t)).count();
+        if silent > 0 {
+            ui.label(egui::RichText::new(format!("+{silent} silent")).color(core_gui::GREEN_DIM).small());
+        }
+    });
+    ui.label(egui::RichText::new("masking — both loud and within 6 dB, share of the last ~8 s:").color(core_gui::GREEN_DIM).small());
+    if clashes.is_empty() {
+        ui.label(egui::RichText::new("no clashes (or nothing playing)").color(core_gui::GREEN_DIM).monospace());
+    }
+    for c in &clashes {
+        let lo = edges[c.band];
+        let hi = edges[c.band + 1];
+        let f = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
+        ui.label(egui::RichText::new(format!("{} × {}   {}–{} Hz   {:.0}%", c.a, c.b, f(lo), f(hi), c.share * 100.0))
+            .color(if c.share > 0.5 { Color32::from_rgb(255, 120, 110) } else { core_gui::GREEN })
+            .monospace());
+    }
+
     let avail = ui.available_rect_before_wrap();
-    let list_h = 22.0 * (clashes.len().max(1) as f32) + 44.0;
-    let rect = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), (avail.height() - list_h).max(140.0)));
+    let rect = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), avail.height().max(140.0)));
     ui.allocate_rect(rect, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let plot = plot_inset(rect);
@@ -616,9 +650,7 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
         let band = egui::Rect::from_x_y_ranges(fx(edges[c.band])..=fx(edges[c.band + 1]), plot.top()..=plot.bottom());
         painter.rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(255, 80, 80, 40));
     }
-    let names: Vec<String> = state.bus_tracks.iter().map(|t| t.name.clone()).collect();
-    let color_of = |name: &str| TRACK_COLORS[names.iter().filter(|n| !is_bus_name(n)).position(|n| n == name).unwrap_or(0) % TRACK_COLORS.len()];
-    let mut order: Vec<&superduper_synth_core::mixmap::TrackSpectrum> = state.bus_tracks.iter().collect();
+    let mut order: Vec<&superduper_synth_core::mixmap::TrackSpectrum> = state.bus_tracks.iter().filter(|t| audible(t)).collect();
     // Focused track last = drawn on top.
     order.sort_by_key(|t| state.focus.as_deref() == Some(t.name.as_str()));
     for t in order {
@@ -634,28 +666,5 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
             egui::Stroke::new(if focused { 2.6 } else { 1.6 }, if dim { c.gamma_multiply(0.3) } else { c })
         };
         painter.add(egui::Shape::line(pts, stroke));
-    }
-
-    ui.horizontal_wrapped(|ui| {
-        for t in &state.bus_tracks {
-            let label = if is_bus_name(&t.name) { format!("{} (bus)", if t.name.is_empty() { "unnamed" } else { &t.name }) } else { t.name.clone() };
-            let col = if is_bus_name(&t.name) { Color32::from_gray(150) } else { color_of(&t.name) };
-            let on = state.focus.as_deref() == Some(t.name.as_str());
-            if ui.selectable_label(on, egui::RichText::new(format!("● {label}  {:.0} dB", t.rms_db)).color(col)).clicked() {
-                state.focus = if on { None } else { Some(t.name.clone()) };
-            }
-        }
-    });
-    ui.label(egui::RichText::new("masking — both loud and within 6 dB, share of the last ~8 s:").color(core_gui::GREEN_DIM).small());
-    if clashes.is_empty() {
-        ui.label(egui::RichText::new("no clashes (or nothing playing)").color(core_gui::GREEN_DIM).monospace());
-    }
-    for c in &clashes {
-        let lo = edges[c.band];
-        let hi = edges[c.band + 1];
-        let f = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
-        ui.label(egui::RichText::new(format!("{} × {}   {}–{} Hz   {:.0}%", c.a, c.b, f(lo), f(hi), c.share * 100.0))
-            .color(if c.share > 0.5 { Color32::from_rgb(255, 120, 110) } else { core_gui::GREEN })
-            .monospace());
     }
 }

@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 35 plugins (28 effects + 7 instruments)
+## Current state — 36 plugins (29 effects + 7 instruments)
 
 **Effects (audio-in, audio-out):**
 

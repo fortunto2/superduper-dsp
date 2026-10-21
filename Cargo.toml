@@ -32,6 +32,7 @@ members = [
     "effects/superduper-looper",
     "effects/superduper-filter",
     "effects/superduper-midside",
+    "effects/superduper-space",
     "effects/superduper-lineq",
     "effects/superduper-soothe",
     "effects/superduper-nam",

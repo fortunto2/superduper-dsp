@@ -49,12 +49,13 @@ the real side-chain input stays for that.
       tone_band_low +1.3 dB, the comb between dry and wet gone; pinned by
       effects/superduper-vocoder/tests/latency_align.rs
 
-- [ ] NEW SuperDuper Space (spatial panner, asked 2026-10-21): an object position (x, y, z) per track →
-      VBAP/DBAP gains to N speakers (stereo, 5.1, 7.1.4, custom layouts as REAPER's ReaSurroundPan
-      exposes them) + distance cues (level, air LPF, early reflection) + optional ambisonic encode,
-      binaural (HRTF) monitor for headphones; CLAP multichannel ports; MCP-first so the agent
-      places tracks on the map and the bus map shows the room. Not a Dolby Atmos encoder (an
-      Apple Spatial Audio delivery needs an ADM BWF master from Dolby's renderer / Fiedler Composer)
+- [x] NEW SuperDuper Space v1 (2026-10-21): VBAP to Stereo / Quad / 5.1 / 7.1 / 7.1.4 on one
+      12-channel port, height ring by Z, Spread, Distance (level + one-pole air), Width for a
+      stereo input, LFE send, Monitor stereo fold, draggable map, `position` MCP doc with the live
+      speaker gains; 7 unit tests + 2 through a CLAP host; validator clean
+      - [ ] v2: custom layouts as REAPER's ReaSurroundPan exposes them, early reflection with
+        distance, ambisonic encode, binaural (HRTF) monitor. Not a Dolby Atmos encoder (an Apple
+        Spatial delivery needs an ADM BWF master from Dolby's renderer / Fiedler Composer)
 
 
 - [ ] Morph: side-chain f0 on a jaw-harp drone read 943 Hz / unvoiced (the formant, not the

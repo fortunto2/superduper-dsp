@@ -206,6 +206,9 @@ pub struct SharedParamsInner {
     /// param. The pyramids themselves are rebuilt off the audio
     /// thread (preset apply or curve edit) and pointer-swapped here.
     pub wavetable: Mutex<Vec<MipWavetable>>,
+    /// Bumped when the wavetable is replaced from outside the editor (the bus
+    /// mailbox), so an open window re-reads its curve and preview.
+    pub wavetable_gen: AtomicU32,
     /// Active wavetable preset id — used by the GUI editor to decide
     /// whether to seed its nodes from the preset formula or from
     /// existing custom data.
@@ -251,6 +254,7 @@ impl PluginShared {
                 pending_swap: AtomicBool::new(false),
                 pending_frames: parking_lot::Mutex::new(None),
                 wavetable: Mutex::new(vec![frame_a, frame_b]),
+                wavetable_gen: AtomicU32::new(0),
                 active_preset: AtomicU32::new(0),
                 pitch_bend_st: AtomicF32::new(0.0),
                 mod_wheel: AtomicF32::new(0.0),

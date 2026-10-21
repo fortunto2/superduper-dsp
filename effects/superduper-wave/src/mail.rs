@@ -105,6 +105,7 @@ pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> 
             }
             let n = tables.len();
             push_custom_frames(shared, tables.iter().map(|t| osc::mip_from_table(t)).collect());
+            shared.wavetable_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({"frames": n}))
         }
         _ => Err(format!("Wave has one document, \"wavetable\" (list/get/set); got {doc:?} {op:?}")),

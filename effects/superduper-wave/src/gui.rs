@@ -273,6 +273,9 @@ struct GuiState {
     selected_preset: Option<usize>,
     preset_names: Vec<&'static str>,
     preview_a: Vec<f32>,
+    /// Last `wavetable_gen` seen: a change means the table was set from
+    /// outside (an agent through the bus) and the curve must be re-read.
+    seen_gen: u32,
     preview_b: Vec<f32>,
     preview_for_preset: Option<usize>,
     edit_mode: bool,
@@ -694,6 +697,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         CurveNodes::default()
     };
 
+    let seen_gen = shared.wavetable_gen.load(std::sync::atomic::Ordering::Relaxed);
     let state = GuiState {
         shared,
         resize,
@@ -701,6 +705,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         selected_preset: Some(initial_preset_idx),
         preset_names: PRESETS.iter().map(|p| p.name).collect(),
         preview_a,
+        seen_gen,
         preview_b: vec![0.0; WT_SIZE],
         // Force refresh_preview to run once so preview_b gets populated
         // from the current preset — preview_a is already set above and
@@ -1068,6 +1073,16 @@ fn draw_wave_canvas(
 }
 
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
+    let gen = state.shared.wavetable_gen.load(std::sync::atomic::Ordering::Relaxed);
+    if gen != state.seen_gen {
+        state.seen_gen = gen;
+        let frames: Vec<Vec<f32>> = state.shared.wavetable.lock().iter().map(|m| m.levels[0].to_vec()).collect();
+        if let Some(a) = frames.first() { state.preview_a.copy_from_slice(a); }
+        if let Some(b) = frames.get(1) { state.preview_b.copy_from_slice(b); }
+        state.nodes = CurveNodes::from_table(&state.preview_a, 24);
+        state.user_edited = true;
+        state.selected_node = None;
+    }
     refresh_preview(state);
 
     // ----- Poll pending file-dialog results ----------------------------------

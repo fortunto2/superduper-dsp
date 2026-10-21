@@ -1,0 +1,58 @@
+# Reference-track manifest template. Copy to ~/Music/references/references.toml (outside any
+# repo) and point `file` at lossless audio you bought or ripped from your own CD. Never commit audio.
+#
+# Fields
+#   genre    folder name under ~/Music/references/ and the key an agent filters on
+#   artist, title, year
+#   file     path to the FLAC/WAV (~ is expanded)
+#   section  name of the compared section; compare it with the same section of the mix
+#   start, end   section bounds in seconds inside `file`
+#   for      questions this track answers: low | vocal | space | bright | dyn | loud
+#   bracket  "bright" | "dark" | "" (the pair that brackets the mix's top end)
+#   measured filled in after the first `mixcheck` run, so the bracket role is a measurement
+#
+# Loop for one genre (mixcheck reads whole files, so cut the section first):
+#   ffmpeg -ss <start> -to <end> -i <file> -c:a pcm_s24le /tmp/ref.wav
+#   python3 tools/mixcheck.py mix_chorus.wav --ref /tmp/ref.wav
+
+[defaults]
+root = "~/Music/references"
+
+[[track]]
+genre = "pop"
+artist = "Dua Lipa"
+title = "Don't Start Now"
+year = 2019
+file = "~/Music/references/pop/Dua Lipa - Don't Start Now.flac"
+section = "chorus 1"
+start = 0.0   # set from the file
+end = 0.0
+for = ["vocal", "bright"]
+bracket = "bright"
+measured = { lufs_integrated = 0.0, air_db = 0.0, top_db = 0.0, crest_db = 0.0 }
+
+[[track]]
+genre = "hiphop-808"
+artist = "Travis Scott"
+title = "SICKO MODE"
+year = 2018
+file = "~/Music/references/hiphop-808/Travis Scott - SICKO MODE.flac"
+section = "second beat"
+start = 0.0
+end = 0.0
+for = ["low", "space"]
+bracket = ""
+measured = {}
+
+[[track]]
+genre = "folk-world"
+artist = "Ay Yola"
+title = "Homay"
+year = 2025
+file = "~/Music/references/folk-world/Ay Yola - Homay.flac"
+section = "chorus"
+start = 0.0
+end = 0.0
+for = ["low", "space", "vocal"]
+bracket = ""
+measured = {}

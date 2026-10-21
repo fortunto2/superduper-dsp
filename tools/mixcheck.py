@@ -225,7 +225,73 @@ def profile(path, start=None, end=None):
     return out
 
 
-def report(path, sections=None, ref=None, span=(None, None), ref_span=(None, None)):
+def centred(bands):
+    """A band profile with its mean removed: level-independent, so a mix at
+    −14 LUFS and a reference at −8 compare by shape alone."""
+    m = sum(bands[name] for _, _, name in BANDS) / len(BANDS)
+    return {name: bands[name] - m for _, _, name in BANDS}
+
+
+def target_corridor(profiles, floor_db=1.0):
+    """The genre's tonal balance from several reference profiles (`--json`
+    files, one per chorus): per band the mean of the centred profiles and a
+    spread (the standard deviation, never under `floor_db` so one reference
+    does not pretend to be a law). Ozone's Tonal Balance does this with a
+    bigger library; the numbers are the same kind."""
+    if not profiles:
+        raise ValueError("no reference profiles")
+    cs = [centred(p["bands_db"]) for p in profiles]
+    out = {}
+    for _, _, name in BANDS:
+        xs = [c[name] for c in cs]
+        mean = sum(xs) / len(xs)
+        var = sum((x - mean) ** 2 for x in xs) / len(xs)
+        out[name] = (mean, max(math.sqrt(var), floor_db))
+    return out
+
+
+def target_verdict(bands, corridor):
+    """Per band: how far the mix's centred profile sits outside the corridor
+    (0 inside; positive = above = too much of that band)."""
+    c = centred(bands)
+    out = {}
+    for _, _, name in BANDS:
+        mean, spread = corridor[name]
+        d = c[name] - mean
+        out[name] = 0.0 if abs(d) <= spread else (d - spread if d > 0 else d + spread)
+    return out
+
+
+def load_profiles(paths):
+    """`--target` arguments: profile JSON files, or directories of them."""
+    import json
+    files = []
+    for p in paths:
+        p = Path(p)
+        files += sorted(p.glob("*.json")) if p.is_dir() else [p]
+    profiles = []
+    for f in files:
+        d = json.loads(f.read_text())
+        if "bands_db" not in d:
+            raise ValueError(f"{f}: not a mixcheck profile (no bands_db)")
+        profiles.append(d)
+    return profiles
+
+
+def print_target(mine, corridor, n_refs):
+    verdict = target_verdict(mine, corridor)
+    c = centred(mine)
+    print(f"\n   target corridor from {n_refs} reference profile(s), level-independent (each profile mean-centred)")
+    print("   band            this mix    target       verdict")
+    for _, _, name in BANDS:
+        mean, spread = corridor[name]
+        v = verdict[name]
+        tag = "inside" if v == 0.0 else (f"above by {v:.1f} dB  ←" if v > 0 else f"below by {-v:.1f} dB  ←")
+        print(f"   {name:9s} {c[name]:+6.1f} dB   {mean:+6.1f} ±{spread:3.1f}   {tag}")
+    print("   (move EQ / Multiband only where a band is outside; inside the corridor is taste)")
+
+
+def report(path, sections=None, ref=None, span=(None, None), ref_span=(None, None), target=None):
     l, r, sr = load(path, *span)
     n = min(len(l), len(r))
     mono = [(l[i] + r[i]) * 0.5 for i in range(n)]
@@ -292,6 +358,8 @@ def report(path, sections=None, ref=None, span=(None, None), ref_span=(None, Non
         print(line)
     if ref:
         print("   (delta ≥ 4 dB is audible as 'darker' / 'harsher' than the reference)")
+    if target:
+        print_target(mine, target_corridor(target), len(target))
 
     if sections:
         bpm, bars = sections
@@ -319,6 +387,7 @@ def main():
     ap.add_argument("--ref-start", type=float, help="the reference's section start, seconds")
     ap.add_argument("--ref-end", type=float, help="the reference's section end, seconds")
     ap.add_argument("--json", action="store_true", help="print the mix's profile as JSON instead of the report")
+    ap.add_argument("--target", nargs="+", metavar="PROFILE", help="reference profiles (--json files or a directory of them): the genre's tonal corridor, mean ± spread per band, level-independent; the report says where this mix leaves it")
     a = ap.parse_args()
     if a.json:
         import json
@@ -332,7 +401,16 @@ def main():
             if isinstance(v, (list, tuple)):
                 return [finite(x) for x in v]
             return v
-        print(json.dumps(finite(profile(a.mix, a.start, a.end)), indent=1))
+        p = profile(a.mix, a.start, a.end)
+        if a.target:
+            refs = load_profiles(a.target)
+            corridor = target_corridor(refs)
+            p["target"] = {
+                "profiles": len(refs),
+                "corridor_db": {k: {"mean": m, "spread": s} for k, (m, s) in corridor.items()},
+                "outside_db": target_verdict(p["bands_db"], corridor),
+            }
+        print(json.dumps(finite(p), indent=1))
         return
 
     sections = None
@@ -340,7 +418,8 @@ def main():
         edges = [0] + [int(x) for x in a.bars.split(",")]
         sections = (a.bpm, [(edges[i], edges[i + 1], f"bars {edges[i]}-{edges[i+1]}")
                             for i in range(len(edges) - 1)])
-    report(a.mix, sections, a.ref, (a.start, a.end), (a.ref_start, a.ref_end))
+    report(a.mix, sections, a.ref, (a.start, a.end), (a.ref_start, a.ref_end),
+           load_profiles(a.target) if a.target else None)
 
 
 if __name__ == "__main__":

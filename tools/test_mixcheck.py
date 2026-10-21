@@ -69,3 +69,35 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             f()
             print("ok", name)
+
+
+def test_target_corridor_is_level_independent_and_flags_one_band():
+    """Three references with the same shape at three different levels give a
+    tight corridor; a mix with +6 dB in the kick band is 'above' there and
+    'inside' everywhere else, whatever its overall level."""
+    import mixcheck as mc
+    shape = {name: -10.0 - i for i, (_, _, name) in enumerate(mc.BANDS)}
+    refs = [{"bands_db": {k: v + off for k, v in shape.items()}} for off in (0.0, -8.0, +5.0)]
+    corridor = mc.target_corridor(refs)
+    for _, _, name in mc.BANDS:
+        assert corridor[name][1] == 1.0, "identical shapes: the spread is the floor"
+    mix = {k: v - 20.0 for k, v in shape.items()}
+    mix["kick"] += 6.0
+    verdict = mc.target_verdict(mix, corridor)
+    # the +6 dB kick also lifts the mean by 6/8, so the other bands sit
+    # 0.75 dB low — inside the ±1 floor — and the kick is above by 6 − 0.75 − 1
+    assert abs(verdict["kick"] - 4.25) < 1e-6, verdict
+    assert all(v == 0.0 for k, v in verdict.items() if k != "kick"), verdict
+
+
+def test_load_profiles_rejects_a_file_that_is_not_a_profile(tmp_path):
+    import json
+    import mixcheck as mc
+    bad = tmp_path / "x.json"
+    bad.write_text(json.dumps({"hello": 1}))
+    try:
+        mc.load_profiles([bad])
+    except ValueError as e:
+        assert "bands_db" in str(e)
+    else:
+        raise AssertionError("a profile without bands_db was accepted")

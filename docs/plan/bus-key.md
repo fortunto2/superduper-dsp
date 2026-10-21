@@ -38,7 +38,9 @@ the real side-chain input stays for that.
 - [x] NEW SuperDuper Morph (any timbre onto any performance; Sidechain / Captured / Model)
 - [x] NEW SuperDuper Double (drifting PSOLA heads, Tuned modes, Key Open)
 
-- [ ] genre target curve (Ozone Tonal Balance, transparent): `mixcheck --target refs/*.json` — the corridor (mean ± spread) of 5–10 reference choruses per band; the agent moves EQ/Multiband only where the mix leaves it
+- [x] genre target curve (Ozone Tonal Balance, transparent): `mixcheck --target refs/*.json` — the corridor
+      (mean ± spread, ≥ ±1 dB, of mean-centred profiles) per band; the report and `--json` say where
+      the mix leaves it; tests pin level independence and the one-band verdict (2026-10-21)
 
 - [x] StftProcessor reports N−hop but delays N — fixed 2026-10-21: `latency()` returns N, the
       ring geometry is a separate field (`ring`); `pvoc::LATENCY` and the Vocoder's `STFT_LATENCY`

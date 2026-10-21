@@ -248,3 +248,11 @@ LUFS integrated and loudest 3 s, crest, correlation, the 8 band levels, mono los
 because it is written and read by code and diffed per mix, never edited by hand; keep it next to the
 audio, e.g. `~/Music/references/pop/Dua Lipa - Don't Start Now.chorus.json`. A chart of "my mix vs
 the reference set" is then drawn from profiles, not from re-decoding audio every time.
+
+**The corridor** (`--target`): `mixcheck mix.wav --target refs/trap/*.json` (or the directory)
+turns 5–10 chorus profiles into the genre's tonal balance — per band the mean and spread of the
+mean-centred profiles, so a −14 LUFS mix compares with −8 LUFS references by shape alone — and
+says where the mix leaves it ("kick above by 2.3 dB", "air below by 1.1 dB"). Move EQ or
+Multiband only on a band that is outside; inside the corridor is taste, not a fault. One
+reference gives a corridor of ±1 dB (the floor), which is a comparison, not a law. `--json
+--target …` adds `target.outside_db` per band for the agent and for `mixopt --loss band`.

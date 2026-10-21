@@ -319,6 +319,7 @@ impl LiveScope {
 /// Ask the host for this instance's track name (CLAP track-info) and keep it
 /// on the scope for the bus. Main thread; hosts without track-info leave it
 /// empty.
+// AI-TODO: also call this from a CLAP track-info `changed()` in every plugin — FX added via the API or tracks renamed later keep an empty/stale name.
 pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'_>, scope: &LiveScope) {
     use clack_extensions::track_info::{HostTrackInfo, TrackInfoBuffer};
     let Some(ext) = host.get_extension::<HostTrackInfo>() else { return };

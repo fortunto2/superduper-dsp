@@ -18,8 +18,16 @@ use superduper_synth_core::drumlib::{parse_key_name, song_key_path};
 use superduper_synth_core::melody::NOTE_NAMES;
 use superduper_synth_core::mixmap::{loudest_per_track, MaskingTracker, TrackSpectrum};
 
-fn tracks(rows: &[Snapshot]) -> Vec<TrackSpectrum> {
-    loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)))
+/// Track name → plugin that stands for the track's output.
+type Prefer = std::collections::HashMap<String, String>;
+
+/// One spectrum per track. The bus has no chain order, so by default a track
+/// is its loudest instance — wrong once a cut follows the instrument (the EQ
+/// after it is quieter than it). `prefer` names the instance that is last in
+/// the chain, which the agent reads from the DAW.
+fn tracks(rows: &[Snapshot], prefer: &Prefer) -> Vec<TrackSpectrum> {
+    let keep = |s: &&Snapshot| prefer.get(&s.track).is_none_or(|p| s.plugin.to_lowercase().contains(&p.to_lowercase()));
+    loudest_per_track(rows.iter().filter(keep).map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)))
 }
 
 fn key_out(p: &std::path::Path, key: Option<String>) -> rmcp::Json<KeyOut> {
@@ -69,6 +77,11 @@ pub struct MaskingInput {
     /// Keep this measurement under a name ("before", "cut-300-gtr") for
     /// mix_compare. Play the same section for every labelled run.
     pub label: Option<String>,
+    /// Track → plugin (substring, e.g. "EQ") to measure the track at: the
+    /// last enabled SuperDuper plugin in its chain, from the DAW. Without it
+    /// a track is its loudest instance, which misses a cut placed after the
+    /// instrument. Use the same map for runs you compare.
+    pub prefer: Option<Prefer>,
 }
 
 #[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
@@ -167,7 +180,7 @@ impl BusServer {
 
     #[rmcp::tool(description = "Current 32-band spectrum of one track (its loudest SuperDuper instance).")]
     async fn track_spectrum(&self, Parameters(TrackInput { track }): Parameters<TrackInput>) -> Result<rmcp::Json<TrackSpectrumOut>, McpError> {
-        let all = tracks(&reader()?.read_all());
+        let all = tracks(&reader()?.read_all(), &Prefer::new());
         let q = track.to_lowercase();
         let t = all.iter().find(|t| t.name.to_lowercase() == q).or_else(|| all.iter().find(|t| t.name.to_lowercase().contains(&q)))
             .ok_or_else(|| McpError::invalid_params(format!("no track matching '{track}' on the bus"), None))?;
@@ -175,7 +188,7 @@ impl BusServer {
     }
 
     #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first. Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
-    async fn mix_masking(&self, Parameters(MaskingInput { seconds, label }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
+    async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let r = reader()?;
         let frames = (secs * 10.0) as usize;
@@ -184,7 +197,7 @@ impl BusServer {
         let mut power: std::collections::HashMap<String, f64> = Default::default();
         let mut last = Vec::new();
         for _ in 0..frames {
-            let tracks = tracks(&r.read_all());
+            let tracks = tracks(&r.read_all(), prefer.as_ref().unwrap_or(&Prefer::new()));
             for t in &tracks {
                 *power.entry(t.name.clone()).or_default() += 10f64.powf(t.rms_db as f64 / 10.0);
                 let s = sums.entry(t.name.clone()).or_insert([0.0; BANDS]);

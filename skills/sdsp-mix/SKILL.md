@@ -65,6 +65,22 @@ Then **look at the PNG** (Read it). Three panels:
 3. **Spectrograms** per track over time — a clash that only happens on the
    chorus shows up here as two bright stripes at the same height.
 
+**Mud is masking, and masking is usually arrangement.** "Cut 200–500 Hz on
+everything" is folklore: it thins every part and fixes nothing that has a name.
+Mud is two parts holding the same band at the same time — find *which two* on
+the map, then ask why before reaching for an EQ:
+- **register first.** Read the parts' MIDI note ranges (the .rpp or the DAW):
+  a chord part whose lowest notes sit an octave above the bass's fundamentals
+  lands exactly on the bass's 2nd harmonic. Measured 2026-10-21 on
+  «Выше и дальше»: guitar part (Piano) F2–C4, 18 of 102 notes below C3
+  (87–117 Hz); 808 at F1–G#1 (44–52 Hz) → 75% clash at 91–112 Hz. The fix is
+  the voicing — those notes up an octave, or out where the 808 plays — not a
+  shelf that dulls the whole part;
+- **time second.** If both must stay, do they need to play *together*? A part
+  that rests on the bass hits, or a sidechain duck in that band, keeps both;
+- **EQ last**, and narrow: only when the register and the timing are right and
+  two timbres still overlap.
+
 **Deciding the fix** — one band, one owner:
 - the part whose *job* is that band keeps it: kick and bass under ~150 Hz,
   the vocal 1–4 kHz, the lead its own fundamental;
@@ -97,6 +113,15 @@ measures, REAPER MCP changes; neither does the other's job:
    `mix_compare(before="before", after="cut-300-gtr")`;
 5. the clash dropped and the track did not lose its level → keep; otherwise
    `dsl_undo`. Runs live in `~/.superduper-dsp/mix-log.jsonl`.
+
+**Measuring right:** loop one section for every labelled run (otherwise the
+song moves on and every level shifts — a bass that nobody touched dropped 6 dB
+between two runs); pass `prefer={"<track>": "EQ"}` naming the last enabled
+SuperDuper plugin in the chain, or a cut placed after the instrument is
+invisible (the track defaults to its loudest instance, the instrument before
+the cut). A SuperDuper plugin added through the API publishes with an empty
+track name until the project is reopened (the name is read at creation; no
+track-info `changed()` yet) — add measuring plugins by hand, or reopen.
 
 A plugin that is bypassed publishes silence (since 2026-10-21); before that a
 disabled plugin kept its last spectrum on the bus and produced clashes that

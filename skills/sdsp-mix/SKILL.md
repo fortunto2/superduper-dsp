@@ -175,6 +175,13 @@ measures, REAPER MCP changes; neither does the other's job:
 5. the clash dropped and the track did not lose its level → keep; otherwise
    `dsl_undo`. Runs live in `~/.superduper-dsp/mix-log.jsonl`.
 
+**The bus hears before the fader.** A SuperDuper plugin measures where it
+sits in the chain, so a fader move in the DAW is invisible to it (Sound Radix
+Pi asks to sit post-fader for the same reason). Before a mix_masking run read
+the faders — REAPER MCP `run_lua` with
+`local o={} for i=0,reaper.CountTracks(0)-1 do local t=reaper.GetTrack(0,i) local _,n=reaper.GetTrackName(t) o[n]=20*math.log(reaper.GetMediaTrackInfo_Value(t,"D_VOL"),10) end return o`
+— and pass the map as `fader_db`. Same map for runs you compare.
+
 **Measuring right:** loop one section for every labelled run (otherwise the
 song moves on and every level shifts — a bass that nobody touched dropped 6 dB
 between two runs); pass `prefer={"<track>": "EQ"}` naming the last enabled

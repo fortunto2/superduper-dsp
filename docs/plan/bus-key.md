@@ -22,4 +22,10 @@ the real side-chain input stays for that.
 - [x] sdsp-mix skill: when to key what; measure with mix_compare (Soothe/duck_under; extend per plugin)
 - [x] MCP-first: generic `params` doc in all 31 plugins; plugin_params / plugin_set_params / duck_under
 
+- [x] fader blind spot: mix_masking fader_db (Pi sits post-fader; the bus is pre-fader)
+- [ ] phase interactions between tracks (Sound Radix Pi): each instance also
+      publishes a short low-band (<~800 Hz) audio window; the bus computes per
+      pair how much energy the sum loses (kick vs bass, layered kicks, mics);
+      fix with polarity / allpass rotation. Needs a bigger slot → bus VERSION 2
+
 ## Done

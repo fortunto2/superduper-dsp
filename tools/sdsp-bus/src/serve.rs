@@ -82,6 +82,11 @@ pub struct MaskingInput {
     /// a track is its loudest instance, which misses a cut placed after the
     /// instrument. Use the same map for runs you compare.
     pub prefer: Option<Prefer>,
+    /// Track → its fader gain in dB (and any post-plugin volume). The bus
+    /// measures where the plugin sits, before the fader: a guitar pulled
+    /// down 10 dB still reads loud without this. Read it from the DAW
+    /// (REAPER: track D_VOL → 20·log10) and pass the same map for runs you compare.
+    pub fader_db: Option<std::collections::HashMap<String, f32>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
@@ -273,7 +278,7 @@ impl BusServer {
     }
 
     #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first (clashes: both loud and within 6 dB), and which parts are buried 6-20 dB under a louder one (buried — a problem only for a part that must be heard there). Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
-    async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
+    async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer, fader_db }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let r = reader()?;
         let frames = (secs * 10.0) as usize;
@@ -282,7 +287,15 @@ impl BusServer {
         let mut power: std::collections::HashMap<String, f64> = Default::default();
         let mut last = Vec::new();
         for _ in 0..frames {
-            let tracks = tracks(&r.read_all(), prefer.as_ref().unwrap_or(&Prefer::new()));
+            let mut tracks = tracks(&r.read_all(), prefer.as_ref().unwrap_or(&Prefer::new()));
+            if let Some(f) = &fader_db {
+                for t in &mut tracks {
+                    if let Some(g) = f.get(&t.name) {
+                        t.rms_db += g;
+                        for b in t.bands_db.iter_mut() { *b += g; }
+                    }
+                }
+            }
             for t in &tracks {
                 *power.entry(t.name.clone()).or_default() += 10f64.powf(t.rms_db as f64 / 10.0);
                 let s = sums.entry(t.name.clone()).or_insert([0.0; BANDS]);

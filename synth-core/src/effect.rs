@@ -88,10 +88,23 @@ where
     S: SharedHost,
     F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
+    run_ports_with(shared, audio, |bypassed, l_in, l_out, r| {
+        if bypassed { copy_dry(l_in, l_out, r) } else { dsp(l_in, l_out, r) }
+    })
+}
+
+/// [`run_ports`] where the closure sees the bypass flag and writes the
+/// bypassed output itself — for a plugin whose bypass must keep its latency
+/// delay running (Saturator, Double, Vocoder: bypass must not move PDC).
+/// The scope is still fed from whatever the closure wrote.
+pub fn run_ports_with<S, F>(shared: &S, audio: &mut Audio, mut dsp: F) -> Result<ProcessStatus, PluginError>
+where
+    S: SharedHost,
+    F: FnMut(bool, &[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+{
     let _denormals = superduper_dsp_sdk::denormals::Guard::new();
     let bypassed = shared.bypass().load(std::sync::atomic::Ordering::Relaxed);
     let scope = shared.scope();
-
     for port_pair in audio {
         one_port(scope, bypassed, port_pair, &mut dsp)?;
     }
@@ -106,6 +119,18 @@ where
     S: SharedHost,
     F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
+    run_main_port_with(shared, audio, |bypassed, l_in, l_out, r| {
+        if bypassed { copy_dry(l_in, l_out, r) } else { dsp(l_in, l_out, r) }
+    })
+}
+
+/// [`run_main_port`] with the bypass flag handed to the closure (see
+/// [`run_ports_with`]).
+pub fn run_main_port_with<S, F>(shared: &S, audio: &mut Audio, mut dsp: F) -> Result<ProcessStatus, PluginError>
+where
+    S: SharedHost,
+    F: FnMut(bool, &[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+{
     let _denormals = superduper_dsp_sdk::denormals::Guard::new();
     let bypassed = shared.bypass().load(std::sync::atomic::Ordering::Relaxed);
     if let Some(port_pair) = audio.port_pair(0) {
@@ -114,26 +139,20 @@ where
     Ok(ProcessStatus::Continue)
 }
 
+fn copy_dry(l_in: &[f32], l_out: &mut [f32], r: Option<(&[f32], &mut [f32])>) {
+    l_out.copy_from_slice(l_in);
+    if let Some((r_in, r_out)) = r { r_out.copy_from_slice(r_in); }
+}
+
 fn one_port<F>(scope: &LiveScope, bypassed: bool, mut port_pair: PortPair<'_>, dsp: &mut F) -> Result<(), PluginError>
 where
-    F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+    F: FnMut(bool, &[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
     let Some(channel_pairs) = port_pair.channels()?.into_f32() else { return Ok(()) };
     let mut chans = channel_pairs.into_iter();
     let Some((l_in, l_out)) = chans.next().and_then(split_io) else { return Ok(()) };
     let mut r = chans.next().and_then(split_io);
-    if bypassed {
-        l_out.copy_from_slice(l_in);
-        match r {
-            Some((r_in, r_out)) => {
-                r_out.copy_from_slice(r_in);
-                for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); }
-            }
-            None => for a in l_out.iter() { scope.push(*a); },
-        }
-        return Ok(());
-    }
-    dsp(l_in, l_out, r.as_mut().map(|(ri, ro)| (*ri, &mut **ro)));
+    dsp(bypassed, l_in, l_out, r.as_mut().map(|(ri, ro)| (*ri, &mut **ro)));
     match r {
         Some((_, r_out)) => for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); },
         None => for a in l_out.iter() { scope.push(*a); },

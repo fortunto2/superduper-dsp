@@ -115,6 +115,13 @@ pub struct SharedParamsInner {
     pub library: Mutex<Vec<PackEntry>>,
     /// Library index of what is loaded (or being loaded). −1 = nothing yet.
     pub current_index: AtomicI32,
+    /// The `Instrument` value the loader last acted on. The loader never
+    /// writes the param (CLAP: the host owns it; writing the preferred
+    /// default back made flush() and process() read differently —
+    /// clap-validator param-set-events, flaky, 2026-10-21); a fresh instance
+    /// loads the preferred instrument while the param stays at its default,
+    /// and a host move away from the last seen value loads that entry.
+    pub param_seen: AtomicI32,
     /// A specific file to load next (GUI pick, project state). Wins over the
     /// Instrument param.
     pub requested_path: Mutex<Option<PathBuf>>,
@@ -166,6 +173,7 @@ impl PluginShared {
                 pack_root,
                 library: Mutex::new(Vec::new()),
                 current_index: AtomicI32::new(-1),
+                param_seen: AtomicI32::new(PARAMS[P_INSTRUMENT].default as i32),
                 requested_path: Mutex::new(None),
                 state_path: Mutex::new(None),
                 info: Mutex::new(InstrumentInfo::default()),
@@ -211,7 +219,6 @@ pub fn refresh_library(shared: &SharedParamsInner) -> usize {
     if let Some(p) = loaded {
         if let Some(i) = entries.iter().position(|e| e.path == p) {
             shared.current_index.store(i as i32, Ordering::Relaxed);
-            shared.params[P_INSTRUMENT].store(i as f32, Ordering::Relaxed);
         }
     }
     let n = entries.len();
@@ -225,6 +232,7 @@ pub fn pick_instrument(shared: &SharedParamsInner, idx: usize) {
     if let Some(p) = path {
         shared.params[P_INSTRUMENT].store(idx as f32, Ordering::Relaxed);
         shared.dirty_params[P_INSTRUMENT].store(true, Ordering::Relaxed);
+        shared.param_seen.store(idx as i32, Ordering::Relaxed);
         request_path(shared, p);
     }
 }
@@ -252,32 +260,29 @@ pub fn loader_step(shared: &SharedParamsInner) {
     let loaded = shared.info.lock().path.clone();
     let want_idx = shared.params[P_INSTRUMENT].load(Ordering::Relaxed).round() as i32;
     let current = shared.current_index.load(Ordering::Relaxed);
+    let seen = shared.param_seen.load(Ordering::Relaxed);
     let target: Option<PathBuf> = if let Some(p) = shared.requested_path.lock().take() {
         Some(p)
+    } else if want_idx != seen {
+        // The host moved the param: that entry, whatever is loaded.
+        shared.param_seen.store(want_idx, Ordering::Relaxed);
+        lib.get(want_idx.max(0) as usize).map(|e| e.path.clone())
     } else if current == -1 && loaded.is_none() {
         // Fresh instance, no project state: the preferred default, not
-        // whatever happens to sort first.
+        // whatever happens to sort first. The param is left alone.
         preferred_default(&lib).map(|i| lib[i].path.clone())
-    } else if want_idx != current {
-        lib.get(want_idx.max(0) as usize).map(|e| e.path.clone())
     } else {
         None
     };
     let Some(target) = target else { return };
+    let idx = lib.iter().position(|e| e.path == target);
     if loaded.as_ref() == Some(&target) {
-        shared.current_index.store(want_idx, Ordering::Relaxed);
+        shared.current_index.store(idx.map_or(current, |i| i as i32), Ordering::Relaxed);
         return;
     }
 
-    let idx = lib.iter().position(|e| e.path == target);
     // Claim the index before loading so a slow load is not restarted.
-    shared.current_index.store(idx.map_or(want_idx, |i| i as i32), Ordering::Relaxed);
-    if let Some(i) = idx {
-        if shared.params[P_INSTRUMENT].load(Ordering::Relaxed).round() as usize != i {
-            shared.params[P_INSTRUMENT].store(i as f32, Ordering::Relaxed);
-            shared.dirty_params[P_INSTRUMENT].store(true, Ordering::Relaxed);
-        }
-    }
+    shared.current_index.store(idx.map_or(-2, |i| i as i32), Ordering::Relaxed);
     let label = idx
         .and_then(|i| lib.get(i))
         .map(|e| format!("{} / {}", e.pack, e.name))
@@ -677,6 +682,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
             if let Some(slot) = self.shared.params.get(i) { slot.store(*v, Ordering::Relaxed); }
         }
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
+        self.shared.param_seen.store(self.shared.params[P_INSTRUMENT].load(Ordering::Relaxed).round() as i32, Ordering::Relaxed);
         if let Some(p) = state.instrument_path {
             request_path(&self.shared.inner, p);
         } else {

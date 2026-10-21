@@ -151,6 +151,7 @@ impl std::ops::Deref for PluginShared {
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -244,55 +245,44 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let curve = self.shared.params[P_TYPE].load(Ordering::Relaxed).round() as u32;
-        let inflate_curve = self.shared.params[P_CURVE].load(Ordering::Relaxed);
-        let os_mode = self.shared.params[P_OS].load(Ordering::Relaxed).round() as u32;
-        let drive_db_target = self.shared.params[P_DRIVE].load(Ordering::Relaxed);
-        let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
-        let output_db_target = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
-        let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
+        let curve = shared.params[P_TYPE].load(Ordering::Relaxed).round() as u32;
+        let inflate_curve = shared.params[P_CURVE].load(Ordering::Relaxed);
+        let os_mode = shared.params[P_OS].load(Ordering::Relaxed).round() as u32;
+        let drive_db_target = shared.params[P_DRIVE].load(Ordering::Relaxed);
+        let tone_target = shared.params[P_TONE].load(Ordering::Relaxed);
+        let output_db_target = shared.params[P_OUTPUT].load(Ordering::Relaxed);
+        let mix_target = shared.params[P_MIX].load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                let (dc, tilt, os1, os2, pad, dry) = if ch_idx == 0 {
-                    (&mut self.dc_l, &mut self.tilt_l, &mut self.os1_l, &mut self.os2_l,
-                     &mut self.pad_l, &mut self.dry_l)
-                } else {
-                    (&mut self.dc_r, &mut self.tilt_r, &mut self.os1_r, &mut self.os2_r,
-                     &mut self.pad_r, &mut self.dry_r)
-                };
+        // Bypass stays the DSP's own: the dry signal keeps going through the
+        // latency delay, so bypass never moves PDC (run_ports_with hands the
+        // flag in; the scope is fed from whatever comes out).
+        superduper_synth_core::effect::run_ports_with(&**shared, &mut audio, |_bypassed, l_read, l_write, r| {
+            process_channel(
+                &mut self.dc_l, &mut self.tilt_l, &mut self.os1_l, &mut self.os2_l, &mut self.pad_l, &mut self.dry_l,
+                &mut self.smooth_drive, &mut self.smooth_tone, &mut self.smooth_output, &mut self.smooth_mix,
+                l_read, l_write, sr, curve, inflate_curve, os_mode,
+                drive_db_target, tone_target, output_db_target, mix_target,
+                bypassed,
+            );
+            if let Some((r_read, r_write)) = r {
                 process_channel(
-                    dc, tilt, os1, os2, pad, dry,
-                    &mut self.smooth_drive, &mut self.smooth_tone,
-                    &mut self.smooth_output, &mut self.smooth_mix,
-                    channel_pair, sr, curve, inflate_curve, os_mode,
+                    &mut self.dc_r, &mut self.tilt_r, &mut self.os1_r, &mut self.os2_r, &mut self.pad_r, &mut self.dry_r,
+                    &mut self.smooth_drive, &mut self.smooth_tone, &mut self.smooth_output, &mut self.smooth_mix,
+                    r_read, r_write, sr, curve, inflate_curve, os_mode,
                     drive_db_target, tone_target, output_db_target, mix_target,
                     bypassed,
-                    // One channel feeds the scope: both, one block after the
-                    // other, read as a waveform full of seams.
-                    (ch_idx == 0).then_some(&self.shared.scope),
                 );
             }
-        }
-        Ok(ProcessStatus::Continue)
+        })
     }
 }
 
@@ -308,7 +298,8 @@ fn process_channel(
     smooth_tone: &mut SmoothedParam,
     smooth_output: &mut SmoothedParam,
     smooth_mix: &mut SmoothedParam,
-    channel: ChannelPair<'_, f32>,
+    read: &[f32],
+    write: &mut [f32],
     sr: f32,
     curve: u32,
     inflate_curve: f32,
@@ -318,10 +309,7 @@ fn process_channel(
     output_db_target: f32,
     mix_target: f32,
     bypassed: bool,
-    scope: Option<&superduper_synth_core::gui::LiveScope>,
 ) {
-    use superduper_dsp_sdk::clap_helpers::split_io;
-    let Some((read, write)) = split_io(channel) else { return };
     if bypassed {
         // Keep the delay lines running so un-bypassing is seamless, and
         // stay at the reported latency (bypass must not move PDC).
@@ -365,7 +353,6 @@ fn process_channel(
 
         let final_out = dry * (1.0 - mix) + wet * mix;
         *o = final_out;
-        if let Some(sc) = scope { sc.push(final_out); }
     }
 }
 

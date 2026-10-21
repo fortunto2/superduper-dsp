@@ -185,6 +185,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ===========================================================================
@@ -283,60 +284,34 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         let frames = audio.frames_count() as usize;
         let key_gain = self.key_gain(frames);
-        self.shared.key_gain.store(key_gain, Ordering::Relaxed);
+        shared.key_gain.store(key_gain, Ordering::Relaxed);
         let params = params_from(
-            &self.shared.params,
-            self.shared.bypass.load(Ordering::Relaxed),
+            &shared.params,
+            shared.bypass.load(Ordering::Relaxed),
             key_gain,
         );
 
-        if let Some(mut pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let ch_r = iter.next();
-            let Some((read_l, write_l)) = split_io(ch_l) else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch_r {
-                Some(c) => match split_io(c) {
-                    Some((r, w)) => (r, Some(w)),
-                    None => (read_l, None),
-                },
-                None => (read_l, None),
-            };
-            match write_r {
-                Some(w) => self.dbl.process(read_l, read_r, write_l, w, &params),
+        // Bypass stays the DSP's own (params.bypassed): the dry signal keeps
+        // going through the latency delay, so bypass never moves PDC.
+        let dbl = &mut self.dbl;
+        superduper_synth_core::effect::run_main_port_with(&**shared, &mut audio, |_bypassed, read_l, write_l, r| {
+            match r {
+                Some((read_r, write_r)) => dbl.process(read_l, read_r, write_l, write_r, &params),
                 None => {
                     let empty: &mut [f32] = &mut [];
-                    self.dbl.process(read_l, read_r, write_l, empty, &params);
+                    dbl.process(read_l, read_l, write_l, empty, &params);
                 }
             }
-            for &s in write_l.iter() {
-                self.shared.scope.push(s);
-            }
-        }
+        })?;
         self.publish_readouts();
         Ok(ProcessStatus::Continue)
     }

@@ -306,6 +306,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -490,51 +491,42 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        let threshold_target = self.shared.params[P_THRESHOLD].load(Ordering::Relaxed);
-        let ratio_target = self.shared.params[P_RATIO].load(Ordering::Relaxed);
-        let attack_target = self.shared.params[P_ATTACK].load(Ordering::Relaxed);
-        let release_target = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
-        let knee_target = self.shared.params[P_KNEE].load(Ordering::Relaxed);
-        let makeup_target = self.shared.params[P_MAKEUP].load(Ordering::Relaxed);
-        let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let lookahead_ms_target = self
-            .shared.params[P_LOOKAHEAD].load(Ordering::Relaxed).max(0.0);
-        let ceiling_target = self.shared.params[P_CEILING].load(Ordering::Relaxed);
-        let link_target = self.shared.params[P_LINK].load(Ordering::Relaxed).clamp(0.0, 1.0);
+        let threshold_target = shared.params[P_THRESHOLD].load(Ordering::Relaxed);
+        let ratio_target = shared.params[P_RATIO].load(Ordering::Relaxed);
+        let attack_target = shared.params[P_ATTACK].load(Ordering::Relaxed);
+        let release_target = shared.params[P_RELEASE].load(Ordering::Relaxed);
+        let knee_target = shared.params[P_KNEE].load(Ordering::Relaxed);
+        let makeup_target = shared.params[P_MAKEUP].load(Ordering::Relaxed);
+        let mix_target = shared.params[P_MIX].load(Ordering::Relaxed);
+        let lookahead_ms_target = shared.params[P_LOOKAHEAD].load(Ordering::Relaxed).max(0.0);
+        let ceiling_target = shared.params[P_CEILING].load(Ordering::Relaxed);
+        let link_target = shared.params[P_LINK].load(Ordering::Relaxed).clamp(0.0, 1.0);
         // Oversampling mode is a discrete switch — round and clamp.
-        let os_mode = self.shared.params[P_OS]
+        let os_mode = shared.params[P_OS]
             .load(Ordering::Relaxed)
             .round()
             .clamp(0.0, 2.0) as u32;
         let curve = CompressorCurve::from_index(
-            self.shared.params[P_CURVE].load(Ordering::Relaxed).round().clamp(0.0, 2.0) as u32,
+            shared.params[P_CURVE].load(Ordering::Relaxed).round().clamp(0.0, 2.0) as u32,
         );
-        let range_target = self.shared.params[P_RANGE].load(Ordering::Relaxed).max(0.0);
-        let hold_target = self.shared.params[P_HOLD].load(Ordering::Relaxed).max(0.0);
-        let sc_hpf_idx = self.shared.params[P_SC_HPF]
+        let range_target = shared.params[P_RANGE].load(Ordering::Relaxed).max(0.0);
+        let hold_target = shared.params[P_HOLD].load(Ordering::Relaxed).max(0.0);
+        let sc_hpf_idx = shared.params[P_SC_HPF]
             .load(Ordering::Relaxed)
             .round() as u32;
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
-        let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
-        let ms_mode = self.shared.params[P_MS_MODE].load(Ordering::Relaxed) >= 0.5;
+        let auto_rel = shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
+        let ms_mode = shared.params[P_MS_MODE].load(Ordering::Relaxed) >= 0.5;
         let dual = self.dual_block();
         self.blk_gr_rms = 0.0;
         self.blk_gr_peak = 0.0;
@@ -563,27 +555,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Process main port (index 0) ----
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { return Ok(ProcessStatus::Continue); };
-            let ch_r = iter.next();
-
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-                self.shared.gain_reduction_db.store(0.0, Ordering::Relaxed);
-                return Ok(ProcessStatus::Continue);
-            }
-
+        if bypassed {
+            // run_main_port passes the dry signal through; the meter says so.
+            self.meter_smooth = 0.0;
+            shared.gain_reduction_db.store(0.0, Ordering::Relaxed);
+        }
+        superduper_synth_core::effect::run_main_port(&**shared, &mut audio, |l_read, l_write, r| {
             if let Some((r_read, r_write)) = r {
                 process_stereo_block(
                     self, l_read, l_write, r_read, r_write, sr,
@@ -595,13 +572,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     ms_mode, dual,
                     &mut max_gr_db,
                 );
-            } else {
-                // Mono: run the one true engine with R = L. The write-back
-                // uses only L; the scratch R keeps the block's in/out split.
-                // Always Some — set at activate, put back below every call.
-                if let (Some(mut r_in), Some(mut r_out)) =
-                    (self.mono_r_in.take(), self.mono_r_out.take())
-                {
+            } else if let (Some(mut r_in), Some(mut r_out)) = (self.mono_r_in.take(), self.mono_r_out.take()) {
                 let n = l_read.len().min(r_in.len());
                 r_in[..n].copy_from_slice(&l_read[..n]);
                 process_stereo_block(
@@ -616,9 +587,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 );
                 self.mono_r_in = Some(r_in);
                 self.mono_r_out = Some(r_out);
-                }
             }
-        }
+        })?;
 
         // Push the strongest GR seen this block out for the GUI meter.
         // Peak-hold w/ slow release so the bar reads ~max recent value.

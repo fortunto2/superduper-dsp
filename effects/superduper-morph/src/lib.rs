@@ -234,6 +234,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -284,48 +285,30 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         })
     }
 
-    fn process(&mut self, _p: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
+    fn process(&mut self, _p: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
         let sh = self.shared;
-        apply_param_events(sh, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(&sh.params, &sh.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(&sh.gesture_begin, &sh.gesture_end, events.output);
+        superduper_synth_core::effect::begin_events(&**sh, &mut events);
         self.sync_targets();
         let settings = self.settings();
-        let bypassed = sh.bypass.load(Ordering::Relaxed);
         self.sc.capture(&mut audio, 1)?;
-
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(chans) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut it = chans.into_iter();
-            let Some(ch_l) = it.next() else { return Ok(ProcessStatus::Continue) };
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((rl, wl)) = split_io(ch_l) else { return Ok(ProcessStatus::Continue) };
-            let mut r = it.next().and_then(split_io);
-            if bypassed {
-                wl.copy_from_slice(rl);
-                if let Some((rr, wr)) = r {
-                    wr.copy_from_slice(rr);
-                }
-                return Ok(ProcessStatus::Continue);
-            }
-            let n = rl.len().min(wl.len()).min(self.sc.l.len());
+        let (engine, sc) = (&mut self.engine, &self.sc);
+        superduper_synth_core::effect::run_main_port(&**sh, &mut audio, |rl, wl, mut r| {
+            let n = rl.len().min(wl.len()).min(sc.l.len());
             for i in 0..n {
                 let xl = rl[i];
                 let xr = r.as_ref().and_then(|(rr, _)| rr.get(i).copied()).unwrap_or(xl);
-                let (sl, sr) = (self.sc.l[i], self.sc.r[i]);
-                let (ol, or) = self.engine.process(xl, xr, sl, sr, &settings);
+                let (sl, sr) = (sc.l[i], sc.r[i]);
+                let (ol, or) = engine.process(xl, xr, sl, sr, &settings);
                 wl[i] = ol;
                 if let Some((_, wr)) = r.as_mut() {
                     if let Some(w) = wr.get_mut(i) {
                         *w = or;
                     }
                 }
-                sh.scope.push(0.5 * (ol + or));
             }
-        }
+        })?;
         self.publish_live();
         Ok(ProcessStatus::Continue)
     }

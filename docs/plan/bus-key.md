@@ -102,9 +102,12 @@ the real side-chain input stays for that.
         clean; MidSide's denormal warning gone)
       - [x] batch 2 (side-chain, `effect::run_main_port`: key port captured first, port 0 only):
         Delay, Reverb, Supermass — `stereo_process` now takes slices, no own bypass/scope
-      - [ ] batch 3 side-chain: Compressor, Multiband, Soothe, Morph, Double, Vocoder (same shape)
-      - [ ] the rest (Saturator per-channel loop, LinEQ `begin_block` prelude + host callback,
-        Vocal, Pitch, Tune, Stretch, Granular, Formant, Ambient, Looper, NAM, Spectrum, synths)
+      - [x] batch 3: Multiband, Soothe, Compressor, Morph (plain), and `run_*_with` — the closure
+        sees the bypass flag and writes the bypassed output itself — for Double, Vocoder,
+        Saturator, whose bypass keeps the latency delay running (bypass must not move PDC)
+      - [ ] the rest: LinEQ (`begin_block` prelude + host callback), Vocal, Pitch, Tune, Stretch,
+        Granular, Formant, Ambient, Looper, NAM, Spectrum; the synths have their own shape
+        (notes in, no input port) and stay as they are
 - [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,
       RBJ shelf with slope > 1 gives NaN coefficients; both guarded
 - [x] bus meter controls (`sdsp-bus controls`, tools/sdsp-bus/src/controls.rs, 15 known-answer

@@ -29,6 +29,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod mail; // gain-reduction meter as a read-only bus-mailbox document
 pub mod presets;
 
 use atomic_float::AtomicF32;
@@ -1018,7 +1019,7 @@ impl DefaultPluginFactory for SuperDuperCompressor {
         init_logging();
         slog!("new_shared: Compressor — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Compressor", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Compressor", &shared.inner, |s| &s.scope, Some(mail::handle));
         Ok(shared)
     }
 

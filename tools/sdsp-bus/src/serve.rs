@@ -97,6 +97,18 @@ pub struct ClashOut {
     pub by_db: f32,
 }
 
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+pub struct BuriedOut {
+    /// The part that is playing but cannot be heard there.
+    pub quiet: String,
+    /// The part on top of it.
+    pub under: String,
+    pub low_hz: f32,
+    pub high_hz: f32,
+    /// Share of the listened time it sat 6–20 dB under `under` in this band.
+    pub share: f32,
+}
+
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TrackLevel { pub track: String, pub rms_db: f32 }
 
@@ -106,6 +118,11 @@ pub struct MaskingOut {
     pub seconds: f32,
     pub tracks: Vec<String>,
     pub clashes: Vec<ClashOut>,
+    /// The other masking: a playing part 6–20 dB under a louder one in a band.
+    /// Only a problem for a part that has to be heard there — check the ones
+    /// that matter (the lead vocal), not the list.
+    #[serde(default)]
+    pub buried: Vec<BuriedOut>,
     /// Each track's average level over the run (power mean).
     pub levels: Vec<TrackLevel>,
 }
@@ -231,7 +248,7 @@ impl BusServer {
         Ok(rmcp::Json(TrackSpectrumOut { track: t.name.clone(), rms_db: t.rms_db, band_edges_hz: band_edges().to_vec(), bands_db: t.bands_db.to_vec() }))
     }
 
-    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first. Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
+    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first (clashes: both loud and within 6 dB), and which parts are buried 6-20 dB under a louder one (buried — a problem only for a part that must be heard there). Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
     async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let r = reader()?;
@@ -263,7 +280,10 @@ impl BusServer {
             .map(|(track, p)| TrackLevel { track, rms_db: (10.0 * (p / frames as f64 + 1e-12).log10()) as f32 })
             .collect();
         levels.sort_by(|a, b| a.track.cmp(&b.track));
-        let out = MaskingOut { label, seconds: secs, tracks: names, clashes, levels };
+        let buried = tracker.top_buried(8, None).into_iter().filter(|b| b.share > 0.2).map(|b| BuriedOut {
+            low_hz: edges[b.band], high_hz: edges[b.band + 1], share: b.share, quiet: b.quiet, under: b.loud,
+        }).collect();
+        let out = MaskingOut { label, seconds: secs, tracks: names, clashes, buried, levels };
         if out.label.is_some() {
             use std::io::Write;
             let line = serde_json::to_string(&out).map_err(|e| McpError::internal_error(e.to_string(), None))?;

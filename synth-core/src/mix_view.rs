@@ -274,32 +274,114 @@ impl MixView {
     }
 }
 
-/// The `[ ] mix` toggle plus its floating window, for a plugin's top bar.
-/// `scope` gives the plugin's own track (the window's default focus).
-pub fn mix_toggle(ui: &mut egui::Ui, scope: &crate::gui::LiveScope) {
-    let ctx = ui.ctx().clone();
-    let open_id = egui::Id::new("sdsp_mix_open");
-    let mut open = ctx.data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+const OPEN_ID: &str = "sdsp_mix_open";
+const BIG_ID: &str = "sdsp_mix_big";
+
+fn flag(ctx: &egui::Context, id: &str) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new(id)).unwrap_or(false))
+}
+
+fn set_flag(ctx: &egui::Context, id: &str, v: bool) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(id), v));
+}
+
+/// The `[ ] mix` toggle, for a plugin's top-bar row. The strip it turns on is
+/// drawn by `mix_strip`, under the row.
+pub fn mix_toggle(ui: &mut egui::Ui) {
+    let open = flag(ui.ctx(), OPEN_ID);
     let label = if open { "[X] mix" } else { "[ ] mix" };
     if ui.selectable_label(open, egui::RichText::new(label).color(GREEN).monospace())
-        .on_hover_text("the whole mix from the SuperDuper bus: who masks this track, where")
+        .on_hover_text("red where this track fights another one, from the SuperDuper bus")
         .clicked()
     {
-        open = !open;
+        set_flag(ui.ctx(), OPEN_ID, !open);
     }
-    if open {
-        let own = scope.track.lock().0.clone();
-        let view = MixView::shared(&ctx, egui::Id::new("sdsp_mix_view"));
+}
+
+/// When the toggle is on: a thin strip in the plugin's own window — this
+/// track's curve, the red bands where it fights, its worst opponent — and `⤢`
+/// for the full map in a floating window.
+pub fn mix_strip(ui: &mut egui::Ui, scope: &crate::gui::LiveScope) {
+    let ctx = ui.ctx().clone();
+    if !flag(&ctx, OPEN_ID) {
+        return;
+    }
+    let own = scope.track.lock().0.clone();
+    let own = (!own.is_empty()).then_some(own);
+    let view = MixView::shared(&ctx, egui::Id::new("sdsp_mix_view"));
+    if view.lock().strip_ui(ui, own.as_deref(), MixOpts::default()) {
+        set_flag(&ctx, BIG_ID, !flag(&ctx, BIG_ID));
+    }
+    let mut big = flag(&ctx, BIG_ID);
+    if big {
         let screen = ctx.content_rect();
         egui::Window::new(egui::RichText::new("mix").color(GREEN).monospace())
             .id(egui::Id::new("sdsp_mix_window"))
-            .open(&mut open)
+            .open(&mut big)
             .default_size(egui::vec2((screen.width() - 40.0).min(720.0), (screen.height() - 80.0).min(460.0)))
             .default_pos(screen.min + egui::vec2(20.0, 60.0))
             .resizable(true)
             .collapsible(false)
             .frame(egui::Frame::window(&ctx.style()).fill(PANEL_BG))
-            .show(&ctx, |ui| view.lock().ui(ui, (!own.is_empty()).then_some(own.as_str()), MixOpts::default()));
+            .show(&ctx, |ui| view.lock().ui(ui, own.as_deref(), MixOpts::default()));
+        set_flag(&ctx, BIG_ID, big);
     }
-    ctx.data_mut(|d| d.insert_temp(open_id, open));
+}
+
+impl MixView {
+    /// The compact form: ~50 px. Returns true when `⤢` was clicked.
+    pub fn strip_ui(&mut self, ui: &mut egui::Ui, own_track: Option<&str>, opts: MixOpts) -> bool {
+        self.poll(&opts);
+        let edges = band_edges();
+        let centers: [f32; BANDS] = std::array::from_fn(|b| (edges[b] * edges[b + 1]).sqrt());
+        let mine = own_track.and_then(|n| self.tracks.iter().find(|t| t.name == n && !t.bus));
+        let worst = self.clashes.iter().find(|c| own_track.is_none_or(|o| c.a == o || c.b == o));
+        let other = worst.and_then(|c| {
+            let o = if Some(c.a.as_str()) == own_track { &c.b } else { &c.a };
+            self.tracks.iter().find(|t| &t.name == o)
+        });
+        let mut expand = false;
+        ui.horizontal(|ui| {
+            let f = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
+            let text = match (own_track, worst) {
+                (None, _) => "mix: this plugin has no track name yet".to_string(),
+                (Some(_), None) if mine.is_none() => "mix: this track is silent".to_string(),
+                (_, None) => "mix: no clashes".to_string(),
+                (Some(o), Some(c)) => {
+                    let them = if c.a == o { &c.b } else { &c.a };
+                    format!("mix: × {}   {}–{} Hz   {:.0}%", them, f(edges[c.band]), f(edges[c.band + 1]), c.share * 100.0)
+                }
+            };
+            let red = worst.is_some_and(|c| c.share > 0.5);
+            ui.label(egui::RichText::new(text).color(if red { Color32::from_rgb(255, 120, 110) } else { GREEN_DIM }).monospace().small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("⤢").on_hover_text("the whole mix map").clicked() { expand = true; }
+            });
+        });
+        let w = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 40.0), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, PANEL_BG);
+        let (log_min, log_max) = (MIN_HZ.ln(), MAX_HZ.ln());
+        let fx = |hz: f32| rect.left() + (hz.clamp(MIN_HZ, MAX_HZ).ln() - log_min) / (log_max - log_min) * rect.width();
+        // −84..0 dB over the strip's height
+        let fy = |db: f32| rect.top() + (-(db.clamp(-84.0, 0.0)) / 84.0) * rect.height();
+        for &hz in &[100.0_f32, 1000.0, 10000.0] {
+            let x = fx(hz);
+            painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, GREEN_FAINT));
+        }
+        let heat = self.masking.band_heat(own_track);
+        for (b, h) in heat.iter().enumerate() {
+            if *h < 0.05 { continue; }
+            let r = egui::Rect::from_x_y_ranges(fx(edges[b])..=fx(edges[b + 1]), rect.top()..=rect.bottom());
+            painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(255, 60, 60, (h.min(1.0) * 150.0) as u8));
+        }
+        let curve = |t: &TrackSpectrum, c: Color32, wdt: f32| {
+            let pts: Vec<egui::Pos2> = (0..BANDS).map(|b| egui::pos2(fx(centers[b]), fy(t.bands_db[b] + tilt_db(centers[b], opts.tilt)))).collect();
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(wdt, c)));
+        };
+        if let Some(t) = other { curve(t, Color32::from_rgb(240, 90, 120).gamma_multiply(0.6), 1.2); }
+        if let Some(t) = mine { curve(t, GREEN, 1.6); }
+        expand
+    }
 }

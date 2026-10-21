@@ -4019,6 +4019,7 @@ dependencies = [
  "parking_lot",
  "raw-window-handle 0.5.2",
  "sdsp-test-kit",
+ "serde_json",
  "superduper-dsp-sdk",
  "superduper-dsp-sdk-build",
  "superduper-synth-core",

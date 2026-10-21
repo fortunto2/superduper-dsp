@@ -20,6 +20,10 @@ pub const BANDS: usize = 32;
 const _: () = assert!(BANDS == superduper_dsp_sdk::bus::BANDS);
 pub const LOUD_DB: f32 = -50.0;
 pub const CLOSE_DB: f32 = 6.0;
+/// Up to this far under a louder part, a part that is playing is buried, not
+/// just quieter: it is there and cannot be heard. Past it the louder part
+/// simply owns the band.
+pub const BURY_DB: f32 = 20.0;
 
 /// One track's current spectrum (the loudest instance on that track).
 #[derive(Debug, Clone, PartialEq)]
@@ -58,26 +62,40 @@ pub struct Clash {
     pub total: f32,
 }
 
+/// A part buried under a louder one in a band — the book's other masking
+/// (MS ch11): harmless if the quiet part does not need to be heard there,
+/// the problem when it does (a vocal under the guitars).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Buried {
+    pub quiet: String,
+    pub loud: String,
+    pub band: usize,
+    /// Share of recent time the quiet part sat 6–20 dB under the loud one there.
+    pub share: f32,
+}
+
 pub struct MaskingTracker {
     /// Per-update weight of the newest frame (1/window); `None` = plain mean
     /// over every update so far.
     alpha: Option<f32>,
     frames: u32,
     pairs: HashMap<(String, String), [f32; BANDS]>,
+    /// (quiet, loud) → per-band share of time buried.
+    buried: HashMap<(String, String), [f32; BANDS]>,
 }
 
 impl MaskingTracker {
     /// Live view: `window_frames` is how many updates the exponential window
     /// spans, so old clashes fade.
     pub fn new(window_frames: f32) -> Self {
-        Self { alpha: Some(1.0 / window_frames.max(1.0)), frames: 0, pairs: HashMap::new() }
+        Self { alpha: Some(1.0 / window_frames.max(1.0)), frames: 0, pairs: HashMap::new(), buried: HashMap::new() }
     }
 
     /// A fixed listening span: share = clashing updates / all updates. An
     /// exponential window as long as the span would report a clash that held
     /// the whole time as 63%.
     pub fn mean() -> Self {
-        Self { alpha: None, frames: 0, pairs: HashMap::new() }
+        Self { alpha: None, frames: 0, pairs: HashMap::new(), buried: HashMap::new() }
     }
 
     pub fn update(&mut self, tracks: &[TrackSpectrum]) {
@@ -86,7 +104,7 @@ impl MaskingTracker {
         // Running mean is the same recurrence with weight 1/n.
         let a = self.alpha.unwrap_or(1.0 / self.frames as f32);
         // Decay pairs that are no longer both present.
-        for v in self.pairs.values_mut() { for x in v.iter_mut() { *x *= 1.0 - a; } }
+        for v in self.pairs.values_mut().chain(self.buried.values_mut()) { for x in v.iter_mut() { *x *= 1.0 - a; } }
         for (i, x) in real.iter().enumerate() {
             for y in &real[i + 1..] {
                 let slot = self.pairs.entry(pair_key(&x.name, &y.name)).or_insert([0.0; BANDS]);
@@ -95,9 +113,18 @@ impl MaskingTracker {
                     // The decay above already took (1 − a); add the new sample.
                     if clash { *s += a; }
                 }
+                for b in 0..BANDS {
+                    let (p, q) = (x.bands_db[b], y.bands_db[b]);
+                    let gap = (p - q).abs();
+                    if p > LOUD_DB && q > LOUD_DB && (CLOSE_DB..BURY_DB).contains(&gap) {
+                        let key = if p < q { (x.name.clone(), y.name.clone()) } else { (y.name.clone(), x.name.clone()) };
+                        self.buried.entry(key).or_insert([0.0; BANDS])[b] += a;
+                    }
+                }
             }
         }
         self.pairs.retain(|_, v| v.iter().any(|x| *x > 1e-3));
+        self.buried.retain(|_, v| v.iter().any(|x| *x > 1e-3));
     }
 
     /// The `n` most persistent clashes, strongest first.
@@ -107,6 +134,21 @@ impl MaskingTracker {
             Clash { a: a.clone(), b: b.clone(), band, share: s[band], total: s.iter().sum() }
         }).collect();
         v.sort_by(|x, y| y.share.total_cmp(&x.share).then(y.total.total_cmp(&x.total)));
+        v.truncate(n);
+        v
+    }
+
+    /// The `n` most persistent burials, strongest first; `quiet` keeps only
+    /// those of one track (the one that has to be heard).
+    pub fn top_buried(&self, n: usize, quiet: Option<&str>) -> Vec<Buried> {
+        let mut v: Vec<Buried> = self.buried.iter()
+            .filter(|((q, _), _)| quiet.is_none_or(|t| t == q))
+            .map(|((q, l), s)| {
+                let band = (0..BANDS).max_by(|&i, &j| s[i].total_cmp(&s[j])).unwrap_or(0);
+                Buried { quiet: q.clone(), loud: l.clone(), band, share: s[band] }
+            })
+            .collect();
+        v.sort_by(|x, y| y.share.total_cmp(&x.share));
         v.truncate(n);
         v
     }
@@ -169,6 +211,20 @@ mod tests {
         for _ in 0..30 { m.update(&[t("A", &[(5, -20.0)]), t("B", &[(5, -60.0)])]); }
         let after = m.top(1).first().map_or(0.0, |c| c.share);
         assert!(before > 0.9 && after < 0.1, "{before} → {after}");
+    }
+
+    #[test]
+    fn a_part_10_db_under_is_buried_20_db_under_is_owned() {
+        let mut m = MaskingTracker::mean();
+        for _ in 0..20 {
+            m.update(&[t("Gtr", &[(12, -20.0), (20, -20.0)]), t("Vox", &[(12, -30.0), (20, -45.0)])]);
+        }
+        let b = m.top_buried(5, Some("Vox"));
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].quiet.as_str(), b[0].loud.as_str(), b[0].band), ("Vox", "Gtr", 12));
+        assert!(b[0].share > 0.99);
+        assert!(m.top(5).is_empty(), "10 dB apart is not a clash");
+        assert!(m.top_buried(5, Some("Gtr")).is_empty(), "the loud one is not buried");
     }
 
     #[test]

@@ -271,6 +271,11 @@ pub struct LiveScope {
     /// with its `bus::TRACK_*` kind.
     pub sample_rate: AtomicF32,
     pub track: parking_lot::Mutex<(String, u32)>,
+    /// Bus key: the track this plugin reacts to ("" = none), and that track's
+    /// latest 32-band spectrum in dB, copied by the publisher thread. The
+    /// audio thread reads only the atomics (`key_db_at`).
+    pub key_track: parking_lot::Mutex<String>,
+    pub key_bands: [AtomicF32; superduper_dsp_sdk::bus::BANDS],
 }
 
 impl LiveScope {
@@ -281,7 +286,23 @@ impl LiveScope {
             head: std::sync::atomic::AtomicUsize::new(0),
             sample_rate: AtomicF32::new(48_000.0),
             track: parking_lot::Mutex::new((String::new(), 0)),
+            key_track: parking_lot::Mutex::new(String::new()),
+            key_bands: std::array::from_fn(|_| AtomicF32::new(-120.0)),
         }
+    }
+
+    /// The key track's level (dB) at `hz`, interpolated between band centres
+    /// on a log axis. Atomics only — safe on the audio thread. −120 when no
+    /// key is set or the key track is silent.
+    pub fn key_db_at(&self, hz: f32) -> f32 {
+        use superduper_dsp_sdk::bus::BANDS;
+        // Band b spans 20·1000^(b/32) .. 20·1000^((b+1)/32); its centre is at
+        // position b + 0.5 on that log scale.
+        let pos = ((hz.max(20.0) / 20.0).ln() / 1000f32.ln() * BANDS as f32 - 0.5).clamp(0.0, (BANDS - 1) as f32);
+        let (i, f) = (pos.floor() as usize, pos.fract());
+        let a = self.key_bands[i].load(Ordering::Relaxed);
+        let b = self.key_bands[(i + 1).min(BANDS - 1)].load(Ordering::Relaxed);
+        a + (b - a) * f
     }
 
     pub fn set_sample_rate(&self, sr: f32) { self.sample_rate.store(sr, Ordering::Relaxed); }
@@ -423,6 +444,8 @@ pub fn spawn_bus_publisher_with_mail<T: Send + Sync + 'static>(
         let mut track = (String::new(), 0);
         let mut last_head = usize::MAX;
         let mut last_moved = std::time::Instant::now();
+        let mut reader: Option<superduper_dsp_sdk::bus::Reader> = None;
+        let mut keyed = false;
         loop {
             let Some(inner) = weak.upgrade() else { break };
             let sc = scope(&inner);
@@ -443,16 +466,65 @@ pub fn spawn_bus_publisher_with_mail<T: Send + Sync + 'static>(
             };
             last_head = head;
             publisher.publish(sc.sample_rate.load(Ordering::Relaxed), rms, peak, &bands);
-            if let Some(handle) = mail {
-                if let Some(req) = crate::bus_mail::take_request(publisher.instance()) {
-                    let out = handle(&inner, &req.doc, &req.op, req.value);
-                    crate::bus_mail::reply(publisher.instance(), req.id, out);
-                }
+            let key = sc.key_track.lock().clone();
+            if !key.is_empty() {
+                if reader.is_none() { reader = superduper_dsp_sdk::bus::Reader::open(); }
+                let own = publisher.instance();
+                // The key track's loudest instance, never this one.
+                let best = reader.as_ref().and_then(|r| {
+                    r.read_all().into_iter()
+                        .filter(|s| s.instance != own && s.track == key)
+                        .max_by(|a, b| a.rms_db.total_cmp(&b.rms_db))
+                });
+                let src = best.map_or([-120.0; superduper_dsp_sdk::bus::BANDS], |s| s.bands_db);
+                for (a, v) in sc.key_bands.iter().zip(src) { a.store(v, Ordering::Relaxed); }
+                keyed = true;
+            } else if keyed {
+                for a in sc.key_bands.iter() { a.store(-120.0, Ordering::Relaxed); }
+                keyed = false;
+            }
+            if let Some(req) = crate::bus_mail::take_request(publisher.instance()) {
+                let out = match (req.doc.as_str(), mail) {
+                    ("key", _) => key_doc(sc, &req.op, req.value),
+                    ("", Some(handle)) if req.op == "list" => handle(&inner, "", "list", req.value)
+                        .map(|v| key_doc_list(v)),
+                    ("", None) if req.op == "list" => Ok(key_doc_list(serde_json::json!([]))),
+                    (_, Some(handle)) => handle(&inner, &req.doc, &req.op, req.value),
+                    (d, None) => Err(format!("this plugin has only the \"key\" document; got {d:?}")),
+                };
+                crate::bus_mail::reply(publisher.instance(), req.id, out);
             }
             drop(inner);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
+}
+
+/// Every plugin's "key" document: which bus track it reacts to.
+fn key_doc(sc: &LiveScope, op: &str, value: serde_json::Value) -> Result<serde_json::Value, String> {
+    match op {
+        "get" => {
+            let peak = sc.key_bands.iter().map(|a| a.load(Ordering::Relaxed)).fold(-120.0f32, f32::max);
+            Ok(serde_json::json!({"track": sc.key_track.lock().clone(), "loudest_band_db": peak}))
+        }
+        "set" => {
+            let t = value.get("track").and_then(|v| v.as_str()).ok_or("set needs {track: \"name\"} (\"\" clears)")?;
+            *sc.key_track.lock() = t.trim().to_string();
+            Ok(serde_json::json!({"track": t.trim()}))
+        }
+        "list" => Ok(key_doc_list(serde_json::json!([]))),
+        _ => Err(format!("key: list/get/set, got {op:?}")),
+    }
+}
+
+fn key_doc_list(plugin_docs: serde_json::Value) -> serde_json::Value {
+    let mut v = plugin_docs.as_array().cloned().unwrap_or_default();
+    v.push(serde_json::json!({
+        "doc": "key",
+        "get": "track this plugin reacts to (bus key), and that track's loudest band now (dB)",
+        "set": "{track: \"name as bus_list shows it\"} — \"\" clears; what the plugin does with it depends on the plugin (Soothe: spectral ducking)",
+    }));
+    serde_json::Value::Array(v)
 }
 
 /// Render the live scope inside `rect` — green polyline + centre line.
@@ -1533,11 +1605,14 @@ fn top_bar_inner(
             bypassed = !bypassed;
             bypass.store(bypassed, Ordering::Relaxed);
         }
-        if let Some(scope) = scope {
+        if scope.is_some() {
             ui.add_space(12.0);
-            crate::mix_view::mix_toggle(ui, scope);
+            crate::mix_view::mix_toggle(ui);
         }
     });
+    if let Some(scope) = scope {
+        crate::mix_view::mix_strip(ui, scope);
+    }
     // Full-width separator line in green dim.
     let rect = ui.available_rect_before_wrap();
     let y = rect.top() + 2.0;
@@ -1547,4 +1622,21 @@ fn top_bar_inner(
     );
     ui.add_space(8.0);
     new_selection
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn key_level_reads_the_band_at_its_centre_and_interpolates_between() {
+        let sc = LiveScope::new(64);
+        for (b, a) in sc.key_bands.iter().enumerate() { a.store(b as f32, Ordering::Relaxed); }
+        let e = superduper_dsp_sdk::bus::band_edges();
+        let centre = |b: usize| (e[b] * e[b + 1]).sqrt();
+        assert!((sc.key_db_at(centre(10)) - 10.0).abs() < 1e-3);
+        assert!((sc.key_db_at((centre(10) * centre(11)).sqrt()) - 10.5).abs() < 1e-3, "halfway on a log axis");
+        assert_eq!(sc.key_db_at(5.0), 0.0, "below the first centre: clamped");
+        assert_eq!(sc.key_db_at(30_000.0), 31.0);
+    }
 }

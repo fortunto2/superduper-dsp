@@ -15,8 +15,9 @@ use std::sync::atomic::Ordering;
 /// The bar editor's ceiling.
 const MAX_AMP: f32 = 1.5;
 
+/// Numbers that stay finite as f32 (1e39 would be inf).
 fn floats(v: &Value) -> Option<Vec<f32>> {
-    v.as_array()?.iter().map(|x| x.as_f64().map(|f| f as f32)).collect()
+    v.as_array()?.iter().map(|x| x.as_f64().filter(|f| f.is_finite() && f.abs() <= 1e6).map(|f| f as f32)).collect()
 }
 
 pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> Result<Value, String> {
@@ -58,6 +59,10 @@ pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> 
                 if let Some(v) = value.get(key) {
                     let v = floats(v).ok_or(format!("{key}: a list of {live} numbers"))?;
                     if v.len() != live { return Err(format!("{key}: exactly {live} values (one per live band)")); }
+                    // Same rule as set_formants: a non-finite or absurd value would put
+                    // NaN through the formant bank (0 · inf) and out of the plugin.
+                    let ok = |x: &f32| x.is_finite() && *x >= 0.0 && *x <= if key == "formant_bw" { 20_000.0 } else { 16.0 };
+                    if !v.iter().all(ok) { return Err(format!("{key}: finite, ≥ 0 (bw ≤ 20000 Hz, gain ≤ 16)")); }
                     for (slot, x) in atoms.iter().zip(v) { slot.store(x, Ordering::Relaxed); }
                     changed.push(key);
                 }

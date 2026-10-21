@@ -54,7 +54,10 @@ fn res_path(instance: u64) -> PathBuf { mail_dir().join(format!("{instance:016x}
 
 fn write_atomic(path: &PathBuf, text: &str) -> std::io::Result<()> {
     if let Some(d) = path.parent() { std::fs::create_dir_all(d)?; }
-    let tmp = path.with_extension("tmp");
+    // A temp name of our own: two writers sharing one ".tmp" could rename
+    // each other's half-written file.
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!("{}-{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
 }
@@ -79,7 +82,6 @@ pub fn reply(instance: u64, id: u64, result: Result<Value, String>) {
 /// Agent side: send one request and wait for its reply.
 pub fn call(instance: u64, doc: &str, op: &str, value: Value, timeout: Duration) -> Result<Value, String> {
     let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-    let _ = std::fs::remove_file(res_path(instance));
     let req = Request { id, doc: doc.into(), op: op.into(), value };
     write_atomic(&req_path(instance), &serde_json::to_string(&req).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let start = Instant::now();
@@ -93,8 +95,12 @@ pub fn call(instance: u64, doc: &str, op: &str, value: Value, timeout: Duration)
             }
         }
         if start.elapsed() > timeout {
-            let _ = std::fs::remove_file(req_path(instance));
-            return Err("no answer: the plugin has no mailbox, or its host is not running".into());
+            // Withdraw the request only if it is still ours (another caller's
+            // may have replaced it since).
+            if let Ok(text) = std::fs::read_to_string(req_path(instance)) {
+                if serde_json::from_str::<Request>(&text).is_ok_and(|r| r.id == id) { let _ = std::fs::remove_file(req_path(instance)); }
+            }
+            return Err("no answer: the host is not running, the plugin has no mailbox, or another caller's request replaced this one (one at a time per instance)".into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }

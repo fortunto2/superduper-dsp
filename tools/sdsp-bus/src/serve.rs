@@ -400,6 +400,11 @@ impl BusServer {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        if contrib.is_empty() {
+            // Every instance read as a bus: unnamed tracks (a host without CLAP
+            // track-info, or AU/VST3 wrappers). All zeros would read as "fine".
+            return Err(McpError::invalid_params("no named tracks on the bus — the host gives no track names (CLAP track-info) or every SuperDuper plugin is a wrapped AU/VST3; use the CLAP versions", None));
+        }
         let d = superduper_synth_core::mixmap::sum_deficit_db(&tp, &mp);
         let edges = band_edges();
         let mut cancelling: Vec<PhaseBand> = (0..BANDS).filter(|&b| d[b] < -2.0 && tp[b] > 1e-9 * frames as f64).map(|b| {

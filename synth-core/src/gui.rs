@@ -534,9 +534,13 @@ fn key_doc(sc: &LiveScope, op: &str, value: serde_json::Value) -> Result<serde_j
             Ok(serde_json::json!({"track": sc.key_track.lock().clone(), "loudest_band_db": peak}))
         }
         "set" => {
-            let t = value.get("track").and_then(|v| v.as_str()).ok_or("set needs {track: \"name\"} (\"\" clears)")?;
-            *sc.key_track.lock() = t.trim().to_string();
-            Ok(serde_json::json!({"track": t.trim()}))
+            let t = value.get("track").and_then(|v| v.as_str()).ok_or("set needs {track: \"name\"} (\"\" clears)")?.trim();
+            // The consumer matches the bus name exactly, so resolve what the
+            // agent typed to a real track now: "vocal" set as-is used to
+            // report success and never duck.
+            let name = if t.is_empty() { String::new() } else { resolve_key_track(sc, t)? };
+            *sc.key_track.lock() = name.clone();
+            Ok(serde_json::json!({"track": name}))
         }
         "list" => Ok(key_doc_list(serde_json::json!([]))),
         _ => Err(format!("key: list/get/set, got {op:?}")),
@@ -581,6 +585,27 @@ fn generic_docs_list(plugin_docs: serde_json::Value, has_params: bool) -> serde_
         }));
     }
     serde_json::Value::Array(v)
+}
+
+/// A track on the bus matching `want`: exact, then case-insensitive, then a
+/// unique case-insensitive substring. This plugin's own track is never a key.
+fn resolve_key_track(sc: &LiveScope, want: &str) -> Result<String, String> {
+    let own = sc.track.lock().0.clone();
+    let mut names: Vec<String> = superduper_dsp_sdk::bus::Reader::open()
+        .map(|r| r.read_all().into_iter().map(|s| s.track).filter(|n| !n.is_empty() && *n != own).collect())
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    let w = want.to_lowercase();
+    if let Some(n) = names.iter().find(|n| *n == want).or_else(|| names.iter().find(|n| n.to_lowercase() == w)) {
+        return Ok(n.clone());
+    }
+    let hits: Vec<&String> = names.iter().filter(|n| n.to_lowercase().contains(&w)).collect();
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(format!("no track {want:?} on the bus; have: {}", names.join(", "))),
+        many => Err(format!("{want:?} matches {}: name one exactly", many.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))),
+    }
 }
 
 fn key_doc_list(plugin_docs: serde_json::Value) -> serde_json::Value {

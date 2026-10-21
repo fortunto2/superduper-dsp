@@ -644,13 +644,18 @@ impl PluginAudioProcessor<'_> {
         let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
         let key_db = detector::key_level_db(&self.shared.scope, load(P_KEY_LO), load(P_KEY_HI));
         self.shared.key_level_db.store(key_db, Ordering::Relaxed);
+        let dual = load(P_DETECTOR) >= 0.5;
+        // The key is a band RMS. Classic's detector is peak-ish, so the key is
+        // lifted by a sine's crest to read on its scale; Dual's RMS stage
+        // squares it and wants the RMS as is (+3 dB there ducked early).
+        let crest = if dual { 0.0 } else { detector::KEY_CREST_DB };
         DualBlock {
-            dual: load(P_DETECTOR) >= 0.5,
+            dual,
             crest_db: load(P_PEAK_CREST).max(0.0),
             release_peak_ms: load(P_RELEASE_PEAK).max(1.0),
             release_rms_ms: load(P_RELEASE_RMS).max(1.0),
             key_amt: load(P_KEY).clamp(0.0, 1.0),
-            key_lin: 10f32.powf((key_db + detector::KEY_CREST_DB) / 20.0),
+            key_lin: 10f32.powf((key_db + crest) / 20.0),
         }
     }
 }

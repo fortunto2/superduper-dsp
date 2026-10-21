@@ -62,8 +62,10 @@ fn from_samples(s: &[f32]) -> Vec<f32> {
     peak_normalised(t)
 }
 
+/// Numbers that stay finite as f32 and within a sane amplitude — 1e39 is inf
+/// in f32, and inf / inf would put NaN in the wavetable.
 fn floats(v: &Value) -> Option<Vec<f32>> {
-    v.as_array()?.iter().map(|x| x.as_f64().map(|f| f as f32)).collect()
+    v.as_array()?.iter().map(|x| x.as_f64().filter(|f| f.is_finite() && f.abs() <= 1e6).map(|f| f as f32)).collect()
 }
 
 pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> Result<Value, String> {

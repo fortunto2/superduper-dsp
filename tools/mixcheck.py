@@ -163,7 +163,7 @@ def mono_loss(left, right, sr, n_fft=4096):
     l, r = np.asarray(left), np.asarray(right)
     n = (min(len(l), len(r)) // n_fft) * n_fft
     if n == 0:
-        return {}, float("nan")
+        return {}, None  # shorter than one FFT frame
     win = np.hanning(n_fft)
     fl = np.fft.rfft(l[:n].reshape(-1, n_fft) * win, axis=1)
     fr = np.fft.rfft(r[:n].reshape(-1, n_fft) * win, axis=1)
@@ -178,6 +178,8 @@ def mono_loss(left, right, sr, n_fft=4096):
             # a mono fold is (L+R)/2: in phase keeps it all, uncorrelated halves it
             out[name] = 10 * math.log10(em[m].sum() / stereo + 1e-20)
     low = hz < 120
+    if em[low].sum() + es[low].sum() < 1e-12:
+        return out, None  # no low end to be wide or narrow
     width = 10 * math.log10((es[low].sum() + 1e-20) / (em[low].sum() + 1e-20))
     return out, width
 
@@ -194,7 +196,9 @@ def load(path, start=None, end=None):
     """Decode and cut to [start, end) seconds — compare chorus with chorus."""
     l, r, sr = decode(path)
     i0 = int((start or 0) * sr)
-    i1 = int(end * sr) if end else len(l)
+    i1 = int(end * sr) if end is not None else len(l)
+    if i1 <= i0 or i0 >= len(l):
+        raise SystemExit(f"{path}: empty section {start}..{end} s (file is {len(l) / sr:.1f} s)")
     return l[i0:i1], r[i0:i1], sr
 
 
@@ -256,7 +260,10 @@ def report(path, sections=None, ref=None, span=(None, None), ref_span=(None, Non
         worst = min(loss.values()) if loss else 0.0
         print("   mono loss  " + "  ".join(f"{k} {v:+.1f}" for k, v in loss.items()) + " dB"
               + ("   ← a band cancels in mono" if worst < -4.5 else ""))
-        print(f"   side/mid under 120 Hz {width:+.1f} dB" + ("   ← wide bass" if width > -12 else ""))
+        if width is None:
+            print("   side/mid under 120 Hz: no low end")
+        else:
+            print(f"   side/mid under 120 Hz {width:+.1f} dB" + ("   ← wide bass" if width > -12 else ""))
     except ImportError:
         print("   mono loss: needs numpy")
 
@@ -315,7 +322,17 @@ def main():
     a = ap.parse_args()
     if a.json:
         import json
-        print(json.dumps(profile(a.mix, a.start, a.end), indent=1))
+
+        def finite(v):
+            # JSON has no NaN/inf (silence reads -inf LUFS): null instead.
+            if isinstance(v, float):
+                return v if math.isfinite(v) else None
+            if isinstance(v, dict):
+                return {k: finite(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [finite(x) for x in v]
+            return v
+        print(json.dumps(finite(profile(a.mix, a.start, a.end)), indent=1))
         return
 
     sections = None

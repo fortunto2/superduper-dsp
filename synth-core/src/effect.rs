@@ -22,6 +22,7 @@
 
 use atomic_float::AtomicF32;
 use clack_plugin::prelude::*;
+use clack_plugin::process::audio::PortPair;
 use std::sync::atomic::AtomicBool;
 use superduper_dsp_sdk::clap_helpers::{
     apply_param_events, emit_dirty_param_events, emit_gesture_events, split_io,
@@ -91,27 +92,51 @@ where
     let bypassed = shared.bypass().load(std::sync::atomic::Ordering::Relaxed);
     let scope = shared.scope();
 
-    for mut port_pair in audio {
-        let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-        let mut chans = channel_pairs.into_iter();
-        let Some((l_in, l_out)) = chans.next().and_then(split_io) else { continue };
-        let mut r = chans.next().and_then(split_io);
-        if bypassed {
-            l_out.copy_from_slice(l_in);
-            match r {
-                Some((r_in, r_out)) => {
-                    r_out.copy_from_slice(r_in);
-                    for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); }
-                }
-                None => for a in l_out.iter() { scope.push(*a); },
-            }
-            continue;
-        }
-        dsp(l_in, l_out, r.as_mut().map(|(ri, ro)| (*ri, &mut **ro)));
-        match r {
-            Some((_, r_out)) => for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); },
-            None => for a in l_out.iter() { scope.push(*a); },
-        }
+    for port_pair in audio {
+        one_port(scope, bypassed, port_pair, &mut dsp)?;
     }
     Ok(ProcessStatus::Continue)
+}
+
+/// [`run_ports`] for a plugin with a side-chain input: port 0 only. The key
+/// port was read before (`KeyCapture::capture`), so walking every pair would
+/// hand the closure the key as if it were audio to process.
+pub fn run_main_port<S, F>(shared: &S, audio: &mut Audio, mut dsp: F) -> Result<ProcessStatus, PluginError>
+where
+    S: SharedHost,
+    F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+{
+    let _denormals = superduper_dsp_sdk::denormals::Guard::new();
+    let bypassed = shared.bypass().load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(port_pair) = audio.port_pair(0) {
+        one_port(shared.scope(), bypassed, port_pair, &mut dsp)?;
+    }
+    Ok(ProcessStatus::Continue)
+}
+
+fn one_port<F>(scope: &LiveScope, bypassed: bool, mut port_pair: PortPair<'_>, dsp: &mut F) -> Result<(), PluginError>
+where
+    F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+{
+    let Some(channel_pairs) = port_pair.channels()?.into_f32() else { return Ok(()) };
+    let mut chans = channel_pairs.into_iter();
+    let Some((l_in, l_out)) = chans.next().and_then(split_io) else { return Ok(()) };
+    let mut r = chans.next().and_then(split_io);
+    if bypassed {
+        l_out.copy_from_slice(l_in);
+        match r {
+            Some((r_in, r_out)) => {
+                r_out.copy_from_slice(r_in);
+                for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); }
+            }
+            None => for a in l_out.iter() { scope.push(*a); },
+        }
+        return Ok(());
+    }
+    dsp(l_in, l_out, r.as_mut().map(|(ri, ro)| (*ri, &mut **ro)));
+    match r {
+        Some((_, r_out)) => for (a, b) in l_out.iter().zip(r_out.iter()) { scope.push(0.5 * (a + b)); },
+        None => for a in l_out.iter() { scope.push(*a); },
+    }
+    Ok(())
 }

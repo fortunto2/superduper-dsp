@@ -164,6 +164,7 @@ impl Default for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 pub struct PluginMainThread<'a> {
@@ -252,8 +253,9 @@ fn stereo_process(
     smooth_damp: &mut SmoothedParam,
     smooth_predelay: &mut SmoothedParam,
     smooth_mod: &mut SmoothedParam,
-    ch_l: ChannelPair<'_, f32>,
-    ch_r: Option<ChannelPair<'_, f32>>,
+    l_read: &[f32],
+    l_write: &mut [f32],
+    r: Option<(&[f32], &mut [f32])>,
     sc: Option<(&[f32], &[f32])>,
     sr: f32,
     size_target: f32,
@@ -266,25 +268,11 @@ fn stereo_process(
     duck_amount_target: f32,
     duck_attack_ms: f32,
     duck_release_ms: f32,
-    bypassed: bool,
     freeze: bool,
-    scope: &superduper_synth_core::gui::LiveScope,
     (key, key_duck_db): (&mut key::KeyEnvelope, f32),
 ) {
-    let l = split(ch_l);
-    let r = ch_r.and_then(split);
-
-    let (l_read, l_write) = match l {
-        Some(v) => v,
-        None => return,
-    };
-
     // Mono case: just feed (x, x) through the tank and write back the L tap.
     let Some((r_read, r_write)) = r else {
-        if bypassed {
-            l_write.copy_from_slice(l_read);
-            return;
-        }
         for (i, (inp, o)) in l_read.iter().zip(l_write.iter_mut()).enumerate() {
             let mix = smooth_mix.step(mix_target, sr);
             let width = smooth_width.step(width_target, sr);
@@ -318,16 +306,9 @@ fn stereo_process(
             let (wl, _) = state.process_sample(tank_in, tank_in, p);
             let final_out = dry * (1.0 - mix) + (wl * width * duck_gain) * mix;
             *o = final_out;
-            scope.push(final_out);
         }
         return;
     };
-
-    if bypassed {
-        l_write.copy_from_slice(l_read);
-        r_write.copy_from_slice(r_read);
-        return;
-    }
 
     let n = l_read.len().min(r_read.len());
     for i in 0..n {
@@ -374,7 +355,6 @@ fn stereo_process(
         let out_r_sample = dr * (1.0 - mix) + final_wr * duck_gain * mix;
         l_write[i] = out_l_sample;
         r_write[i] = out_r_sample;
-        scope.push((out_l_sample + out_r_sample) * 0.5);
     }
 }
 
@@ -437,65 +417,43 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        // Push every GUI-driven param change into the host output queue
-        // so REAPER can record the move into the automation lane.
-        for (i, flag) in self.shared.dirty_params.iter().enumerate() {
-            if flag.swap(false, Ordering::AcqRel) {
-                let value = self.shared.params[i].load(Ordering::Relaxed) as f64;
-                let ev = clack_common::events::event_types::ParamValueEvent::new(
-                    0,
-                    ClapId::new(i as u32),
-                    clack_common::events::Pckn::new(0u16, 0u16, 0u16, 0u32),
-                    value,
-                    clack_common::utils::Cookie::empty(),
-                );
-                let _ = events.output.try_push(&ev);
-            }
-        }
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let size_target = self.shared.params[P_SIZE].load(Ordering::Relaxed);
-        let freeze_on = self.shared.params[P_FREEZE].load(Ordering::Relaxed) >= 0.5;
+        let size_target = shared.params[P_SIZE].load(Ordering::Relaxed);
+        let freeze_on = shared.params[P_FREEZE].load(Ordering::Relaxed) >= 0.5;
         // Freeze raises decay to its cap (effectively infinite tail) and
         // mutes input into the tank below. We don't disable damping — a
         // pure-reflective infinite tail goes harsh fast; some HF rolloff
         // keeps the freeze musical (Lexicon-style Hold mode).
-        let raw_decay = self.shared.params[P_DECAY].load(Ordering::Relaxed);
+        let raw_decay = shared.params[P_DECAY].load(Ordering::Relaxed);
         let decay_target = if freeze_on { 0.99 } else { raw_decay };
-        let damp_target = self.shared.params[P_DAMP].load(Ordering::Relaxed);
+        let damp_target = shared.params[P_DAMP].load(Ordering::Relaxed);
         // Pre-delay tempo sync: if PD Sync is on, pre-delay = note ms
         // derived from host BPM × PD Div (same musical-division enum
         // shape as Delay's Time Div).
-        let pd_sync_on = self.shared.params[P_PD_SYNC].load(Ordering::Relaxed) >= 0.5;
+        let pd_sync_on = shared.params[P_PD_SYNC].load(Ordering::Relaxed) >= 0.5;
         let predelay_target = if pd_sync_on {
-            let div = self.shared.params[P_PD_DIV].load(Ordering::Relaxed) as u32;
-            let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+            let div = shared.params[P_PD_DIV].load(Ordering::Relaxed) as u32;
+            let bpm = shared.host_bpm.load(Ordering::Relaxed);
             let hz = superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm);
             (1000.0 / hz.max(0.5)).clamp(0.0, 200.0)
         } else {
-            self.shared.params[P_PREDELAY].load(Ordering::Relaxed)
+            shared.params[P_PREDELAY].load(Ordering::Relaxed)
         };
-        let mod_target = self.shared.params[P_MOD].load(Ordering::Relaxed);
-        let width = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
-        let mix = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let duck_amount = self.shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
-        let duck_attack = self.shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
-        let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let key_duck = self.shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
-        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
-        self.key.update(&self.shared.scope, key_duck, key_range, self.sample_rate);
+        let mod_target = shared.params[P_MOD].load(Ordering::Relaxed);
+        let width = shared.params[P_WIDTH].load(Ordering::Relaxed);
+        let mix = shared.params[P_MIX].load(Ordering::Relaxed);
+        let duck_amount = shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
+        let duck_attack = shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
+        let duck_release = shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
+        let key_duck = shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
+        let key_range = shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
+        self.key.update(&shared.scope, key_duck, key_range, self.sample_rate);
 
         // ---- Step 1: snapshot sidechain (port 1). Never routed → fall back
         // to dry input as the key further down; once routed, silence in the
@@ -505,15 +463,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         // ---- Step 2: process main port (index 0). Key signal is sidechain
         // if it carries audio, otherwise the dry input itself.
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let ch_r = iter.next();
+        superduper_synth_core::effect::run_main_port(&**shared, &mut audio, |l_read, l_write, r| {
             let sc_slice = if sc_present {
                 Some((&self.sc.l[..n_frames], &self.sc.r[..n_frames]))
             } else {
@@ -530,8 +480,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 &mut self.smooth_damp,
                 &mut self.smooth_predelay,
                 &mut self.smooth_mod,
-                ch_l,
-                ch_r,
+                l_read,
+                l_write,
+                r,
                 sc_slice,
                 self.sample_rate,
                 size_target,
@@ -544,12 +495,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 duck_amount,
                 duck_attack,
                 duck_release,
-                bypassed,
                 freeze_on,
-                &self.shared.scope,
                 (&mut self.key, key_duck),
             );
-        }
+        })?;
 
         Ok(ProcessStatus::Continue)
     }

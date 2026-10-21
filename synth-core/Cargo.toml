@@ -56,3 +56,7 @@ required-features = ["sfz-load"]
 [[example]]
 name = "drum_classify"
 required-features = ["sfz-load"]
+
+[[example]]
+name = "drum_key_probe"
+required-features = ["sfz-load"]

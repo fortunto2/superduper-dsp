@@ -184,6 +184,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -299,74 +300,59 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
         // Tempo sync: if Time Sync is on, derive ms from host BPM × Time Div
         // (musical note value). Width still operates as a ms offset on top.
-        let time_sync = self.shared.params[P_TIME_SYNC]
+        let time_sync = shared.params[P_TIME_SYNC]
             .load(Ordering::Relaxed) >= 0.5;
         let time_ms = if time_sync {
-            let div = self.shared.params[P_TIME_DIV]
+            let div = shared.params[P_TIME_DIV]
                 .load(Ordering::Relaxed) as u32;
-            let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+            let bpm = shared.host_bpm.load(Ordering::Relaxed);
             let hz = superduper_synth_core::dsp_blocks::sync_division_hz(div, bpm);
             (1000.0 / hz.max(0.5)).clamp(1.0, 2000.0)
         } else {
-            self.shared.params[P_TIME].load(Ordering::Relaxed)
+            shared.params[P_TIME].load(Ordering::Relaxed)
         };
-        let width_ms = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
+        let width_ms = shared.params[P_WIDTH].load(Ordering::Relaxed);
         let target_l = time_ms * 0.001 * sr;
         let target_r = (time_ms + width_ms).max(1.0) * 0.001 * sr;
 
-        let mode = self.shared.params[P_MODE]
+        let mode = shared.params[P_MODE]
             .load(Ordering::Relaxed)
             .round() as u32;
-        let feedback_target = self.shared.params[P_FEEDBACK].load(Ordering::Relaxed);
-        let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
-        let drive_target = self.shared.params[P_DRIVE].load(Ordering::Relaxed);
-        let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let duck_amount_target = self.shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
-        let duck_attack = self.shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
-        let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
-        self.key_duck = self.shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
-        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
-        self.key.update(&self.shared.scope, self.key_duck, key_range, sr);
+        let feedback_target = shared.params[P_FEEDBACK].load(Ordering::Relaxed);
+        let tone_target = shared.params[P_TONE].load(Ordering::Relaxed);
+        let drive_target = shared.params[P_DRIVE].load(Ordering::Relaxed);
+        let mix_target = shared.params[P_MIX].load(Ordering::Relaxed);
+        let duck_amount_target = shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
+        let duck_attack = shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
+        let duck_release = shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
+        self.key_duck = shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
+        let key_range = shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
+        self.key.update(&shared.scope, self.key_duck, key_range, sr);
 
         // ---- Snapshot the sidechain (port 1) ----
         let sc_present = self.sc.capture(&mut audio, 1)?;
 
         // ---- Process main port ----
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { return Ok(ProcessStatus::Continue); };
-            let ch_r = iter.next();
+        superduper_synth_core::effect::run_main_port(&**shared, &mut audio, |l_read, l_write, r| {
             stereo_process(
                 self,
-                ch_l, ch_r, sr, bypassed, mode,
+                l_read, l_write, r, sr, mode,
                 target_l, target_r,
                 feedback_target, tone_target, drive_target, mix_target,
                 sc_present, duck_amount_target, duck_attack, duck_release,
             );
-        }
+        })?;
 
         Ok(ProcessStatus::Continue)
     }
@@ -375,10 +361,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 #[allow(clippy::too_many_arguments)]
 fn stereo_process(
     p: &mut PluginAudioProcessor<'_>,
-    ch_l: ChannelPair<'_, f32>,
-    ch_r: Option<ChannelPair<'_, f32>>,
+    l_read: &[f32],
+    l_write: &mut [f32],
+    r: Option<(&[f32], &mut [f32])>,
     sr: f32,
-    bypassed: bool,
     mode: u32,
     target_l: f32,
     target_r: f32,
@@ -391,16 +377,6 @@ fn stereo_process(
     duck_attack: f32,
     duck_release: f32,
 ) {
-    use superduper_dsp_sdk::clap_helpers::split_io;
-    let Some((l_read, l_write)) = split_io(ch_l) else { return };
-    let r = ch_r.and_then(split_io);
-
-    if bypassed {
-        l_write.copy_from_slice(l_read);
-        if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-        return;
-    }
-
     // Slap mode: short fixed delay (~25 ms) on one side, no feedback.
     let slap_mode = mode == 2;
     let pingpong_mode = mode == 1;
@@ -436,7 +412,6 @@ fn stereo_process(
             // Duck applies to WET only — dry passes through clean.
             let final_out = dry * (1.0 - mix) + saturated * duck_gain * mix;
             l_write[i] = final_out;
-            p.shared.scope.push(final_out);
         }
         return;
     };
@@ -524,7 +499,6 @@ fn stereo_process(
         let out_r = dry_r * (1.0 - mix) + sat_r * duck_gain * mix;
         l_write[i] = out_l;
         r_write[i] = out_r;
-        p.shared.scope.push(0.5 * (out_l + out_r));
     }
 }
 

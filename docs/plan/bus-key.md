@@ -100,10 +100,9 @@ the real side-chain input stays for that.
         params before the audio half ran a block behind on automation with the one-call form
       - [x] batch 1: Chorus, Harmonic, MidSide, Filter, Limiter (snapshots unchanged, validator
         clean; MidSide's denormal warning gone)
-      - [ ] side-chain plugins (Delay, Reverb, Supermass, Compressor, Multiband, Soothe, Morph,
-        Double, Vocoder): `run_main_port` variant — capture the key port first, then port 0 only;
-        their `stereo_process` take `ChannelPair`s and push the scope themselves, so each needs
-        its signature turned into slices first
+      - [x] batch 2 (side-chain, `effect::run_main_port`: key port captured first, port 0 only):
+        Delay, Reverb, Supermass — `stereo_process` now takes slices, no own bypass/scope
+      - [ ] batch 3 side-chain: Compressor, Multiband, Soothe, Morph, Double, Vocoder (same shape)
       - [ ] the rest (Saturator per-channel loop, LinEQ `begin_block` prelude + host callback,
         Vocal, Pitch, Tune, Stretch, Granular, Formant, Ambient, Looper, NAM, Spectrum, synths)
 - [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,
@@ -127,3 +126,7 @@ the real side-chain input stays for that.
       flat-topped samples on a −3 dBFS tone, was 9351)
 
 ## Done
+- [ ] GitHub release CI (fortunto2/superduper-dsp): the last three runs ended cancelled/failed —
+      v0.15.0 (run 39547209693) uploaded 35 Windows assets, "macOS arm64" cancelled, release notes
+      skipped; the two runs before it cancelled/failed too. Read the macOS job log (concurrency
+      cancel vs timeout) before the next tag

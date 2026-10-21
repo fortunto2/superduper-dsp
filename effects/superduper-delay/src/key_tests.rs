@@ -26,8 +26,8 @@ fn wet_rms(key_db: Option<f32>, key_duck: f32) -> f32 {
         p.key.update(&shared.scope, key_duck, 24.0, SR);
         stereo_process(
             &mut p,
-            ChannelPair::InputOutput(&inp, &mut ol), Some(ChannelPair::InputOutput(&inp, &mut or)),
-            SR, false, 0, tl, tr, 0.45, 6500.0, 1.0, 1.0, false, 0.0, 5.0, 200.0,
+            inp.as_slice(), ol.as_mut_slice(), Some((inp.as_slice(), or.as_mut_slice())),
+            SR, 0, tl, tr, 0.45, 6500.0, 1.0, 1.0, false, 0.0, 5.0, 200.0,
         );
         if b >= blocks / 2 { tail.extend_from_slice(&ol); }
     }

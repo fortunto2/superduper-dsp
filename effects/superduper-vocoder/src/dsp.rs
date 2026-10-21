@@ -53,7 +53,10 @@ const STFT_N: usize = 2048;
 const STFT_HOP: usize = 512;
 /// Reported latency of Spectral mode (samples). Classic is 0-latency, but the
 /// plugin reports this for both so switching Mode never re-triggers host PDC.
-pub const STFT_LATENCY: usize = STFT_N - STFT_HOP;
+/// One whole window: the STFT's measured delay (`StftProcessor::latency`).
+/// `STFT_N - STFT_HOP` here reported 512 samples too little to the host and
+/// delayed the dry by 512 too few, so Mix 0.5 comb-filtered (2026-10-21).
+pub const STFT_LATENCY: usize = STFT_N;
 
 /// Ceiling on the cross-synthesis gain — stops the mod/carrier envelope ratio
 /// from exploding in carrier spectral nulls (which would amplify the noise

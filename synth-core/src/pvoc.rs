@@ -24,7 +24,10 @@ pub const N: usize = 2048;
 pub const HOP: usize = 512;
 /// Intrinsic latency of the STFT OLA (samples). The engine can be padded to a
 /// larger reported latency via `PhaseVocoder::new`'s `target_latency`.
-pub const LATENCY: usize = N - HOP;
+/// The STFT's measured delay is one whole window, `N` (`spectral::latency_probe`).
+/// `N - HOP` here put the wet path 512 samples behind the dry and the report
+/// — Pitch's Track mode arrived 10.7 ms late at 48 kHz (fixed 2026-10-21).
+pub const LATENCY: usize = N;
 
 const HALF: usize = N / 2;
 

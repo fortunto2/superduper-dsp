@@ -14,7 +14,7 @@ Part of the [SuperDuper DSP](../../README.md) suite.
 | Category | Effect (audio-in → audio-out), MIDI note-in for carrier pitch |
 | CLAP id | `co.superduperai.vocoder` |
 | Inputs | Main stereo (modulator) + `Carrier` sidechain stereo (port 1) |
-| Latency | **0 samples** — pure IIR, no lookahead. Live / direct-monitoring safe |
+| Latency | **2048 samples** (42.7 ms at 48 kHz) — one STFT window, reported the same in Classic and Spectral so switching Mode never re-triggers the host's delay compensation; the dry path is delayed by exactly that (pinned by `tests/latency_align.rs`) |
 | Params | 13 (see below) · 20 factory presets |
 
 ---
@@ -220,7 +220,7 @@ octave into true sub territory (measured 218 Hz → 78 Hz).
 ### Live MIDI chords
 Route a MIDI keyboard to the vocoder's FX track, set **Pitch Source = Auto**,
 and play chords under your voice — the robot sings the notes you play (6-voice
-polyphonic). Zero latency and denormal-safe for live sets.
+polyphonic). One window of latency (42.7 ms at 48 kHz), denormal-safe.
 
 ### Kubyz family
 Kubyz can sit on **either** side of the vocoder:

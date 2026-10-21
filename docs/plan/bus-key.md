@@ -40,7 +40,12 @@ the real side-chain input stays for that.
 
 - [ ] genre target curve (Ozone Tonal Balance, transparent): `mixcheck --target refs/*.json` — the corridor (mean ± spread) of 5–10 reference choruses per band; the agent moves EQ/Multiband only where the mix leaves it
 
-- [ ] StftProcessor reports N−hop but delays N (measured by impulse and by Morph): Pitch (Track mode) and Vocoder (Spectral) tell the host 512 samples (10.7 ms) too little; fix = separate ring offset from reported latency + re-align their dry paths, re-record snapshots
+- [x] StftProcessor reports N−hop but delays N — fixed 2026-10-21: `latency()` returns N, the
+      ring geometry is a separate field (`ring`); `pvoc::LATENCY` and the Vocoder's `STFT_LATENCY`
+      are N, so Pitch's Track-mode wet and the Vocoder's dry/wet line up and the host's PDC is
+      right (was 512 samples = 10.7 ms short). Vocoder snapshot re-recorded: tone_band_kick −2.3 dB,
+      tone_band_low +1.3 dB, the comb between dry and wet gone; pinned by
+      effects/superduper-vocoder/tests/latency_align.rs
 
 - [ ] NEW SuperDuper Space (spatial panner, asked 2026-10-21): an object position (x, y, z) per track →
       VBAP/DBAP gains to N speakers (stereo, 5.1, 7.1.4, custom layouts as REAPER's ReaSurroundPan
@@ -131,6 +136,9 @@ the real side-chain input stays for that.
 
 ## Done
 - [ ] GitHub release CI (fortunto2/superduper-dsp): the last three runs ended cancelled/failed —
-      v0.15.0 (run 39547209693) uploaded 35 Windows assets, "macOS arm64" cancelled, release notes
-      skipped; the two runs before it cancelled/failed too. Read the macOS job log (concurrency
-      cancel vs timeout) before the next tag
+      v0.15.0 (run 39547209693) uploaded 35 Windows assets; the "macOS arm64" job ran 05:01 →
+      11:06 UTC and its step "Build VST3 + AU wrappers" is marked *failure*, then the job was
+      cancelled (timeout-minutes 240 on the job; concurrency cancel-in-progress on the workflow).
+      `gh run view --job 119047971209 --log-failed` returns nothing (log gone). Reproduce the
+      wrapper build locally (`tools/clap-wrapper`, cmake) before the next tag; a 6-hour step is a
+      hang, not a compile error

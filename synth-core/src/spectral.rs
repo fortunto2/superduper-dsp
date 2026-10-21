@@ -11,14 +11,14 @@
 //! One instance = one channel. Hold `[StftProcessor; 2]` for stereo.
 //!
 //! **RT-safe:** all buffers + FFT plans are allocated in [`StftProcessor::new`];
-//! [`process_sample`](StftProcessor::process_sample) never allocates. Latency =
-//! `N − hop` is what `latency()` returns and what the callers report to the
-//! host — but an impulse comes out exactly `N` samples late (pinned by
-//! `latency_probe` below; Morph measured the same and delays its dry by N).
-//! `latency` is also the ring geometry (rover reset, output read offset), so
-//! it cannot simply be set to N: fixing the report means a separate field and
-//! re-aligning Pitch's and the Vocoder's dry paths — tracked in
-//! docs/plan/bus-key.md.
+//! [`process_sample`](StftProcessor::process_sample) never allocates.
+//!
+//! **Latency.** An impulse comes out exactly `N` samples late (pinned by
+//! `latency_probe` below), and that is what `latency()` returns. The ring
+//! restarts at `N − hop` (`ring`: rover reset, output read offset) — a
+//! geometry value, which this used to report as the latency, so Pitch and
+//! the Vocoder told the host 512 samples too little and delayed their dry
+//! paths by 512 too few (fixed 2026-10-21; Morph had measured N and was right).
 //!
 //! ## Normalisation
 //! Hann analysis × Hann synthesis at hop `N/osamp` overlap-adds to a constant
@@ -35,7 +35,9 @@ pub struct StftProcessor {
     n: usize,
     hop: usize,
     half: usize,
-    latency: usize,
+    /// Ring geometry: where the rover restarts and the output read offset.
+    /// Not the delay — see `latency()`.
+    ring: usize,
     inputs: usize,
     cola_scale: f32,
     /// Expected per-hop phase advance factor `2π·hop/N` (for phase-vocoder ops).
@@ -65,7 +67,7 @@ impl StftProcessor {
     pub fn new(sr: f32, n: usize, hop: usize, inputs: usize) -> Self {
         assert!(inputs >= 1 && inputs <= 2, "StftProcessor supports 1..=2 inputs");
         let half = n / 2;
-        let latency = n - hop;
+        let ring = n - hop;
         let osamp = n as f32 / hop as f32;
         let cola = 0.375 * osamp; // mean(Hann²)=3/8, × overlap factor
         let cola_scale = 1.0 / (n as f32 * cola);
@@ -86,7 +88,7 @@ impl StftProcessor {
             n,
             hop,
             half,
-            latency,
+            ring,
             inputs,
             cola_scale,
             expct: core::f32::consts::TAU * hop as f32 / n as f32,
@@ -102,13 +104,17 @@ impl StftProcessor {
             syn: vec![Complex::new(0.0, 0.0); half + 1].into_boxed_slice(),
             out_accum: vec![0.0; 2 * n].into_boxed_slice(),
             out_fifo: vec![0.0; n].into_boxed_slice(),
-            rover: latency,
+            rover: ring,
         }
     }
 
+    /// The delay from input to output: one whole window, `N`. The ring
+    /// restarts at `N − hop`, which is what this used to report; an impulse
+    /// measured N late (`latency_probe`), so Pitch and Vocoder told the host
+    /// 512 samples too little and delayed their dry by the same 512 too few.
     #[inline]
     pub fn latency(&self) -> usize {
-        self.latency
+        self.n
     }
     #[inline]
     pub fn n(&self) -> usize {
@@ -145,7 +151,7 @@ impl StftProcessor {
         }
         self.out_accum.fill(0.0);
         self.out_fifo.fill(0.0);
-        self.rover = self.latency;
+        self.rover = self.ring;
     }
 
     /// Push one sample per input stream, return the `latency`-delayed output.
@@ -161,10 +167,10 @@ impl StftProcessor {
         for s in 0..self.inputs {
             self.in_fifo[s][self.rover] = inputs[s];
         }
-        let out = self.out_fifo[self.rover - self.latency];
+        let out = self.out_fifo[self.rover - self.ring];
         self.rover += 1;
         if self.rover >= self.n {
-            self.rover = self.latency;
+            self.rover = self.ring;
             self.run_frame(&mut frame_op);
         }
         out
@@ -216,7 +222,7 @@ impl StftProcessor {
             self.out_accum[k + n] = 0.0;
         }
         for s in 0..self.inputs {
-            self.in_fifo[s].copy_within(self.hop..self.hop + self.latency, 0);
+            self.in_fifo[s].copy_within(self.hop..self.hop + self.ring, 0);
         }
     }
 }
@@ -270,6 +276,6 @@ mod latency_probe {
         }
         let at = out.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).map(|(i, _)| i).unwrap();
         assert_eq!(at - 1000, p.n(), "peak {} samples late (reported {})", at - 1000, p.latency());
-        assert_eq!(p.latency(), p.n() - hop, "the report is still N − hop; see the module doc");
+        assert_eq!(p.latency(), p.n(), "latency() is the measured delay, one whole window");
     }
 }

@@ -307,23 +307,10 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
-impl PluginMainThreadParams for PluginMainThread<'_> {
-    fn count(&mut self) -> u32 {
-        PARAMS.len() as u32
-    }
-    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
-    }
-    fn get_value(&mut self, id: ClapId) -> Option<f64> {
-        let i = id.get() as usize;
-        self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
-    }
-    fn value_to_text(
-        &mut self,
-        id: ClapId,
-        value: f64,
-        writer: &mut ParamDisplayWriter,
-    ) -> core::fmt::Result {
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
         use core::fmt::Write;
         if id.get() as usize == P_MODE {
             return superduper_dsp_sdk::clap_helpers::enum_value_to_text(
@@ -342,6 +329,22 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         }
         ParamDef::write_display(PARAMS, id, value, writer)
     }
+}
+
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 {
+        PARAMS.len() as u32
+    }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
+    }
+    fn get_value(&mut self, id: ClapId) -> Option<f64> {
+        let i = id.get() as usize;
+        self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
+    }
+    fn value_to_text(&mut self, id: ClapId, value: f64, writer: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, value, writer)
+    }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
         // Without this a host or an MCP agent typing "Auto" into Mode gets a
         // numeric parse failure — the stepped params need names both ways.
@@ -350,7 +353,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 return Some(v);
             }
         }
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

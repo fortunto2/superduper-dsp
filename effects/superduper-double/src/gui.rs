@@ -221,7 +221,7 @@ fn help(ui: &mut egui::Ui) {
                 "Key Open",
                 "Pick a key track (master or drums). At Key Open 1 the doubles are silent while \
                  the key is quiet and full once it is Key Range dB above −50 dB — doubles that \
-                 bloom in the chorus. 0 = off.",
+                 bloom in the chorus. 0 = off; with no key picked the doubles play as at 0.",
             ),
             (
                 "Latency",

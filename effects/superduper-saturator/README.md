@@ -25,6 +25,7 @@ in → DcBlock → Drive (linear gain from dB knob) → saturate(curve)
 | **Tape** | Algebraic soft-clip, soft top | Subtle, broad-spectrum warmth |
 | **Tube** | Asymmetric, strong 2nd harmonic | Glassy / horn-y / vintage |
 | **Soft** | tanh | Classic clean limiter-like |
+| **Inflate** | Polynomial loudness curve (Curve −50..+50) | Lifts quiet parts, full scale stays full scale. Its input gain is **Drive − 6 dB**, so the default Drive is unity and a master at −3 dBFS keeps its peaks |
 
 ## Oversampling
 
@@ -38,8 +39,9 @@ in → DcBlock → Drive (linear gain from dB knob) → saturate(curve)
 
 | Param | Range | Default |
 |---|---|---|
-| Drive | 0..+36 dB | +6 |
-| Type | Tape / Tube / Soft | Tape |
+| Drive | 0..+36 dB (Inflate: Drive − 6 dB into the curve) | +6 |
+| Type | Tape / Tube / Soft / Inflate | Tape |
+| Curve | −50..+50 (Inflate only) | 0 |
 | Tone | -1..+1 (low-shelf tilt) | 0 |
 | Output | -24..+12 dB | 0 |
 | Mix | 0..1 | 1 |

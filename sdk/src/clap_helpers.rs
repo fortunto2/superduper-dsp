@@ -5,7 +5,7 @@
 use atomic_float::AtomicF32;
 use clack_common::events::Pckn;
 use clack_common::utils::{ClapId, Cookie};
-use clack_extensions::params::{ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter};
+use clack_extensions::params::{ParamInfo, ParamInfoFlags, ParamInfoWriter};
 use clack_plugin::events::event_types::{
     ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
 };
@@ -87,13 +87,12 @@ impl ParamDef {
 
     /// Implementation of `PluginParams::value_to_text`. Formats `value` to
     /// 2 decimal places, optionally suffixed with the param's unit.
-    pub fn write_display(
+    pub fn write_display<W: core::fmt::Write>(
         table: &'static [ParamDef],
         param_id: ClapId,
         value: f64,
-        writer: &mut ParamDisplayWriter<'_>,
+        writer: &mut W,
     ) -> core::fmt::Result {
-        use core::fmt::Write;
         let Some(p) = Self::find(table, param_id.get()) else { return Ok(()) };
         if p.unit.is_empty() {
             write!(writer, "{:.2}", value)
@@ -117,6 +116,53 @@ impl ParamDef {
             s
         };
         s.parse::<f64>().ok().map(|v| v.clamp(p.min, p.max))
+    }
+
+    /// `text_to_value` that understands whatever `value_to_text` writes: a
+    /// number (with or without the unit) parses as before; otherwise the
+    /// param's integer steps are displayed through `display` and the one
+    /// whose text matches (case-insensitive) is the value. So "Tape",
+    /// "Auto (–)" or "1/8 dotted" round-trip, and CLAP's all-or-none rule for
+    /// text conversions holds (clap-validator failed 21 plugins on it).
+    pub fn text_to_value_by_display<F>(
+        table: &'static [ParamDef],
+        param_id: ClapId,
+        text: &CStr,
+        mut display: F,
+    ) -> Option<f64>
+    where
+        F: FnMut(f64, &mut String) -> core::fmt::Result,
+    {
+        let p = Self::find(table, param_id.get())?;
+        let want = text.to_str().ok()?.trim();
+        let mut buf = String::new();
+        let mut shows = |v: f64, buf: &mut String| -> Option<bool> {
+            buf.clear();
+            display(v, buf).ok()?;
+            Some(buf.trim().eq_ignore_ascii_case(want))
+        };
+        // The display is asked first: a stepped param may show a number that
+        // is not its value (Vocoder Bands 0 reads "11"; parsed as 11 it
+        // clamped to 2 → "20", caught by clap-validator 2026-10-21).
+        let steps = (p.max - p.min).round();
+        if (0.0..=512.0).contains(&steps) {
+            if let Some(v) = (0..=steps as i64).map(|i| p.min + i as f64).find(|&v| shows(v, &mut buf) == Some(true)) {
+                return Some(v);
+            }
+        }
+        if let Some(v) = Self::parse_text(table, param_id, text) {
+            return Some(v);
+        }
+        // A number the display scaled ("30 %" of a 0..1 Mix, "random #731"
+        // of a 0..1023 seed): try it at the usual scales and keep the one
+        // the display confirms; then the ends of the range ("first").
+        let digits: String = want.chars().skip_while(|c| !c.is_ascii_digit() && *c != '-').take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
+        let n = digits.parse::<f64>().ok();
+        n.into_iter()
+            .flat_map(|n| [1.0, 0.01, 0.001, 100.0, 1000.0].map(|k| n * k))
+            .chain([p.min, p.max])
+            .filter(|v| (p.min..=p.max).contains(v))
+            .find(|&v| shows(v, &mut buf) == Some(true))
     }
 }
 
@@ -570,12 +616,11 @@ pub fn preset_recall_target(
 /// `value_to_text` body for a Preset selector param: write the preset name for
 /// the rounded index. `name_of(i)` returns the i-th preset's name. Returns
 /// `None` if the index is out of range (caller falls back to numeric display).
-pub fn preset_value_to_text<'a>(
+pub fn preset_value_to_text<'a, W: core::fmt::Write>(
     name_of: impl Fn(usize) -> Option<&'a str>,
     value: f64,
-    writer: &mut ParamDisplayWriter<'_>,
+    writer: &mut W,
 ) -> Option<core::fmt::Result> {
-    use core::fmt::Write;
     let idx = value.round().max(0.0) as usize;
     name_of(idx).map(|name| write!(writer, "{}", name))
 }
@@ -589,12 +634,11 @@ pub fn preset_value_to_text<'a>(
 /// change and answered the out-of-range question differently — one fell back
 /// to the first entry, the other clamped to the last — which is the kind of
 /// split that quietly outlives whoever wrote it.
-pub fn enum_value_to_text(
+pub fn enum_value_to_text<W: core::fmt::Write>(
     names: &[&str],
     value: f64,
-    writer: &mut ParamDisplayWriter<'_>,
+    writer: &mut W,
 ) -> core::fmt::Result {
-    use core::fmt::Write;
     let i = (value.round().max(0.0) as usize).min(names.len().saturating_sub(1));
     write!(writer, "{}", names.get(i).copied().unwrap_or(""))
 }

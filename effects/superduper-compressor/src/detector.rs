@@ -31,20 +31,25 @@
 //!   starts at 0 dB so the peak stage stays the transient catcher.
 //!
 //! How the two stages combine. The manual says "the section generating the
-//! highest reduction takes control"; here they run in series, which is the
-//! same whenever one stage is idle and adds them when both act:
+//! highest reduction takes control": the two paths run in parallel on the
+//! same input and the deeper reduction is the one applied:
 //!
 //! ```text
-//!   rms_db            → curve(threshold)          = gr_rms
-//!   peak_db + gr_rms  → curve(threshold + crest)  = gr_peak
-//!   gr = gr_rms + gr_peak
+//!   rms_db   → curve(threshold)          = gr_rms
+//!   peak_db  → curve(threshold + crest)  = gr_peak
+//!   gr = min(gr_rms, gr_peak)            (the more negative)
 //! ```
 //!
-//! The peak stage looks at what the RMS stage leaves, so on steady material
-//! it only wakes when the signal's own crest factor plus the RMS stage's
-//! residual overshoot ((rms − threshold)/ratio) passes Peak Crest. A steady
-//! sine 9 dB over threshold at 4:1 (3 + 2.25 dB) stays under the default 9 dB;
-//! a transient spike does not.
+//! So the peak stage takes control exactly when the signal's crest factor
+//! exceeds Peak Crest: (peak − threshold − crest)/ratio > (rms − threshold)/
+//! ratio ⇔ peak − rms > crest. A steady sine (crest 3 dB) under the default
+//! 9 dB is the RMS stage's alone whatever its level; a spike is the peak
+//! stage's. Both meters still show what their own stage asks for.
+//!
+//! Before 2026-10-21 the peak stage looked at the RMS stage's output and the
+//! two were summed. With Peak Crest at or below the programme's crest that
+//! added on steady material: at crest 0 a 0.5 sine got −10.3 dB (−6.7 RMS
+//! −3.6 peak) and its RMS landed 1.7 dB *below* the threshold.
 
 use superduper_synth_core::dsp_blocks::{compressor_gain_db_curve, CompressorCurve, EnvelopeDetector};
 use superduper_synth_core::gui::LiveScope;
@@ -95,6 +100,9 @@ pub struct Detector {
     /// Release RMS). Smoothing the gain, not the level, keeps the mean
     /// square symmetric so a steady tone reads its true RMS.
     rms_gr: f32,
+    /// Which path ran last, so a Classic↔Dual switch never resumes `ms` /
+    /// `rms_gr` from whatever they held before the detour.
+    was_dual: bool,
 }
 
 #[inline]
@@ -104,6 +112,9 @@ impl Detector {
     /// One sample of the (rectified, linked, key-blended) detector input.
     #[inline]
     pub fn process(&mut self, sc: f32, c: &DetCfg, sr: f32) -> DetOut {
+        if c.dual != self.was_dual {
+            self.switch(c);
+        }
         if !c.dual {
             // Classic — exactly the pre-Dual code path (quality.snap pins it).
             let env = self.peak.process(sc, sr, c.attack_ms, c.release_ms);
@@ -122,13 +133,33 @@ impl Detector {
         self.rms_gr = target + (self.rms_gr - target) * coef(tc, sr);
         let gr_rms = self.rms_gr;
 
-        // Peak stage, on what the RMS stage leaves.
+        // Peak stage, in parallel on the same input, against its own
+        // threshold; the deeper of the two takes control.
         let env = self.peak.process(sc, sr, c.attack_ms, c.release_peak_ms);
-        let peak_db = 20.0 * env.max(1e-9).log10() + gr_rms;
+        let peak_db = 20.0 * env.max(1e-9).log10();
         let peak_thr = c.threshold + c.crest_db.max(0.0);
         let gr_peak = compressor_gain_db_curve(peak_db, peak_thr, c.ratio, c.knee, c.curve);
 
-        DetOut { gr_db: gr_rms + gr_peak, rms_gr_db: gr_rms, peak_gr_db: gr_peak }
+        DetOut { gr_db: gr_rms.min(gr_peak), rms_gr_db: gr_rms, peak_gr_db: gr_peak }
+    }
+
+    /// Classic ↔ Dual while running. Leaving Dual clears the RMS stage so a
+    /// later return cannot resume a level from minutes ago; entering it seeds
+    /// the stage from the peak envelope Classic kept running (a sine's mean
+    /// square is half its peak squared) and lands the smoothed GR on the
+    /// curve's answer for it, so the switch neither pumps to GR 0 nor
+    /// replays stale reduction.
+    fn switch(&mut self, c: &DetCfg) {
+        self.was_dual = c.dual;
+        if c.dual {
+            let env = self.peak.level();
+            self.ms = 0.5 * env * env;
+            let rms_db = 10.0 * self.ms.max(1e-18).log10();
+            self.rms_gr = compressor_gain_db_curve(rms_db, c.threshold, c.ratio, c.knee, c.curve);
+        } else {
+            self.ms = 0.0;
+            self.rms_gr = 0.0;
+        }
     }
 }
 

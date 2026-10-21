@@ -41,11 +41,19 @@ words.
 ## How it works
 
 Per STFT frame (N 2048, hop 512, `synth_core::spectral::StftProcessor`): YIN f0
-for each input, harmonic peaks (parabolic, up to 40, below 16 kHz),
-harmonicity → voicing, an envelope bridging the harmonic comb
+for each input, refined on a 60 ms time-domain autocorrelation whose value at
+the period is the harmonicity → voicing (the 2048 frame cannot resolve a bass
+comb: a 60 Hz tone at 48 kHz read 0.19 "unvoiced", and at 96 kHz any voice
+under ~190 Hz did; it also pulls a hint parked on a formant group down to the
+fundamental, a jaw harp read at 943 Hz being 130), harmonic peaks (parabolic,
+up to 40, below 16 kHz), an envelope bridging the harmonic comb
 (`synth_core::timbre`). `timbre::morph_gains` returns one real gain per bin,
 applied to L and R with their phases untouched. Gains are capped at +30 /
-−60 dB: a harmonic the voice does not have can be raised, not created.
+−60 dB: a harmonic the voice does not have can be raised, not created. A
+measured target's harmonics above its last one (16 for a 1 kHz target) roll
+off at −18 dB/oct like the model's, and Breath only scales the noise between
+the voice's tracked harmonics; the spectrum above that comb (4 kHz at 100 Hz)
+takes the envelope gain alone.
 
 ## Copy a running Kubyz (mailbox)
 

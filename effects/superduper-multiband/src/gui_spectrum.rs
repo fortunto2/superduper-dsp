@@ -106,9 +106,11 @@ fn interact(
     }
     if let (Some(c), Some(p)) = (state.drag, resp.interact_pointer_pos()) {
         if resp.dragged() {
-            // Keep ⅓ octave from the neighbours so bands never cross.
-            let lo = if c == 0 { F_MIN } else { xover[c - 1] * 1.26 };
-            let hi = if c + 2 >= bands { F_MAX } else { xover[c + 1] / 1.26 };
+            // Keep ½ octave from the neighbours (what the engine enforces) so
+            // bands never cross and the shelves can deliver their gains.
+            let r = crate::dsp::MIN_XOVER_RATIO;
+            let lo = if c == 0 { F_MIN } else { xover[c - 1] * r };
+            let hi = if c + 2 >= bands { F_MAX } else { xover[c + 1] / r };
             set_param(&sh, P_XOVER[c], x2f(p.x, rect).clamp(lo, hi).round());
         }
     }

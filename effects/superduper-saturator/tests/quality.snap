@@ -2,6 +2,9 @@
 #   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-saturator --test quality
 # A change here is a change in how the plugin sounds.
 aliasing_18k_db = -28.935
+inflate_tone_gain_db = 2.337
+inflate_tone_peak_db = -0.925
+inflate_tone_thd_db = -26.586
 noise_gain_db = 2.494
 noise_max_step = 0.793
 param_00_drive_default = 6.000

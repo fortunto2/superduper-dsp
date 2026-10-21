@@ -520,7 +520,7 @@ impl Biquad {
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / 2.0
-            * ((a + 1.0 / a) * (1.0 / slope.max(0.1) - 1.0) + 2.0).sqrt();
+            * ((a + 1.0 / a) * (1.0 / slope.clamp(0.1, 1.0) - 1.0) + 2.0).sqrt(); // S > 1 → negative radicand → NaN
         let sqrt_a_alpha_2 = 2.0 * a.sqrt() * alpha;
 
         let b0 = a * ((a + 1.0) - (a - 1.0) * cos_w0 + sqrt_a_alpha_2);
@@ -539,7 +539,7 @@ impl Biquad {
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / 2.0
-            * ((a + 1.0 / a) * (1.0 / slope.max(0.1) - 1.0) + 2.0).sqrt();
+            * ((a + 1.0 / a) * (1.0 / slope.clamp(0.1, 1.0) - 1.0) + 2.0).sqrt(); // S > 1 → negative radicand → NaN
         let sqrt_a_alpha_2 = 2.0 * a.sqrt() * alpha;
 
         let b0 = a * ((a + 1.0) + (a - 1.0) * cos_w0 + sqrt_a_alpha_2);

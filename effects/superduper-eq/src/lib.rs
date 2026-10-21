@@ -131,6 +131,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -245,7 +246,6 @@ impl EqDsp {
             let out_lin = 10f32.powf(out_db / 20.0);
             let final_out = run_chain(chain, *i, b) * out_lin;
             *o = final_out;
-            if ch == 0 { shared.scope.push(final_out); } // one channel: L then R blocks read as seams
         }
     }
 
@@ -282,7 +282,6 @@ impl EqDsp {
                 let out_lin = 10f32.powf(out_db / 20.0);
                 let yl = run_chain(&mut self.chain_l, l_in[i], b) * out_lin;
                 l_out[i] = yl;
-                shared.scope.push(yl);
                 if let Some((ri, ro)) = r.as_mut() {
                     if let (Some(x), Some(o)) = (ri.get(i), ro.get_mut(i)) {
                         *o = run_chain(&mut self.chain_r, *x, b) * out_lin;
@@ -320,30 +319,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
-
-        use superduper_dsp_sdk::clap_helpers::split_io;
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut chans = channel_pairs.into_iter();
-            let Some(l) = chans.next().and_then(split_io) else { continue };
-            let r = chans.next().and_then(split_io);
-            self.dsp.process(self.shared, l, r);
-        }
-        Ok(ProcessStatus::Continue)
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect; only the DSP
+        // is this plugin's.
+        let (dsp, shared) = (&mut self.dsp, self.shared);
+        superduper_synth_core::effect::stereo_block(&**shared, &mut audio, &mut events, |l_in, l_out, r| {
+            dsp.process(shared, (l_in, l_out), r);
+        })
     }
 }
 
@@ -368,6 +352,14 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
@@ -378,10 +370,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
-        ParamDef::write_display(PARAMS, id, v, w)
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

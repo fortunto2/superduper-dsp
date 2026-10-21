@@ -468,6 +468,21 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
+        // Special-case the LFO Div param so it shows musical labels
+        // ("1/4", "1/8t", …) instead of a raw integer.
+        if id.get() as usize == P_LFO_DIV {
+            use core::fmt::Write;
+            let idx = (v.round() as i32).max(0) as u32;
+            return write!(w, "{}", sync_division_label(idx));
+        }
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
@@ -478,17 +493,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
-        // Special-case the LFO Div param so it shows musical labels
-        // ("1/4", "1/8t", …) instead of a raw integer.
-        if id.get() as usize == P_LFO_DIV {
-            use core::fmt::Write;
-            let idx = (v.round() as i32).max(0) as u32;
-            return write!(w, "{}", sync_division_label(idx));
-        }
-        ParamDef::write_display(PARAMS, id, v, w)
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

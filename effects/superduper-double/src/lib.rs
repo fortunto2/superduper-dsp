@@ -26,7 +26,7 @@ use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use superduper_dsp_sdk::clap_helpers::{enum_text_to_value, enum_value_to_text, split_io, ParamDef};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
-use superduper_synth_core::bus_key::KeyEnvelope;
+use superduper_synth_core::bus_key::{self, KeyEnvelope};
 pub use superduper_synth_core::doubler::{DoubleMode, Doubler, DoublerParams, MAX_VOICES};
 use superduper_synth_core::scale;
 
@@ -57,7 +57,8 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 12, name: b"Scale",    min: 0.0,   max: (scale::NUM_SCALES - 1) as f64, default: 0.0, unit: "" },
     ParamDef { id: 13, name: b"Retune",   min: 0.0,   max: 500.0, default: 20.0, unit: "ms" },
     // Bus key: 0 = off. At 1 the doubles are silent while the key track is
-    // quiet and full while it is loud — they swell with the chorus.
+    // quiet and full while it is loud — they swell with the chorus. With no
+    // key picked the doubles play as at 0 (a preset may ship Key Open 1).
     ParamDef { id: 14, name: b"Key Open", min: 0.0,   max: 1.0,   default: 0.0,  unit: "" },
     ParamDef { id: 15, name: b"Key Range", min: 6.0,  max: 40.0,  default: 24.0, unit: "dB" },
 ];
@@ -210,17 +211,37 @@ fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
     superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events);
 }
 
+/// The bus reads this (or lower) when no key track is picked: nothing is
+/// there, as opposed to a key that is quiet.
+const NO_KEY_DB: f32 = -119.0;
+
+/// The key factor Key Open reacts to. No key on the bus is no reaction
+/// (factor 1), not a quiet key (factor 0): "Chorus Swell" ships Key Open 1
+/// and must play its doubles until a key is picked. Key Open 0 is 0 so an
+/// unkeyed plugin glides to, and stays at, exactly no reaction.
+pub fn key_target(open: f32, key_db: f32, range: f32) -> f32 {
+    if key_db <= NO_KEY_DB {
+        1.0
+    } else if open == 0.0 {
+        0.0
+    } else {
+        bus_key::key_factor(key_db, range)
+    }
+}
+
 impl PluginAudioProcessor<'_> {
-    /// Bus key → doubles gain for this block. Key Open 0 is exactly 1.0.
+    /// Bus key → doubles gain for this block. Key Open 0 is exactly 1.0, and
+    /// so is any Key Open with no key picked.
     fn key_gain(&mut self, frames: usize) -> f32 {
         let open = self.shared.params[P_KEY_OPEN].load(Ordering::Relaxed).clamp(0.0, 1.0);
         let range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
-        self.key.update(&self.shared.scope, open, range, self.sr);
+        let key_db = bus_key::key_level_db(&self.shared.scope);
+        self.key.set_target(key_target(open, key_db, range), self.sr);
         let mut f = 0.0;
         for _ in 0..frames.max(1) {
             f = self.key.tick();
         }
-        if open == 0.0 {
+        if open == 0.0 || key_db <= NO_KEY_DB {
             1.0
         } else {
             1.0 - open * (1.0 - f)
@@ -345,6 +366,23 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
+        use core::fmt::Write;
+        match id.get() as usize {
+            P_MODE => enum_value_to_text(&MODE_NAMES, value, writer),
+            P_KEY => write!(writer, "{}", scale::KEY_NAMES[(value.round() as usize).min(11)]),
+            P_SCALE => {
+                let s = (value.round().max(0.0) as usize).min(scale::NUM_SCALES - 1);
+                write!(writer, "{}", scale::SCALES[s].0)
+            }
+            _ => ParamDef::write_display(PARAMS, id, value, writer),
+        }
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 {
         PARAMS.len() as u32
@@ -356,22 +394,8 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         let i = id.get() as usize;
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
-    fn value_to_text(
-        &mut self,
-        id: ClapId,
-        value: f64,
-        writer: &mut ParamDisplayWriter,
-    ) -> core::fmt::Result {
-        use core::fmt::Write;
-        match id.get() as usize {
-            P_MODE => enum_value_to_text(&MODE_NAMES, value, writer),
-            P_KEY => write!(writer, "{}", scale::KEY_NAMES[(value.round() as usize).min(11)]),
-            P_SCALE => {
-                let s = (value.round().max(0.0) as usize).min(scale::NUM_SCALES - 1);
-                write!(writer, "{}", scale::SCALES[s].0)
-            }
-            _ => ParamDef::write_display(PARAMS, id, value, writer),
-        }
+    fn value_to_text(&mut self, id: ClapId, value: f64, writer: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, value, writer)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
         let names: &[&str] = match id.get() as usize {
@@ -388,7 +412,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 return Some(v);
             }
         }
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

@@ -1,10 +1,12 @@
 //! Timbre analysis and morph gains — the DSP behind SuperDuper Morph.
 //!
 //! Spectral modelling without a neural net. Per STFT frame a signal is reduced
-//! to a [`FrameAnalysis`]: f0 (from the caller's pitch tracker), a voicing
-//! decision, the level of each harmonic `k·f0` (k ≤ [`MAX_HARM`]), and a smooth
-//! spectral envelope sampled on a fixed log-frequency grid ([`GRID`] points,
-//! 40 Hz–16 kHz, so it is sample-rate independent and small enough to persist).
+//! to a [`FrameAnalysis`]: f0 (the caller's pitch tracker's hint, refined on
+//! a 60 ms time-domain autocorrelation that also decides voicing — the STFT
+//! frame is too short to resolve a bass comb), the level of each harmonic
+//! `k·f0` (k ≤ [`MAX_HARM`]), and a smooth spectral envelope sampled on a
+//! fixed log-frequency grid ([`GRID`] points, 40 Hz–16 kHz, so it is
+//! sample-rate independent and small enough to persist).
 //!
 //! A target timbre is a [`TargetFrame`]: harmonic levels *by harmonic number*
 //! (so a target at one pitch transfers to a voice at another) plus an envelope.
@@ -35,6 +37,8 @@
 use crate::kubyz::formant_bank::{bandpass_response, effective_q, FormantBands, MAKEUP};
 use crate::kubyz::N_HARMONICS;
 use realfft::num_complex::Complex;
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use std::sync::Arc;
 
 /// Harmonics tracked per frame (also bounded by Nyquist and 16 kHz).
 pub const MAX_HARM: usize = 40;
@@ -54,8 +58,35 @@ pub const SILENCE_DB: f32 = -80.0;
 const VOICED_MIN_DB: f32 = -60.0;
 /// Harmonicity (0 = noise, 1 = pure harmonic) needed to call a frame voiced.
 pub const VOICED_HARMONICITY: f32 = 0.5;
+/// Pitch range a frame may be called voiced in: 50 Hz–1 kHz, 2 % past each
+/// end so a note on the edge is not dropped by its own refinement jitter.
+const VOICED_HZ: core::ops::RangeInclusive<f32> = 49.0..=1020.0;
 /// Envelope-mode Vowels smoothing: ±6 grid points ≈ ±0.6 octave.
 const COARSE_W: usize = 6;
+/// FFT length of the periodicity measure: the power of two over 85 ms (4096
+/// at 44.1/48 kHz, 8192 at 88.2/96). The ring is 4/7 of it (≈ 50 ms, 2.4
+/// periods of 50 Hz, the lowest pitch called voiced, at any sample rate)
+/// and lags run to 3/4 of the ring, so the zero padding covers the longest
+/// lag and the correlation is linear. The STFT frame cannot serve: at
+/// N = 2048 a 60 Hz comb is 2.6 bins apart at 48 kHz and 1.3 at 96 kHz,
+/// under the Hann lobe, so no spectral measure resolves it.
+const PERIOD_FFT_S: f32 = 0.085;
+/// Subharmonic candidates stop here (the voiced range starts at 50 Hz).
+const SUB_MIN_HZ: f32 = 40.0;
+/// Deepest multiple or divisor of a period tried: a formant-heavy drone read
+/// at its 7th harmonic group (jaw harp, 130 Hz measured as 943) needs 7.
+const MAX_SUB: usize = 16;
+/// Search half-width around each candidate period, as a fraction of it —
+/// a hint on a harmonic *group* is a few percent off any true multiple
+/// (the jaw harp's 943 Hz is 3.6 % off 7 × 130).
+const PERIOD_TOL: f32 = 0.05;
+/// Two periods count as equally periodic within this: on a clean tone every
+/// multiple of the period reads ≈1, so the shortest one within the margin
+/// is the pitch (YIN's rule), and a longer one wins only by more than it.
+const SUB_MARGIN: f32 = 0.1;
+/// Above its last harmonic a target rolls off at this slope: a jaw harp has
+/// no 30th harmonic to speak of, and a flat extension would read as hiss.
+const HARM_ROLLOFF_DB_OCT: f32 = 18.0;
 
 #[inline]
 pub fn grid_hz(i: usize) -> f32 {
@@ -81,6 +112,19 @@ fn db_pow(p: f32) -> f32 {
 pub fn power_sum_db(x: &[f32]) -> f32 {
     let s: f32 = x.iter().map(|v| 10f32.powf(v * 0.1)).sum();
     db_pow(s)
+}
+
+/// Level of harmonic `k` (1-based) extrapolated from harmonic `n` at
+/// `last_db`, falling [`HARM_ROLLOFF_DB_OCT`] per octave.
+#[inline]
+fn rolloff_db(last_db: f32, k: usize, n: usize) -> f32 {
+    last_db - HARM_ROLLOFF_DB_OCT * (k as f32 / n.max(1) as f32).log2()
+}
+
+/// Harmonics a measured profile holds: one past the last slot above the
+/// floor (a pitch rise empties the slots its new harmonic count drops).
+fn valid_harmonics(h: &[f32; MAX_HARM]) -> usize {
+    h.iter().rposition(|&x| x > FLOOR_DB).map_or(0, |i| i + 1)
 }
 
 /// One frame of one signal.
@@ -115,6 +159,12 @@ impl Default for FrameAnalysis {
 }
 
 /// Per-signal analysis scratch. One per analysed stream.
+///
+/// Two views of the same signal: the caller's STFT frame (harmonic levels,
+/// envelope) and a time-domain ring the caller feeds sample by sample
+/// ([`push`](Analyzer::push)) for f0 and voicing. The ring is ≈ 50 ms
+/// whatever the sample rate ([`PERIOD_FFT_S`]), and its autocorrelation
+/// comes from one FFT pair per audible frame, so every lag is an O(1) read.
 pub struct Analyzer {
     pow: Box<[f32]>,
     env: Box<[f32]>,
@@ -123,12 +173,31 @@ pub struct Analyzer {
     half: usize,
     /// Power of a full-scale sine's frame: `N²·3/32` (Hann, one-sided).
     ref_pow: f32,
+    sr: f32,
+    ring: Box<[f32]>,
+    write: usize,
+    /// Zero-padded copy of the ring (`M ≥ 2W`, so the correlation is linear).
+    td: Box<[f32]>,
+    ac_spec: Box<[Complex<f32>]>,
+    ac: Box<[f32]>,
+    ac_scratch: Box<[Complex<f32>]>,
+    /// Prefix sum of x² over the ring, for the per-lag normalisation.
+    energy: Box<[f64]>,
+    fwd: Arc<dyn RealToComplex<f32>>,
+    inv: Arc<dyn ComplexToReal<f32>>,
 }
 
 impl Analyzer {
     /// `half` = N/2 (bins are `0..=half`), `fpb` = Hz per bin.
     pub fn new(half: usize, fpb: f32) -> Self {
         let n = (2 * half) as f32;
+        let sr = n * fpb;
+        let m = ((sr * PERIOD_FFT_S).ceil() as usize).max(128).next_power_of_two();
+        let w = m * 4 / 7;
+        let mut planner = RealFftPlanner::<f32>::new();
+        let fwd = planner.plan_fft_forward(m);
+        let inv = planner.plan_fft_inverse(m);
+        let scratch = fwd.get_scratch_len().max(inv.get_scratch_len());
         Self {
             pow: vec![0.0; half + 1].into_boxed_slice(),
             env: vec![0.0; half + 1].into_boxed_slice(),
@@ -136,12 +205,32 @@ impl Analyzer {
             fpb,
             half,
             ref_pow: n * n * 3.0 / 32.0,
+            sr,
+            ring: vec![0.0; w].into_boxed_slice(),
+            write: 0,
+            td: vec![0.0; m].into_boxed_slice(),
+            ac_spec: vec![Complex::new(0.0, 0.0); m / 2 + 1].into_boxed_slice(),
+            ac: vec![0.0; m].into_boxed_slice(),
+            ac_scratch: vec![Complex::new(0.0, 0.0); scratch].into_boxed_slice(),
+            energy: vec![0.0; w + 1].into_boxed_slice(),
+            fwd,
+            inv,
         }
     }
 
     /// Power spectrum of the last analysed frame.
     pub fn power(&self) -> &[f32] {
         &self.pow
+    }
+
+    /// Feed one time-domain sample (every sample, before the frame fires).
+    #[inline]
+    pub fn push(&mut self, x: f32) {
+        self.ring[self.write] = x;
+        self.write += 1;
+        if self.write >= self.ring.len() {
+            self.write = 0;
+        }
     }
 
     /// Highest harmonic frequency analysed.
@@ -151,7 +240,9 @@ impl Analyzer {
 
     /// Analyse one spectrum. `f0_hint` comes from the caller's pitch tracker
     /// (which holds its last value on unvoiced input — the harmonicity test
-    /// below is what catches that).
+    /// below is what catches that). The f0 used is the hint refined on the
+    /// ring's autocorrelation, or a subharmonic of it when that is what the
+    /// signal repeats at.
     pub fn analyze(&mut self, spec: &[Complex<f32>], f0_hint: f32, out: &mut FrameAnalysis) {
         let half = self.half.min(spec.len().saturating_sub(1));
         let mut total = 0.0f64;
@@ -163,51 +254,167 @@ impl Analyzer {
             }
         }
         out.level_db = db_pow(total as f32 / self.ref_pow);
-        let f0 = f0_hint.clamp(30.0, 2000.0);
+        let hint = f0_hint.clamp(30.0, 2000.0);
+        let (f0, harmonicity) = if out.level_db > VOICED_MIN_DB { self.periodicity(hint) } else { (hint, 0.0) };
         out.f0 = f0;
+        out.harmonicity = harmonicity;
         self.measure_harmonics(f0, out);
         self.envelope(f0, out);
-        out.voiced = out.level_db > VOICED_MIN_DB
-            && out.harmonicity > VOICED_HARMONICITY
-            && (50.0..=1000.0).contains(&f0_hint);
+        out.voiced = out.level_db > VOICED_MIN_DB && harmonicity > VOICED_HARMONICITY && VOICED_HZ.contains(&f0);
     }
 
-    /// Harmonic peaks + harmonicity (energy on the harmonic lobes, with the
-    /// share a flat noise spectrum would put there subtracted out).
+    /// Autocorrelation of the ring, linear and unnormalised, into `ac`, with
+    /// the x² prefix sum into `energy`. False if the ring is silent.
+    fn autocorrelate(&mut self) -> bool {
+        let w = self.ring.len();
+        for i in 0..w {
+            let j = self.write + i;
+            self.td[i] = self.ring[if j >= w { j - w } else { j }];
+        }
+        self.td[w..].fill(0.0);
+        self.energy[0] = 0.0;
+        for i in 0..w {
+            let x = self.td[i] as f64;
+            self.energy[i + 1] = self.energy[i] + x * x;
+        }
+        if self.energy[w] <= 1e-20 {
+            return false;
+        }
+        // The forward pass scribbles on its input; the energy is already taken.
+        if self.fwd.process_with_scratch(&mut self.td, &mut self.ac_spec, &mut self.ac_scratch).is_err() {
+            return false;
+        }
+        for c in self.ac_spec.iter_mut() {
+            *c = Complex::new(c.re * c.re + c.im * c.im, 0.0);
+        }
+        self.inv.process_with_scratch(&mut self.ac_spec, &mut self.ac, &mut self.ac_scratch).is_ok()
+    }
+
+    /// Normalised autocorrelation at integer lag `tau`: the share of the
+    /// signal's power that repeats `tau` samples later (0 = none, 1 = all).
+    #[inline]
+    fn ac_at(&self, tau: usize) -> f32 {
+        let w = self.ring.len();
+        if tau == 0 || tau >= w {
+            return 0.0;
+        }
+        let e = self.energy[w - tau] * (self.energy[w] - self.energy[tau]);
+        if e <= 0.0 {
+            return 0.0;
+        }
+        let r = self.ac[tau] as f64 / (self.td.len() as f64 * e.sqrt());
+        r.clamp(0.0, 1.0) as f32
+    }
+
+    /// The correlation peak within ±[`PERIOD_TOL`] (at least ±1) of lag `c`,
+    /// parabolically refined: (lag, r). None if the range leaves
+    /// `lo..=max_lag` or holds no peak: a maximum on the range's edge is a
+    /// slope toward a period outside it (a sine's autocorrelation is a
+    /// cosine, 0.87 one twelfth of a period off the peak) and must not count.
+    fn ac_peak_near(&self, c: f32, lo: usize, max_lag: usize) -> Option<(f32, f32)> {
+        let d = (c * PERIOD_TOL).max(1.0);
+        let a = ((c - d).floor() as usize).max(lo).max(2);
+        let b = ((c + d).ceil() as usize).min(max_lag);
+        if b < a {
+            return None;
+        }
+        let (mut best, mut rb) = (a, -1.0f32);
+        for tau in a..=b {
+            let r = self.ac_at(tau);
+            if r > rb {
+                (best, rb) = (tau, r);
+            }
+        }
+        let (lo_r, hi_r) = (self.ac_at(best - 1), self.ac_at(best + 1));
+        if lo_r > rb || hi_r > rb {
+            return None;
+        }
+        let den = lo_r - 2.0 * rb + hi_r;
+        Some(if den < -1e-9 {
+            let d = (0.5 * (lo_r - hi_r) / den).clamp(-0.5, 0.5);
+            (best as f32 + d, (rb - 0.25 * (lo_r - hi_r) * d).clamp(0.0, 1.0))
+        } else {
+            (best as f32, rb)
+        })
+    }
+
+    /// f0 and harmonicity from the ring, in two steps on its autocorrelation.
+    /// Out: the hint's period and its multiples (f0/2, f0/3, …) are each
+    /// searched ±[`PERIOD_TOL`] for their correlation peak, and the shortest
+    /// within [`SUB_MARGIN`] of the most periodic wins — on a clean tone they
+    /// all read ≈1 and the hint keeps its octave; a hint parked on the
+    /// harmonic group of a formant-heavy drone reads low there and ≈1 at
+    /// the true period. Then in: the winner's divisors, shortest first, so a
+    /// stale hint (a consonant, the tracker's start-up default) whose
+    /// multiple merely coincides with a multiple of the real period lands on
+    /// the real period, not on a subharmonic of it. A frame that is not
+    /// periodic at all keeps the hint, so unvoiced f0 does not wander.
+    fn periodicity(&mut self, hint: f32) -> (f32, f32) {
+        if !self.autocorrelate() {
+            return (hint, 0.0);
+        }
+        let w = self.ring.len();
+        let max_lag = (w * 3 / 4).min(self.td.len() - w);
+        let min_lag = (self.sr / 2000.0) as usize;
+        let period = self.sr / hint;
+        let mut cands = [(0.0f32, 0.0f32); MAX_SUB];
+        let mut n = 0;
+        let mut top = 0.0f32;
+        for k in 1..=MAX_SUB {
+            let c = k as f32 * period;
+            if hint / (k as f32) < SUB_MIN_HZ || c * (1.0 - PERIOD_TOL) > max_lag as f32 {
+                break;
+            }
+            if let Some(cand) = self.ac_peak_near(c, min_lag, max_lag) {
+                cands[n] = cand;
+                n += 1;
+                top = top.max(cand.1);
+            }
+        }
+        let Some(&(tau, r)) = cands[..n].iter().find(|c| c.1 >= top - SUB_MARGIN) else {
+            return (hint, 0.0);
+        };
+        if r <= VOICED_HARMONICITY {
+            return (hint, r);
+        }
+        let (tau, r) = self.shortest_period(tau, r, min_lag, max_lag);
+        (self.sr / tau, r)
+    }
+
+    /// The shortest divisor of `tau` (`tau/2`, `tau/3`, …) that is as
+    /// periodic as `tau` within [`SUB_MARGIN`] and periodic in its own right.
+    fn shortest_period(&self, tau: f32, r: f32, min_lag: usize, max_lag: usize) -> (f32, f32) {
+        let mut best = (tau, r);
+        for j in 2..=MAX_SUB {
+            let c = tau / j as f32;
+            if c < min_lag as f32 {
+                break;
+            }
+            if let Some((t, rj)) = self.ac_peak_near(c, min_lag, max_lag) {
+                if rj >= r - SUB_MARGIN && rj > VOICED_HARMONICITY {
+                    best = (t, rj);
+                }
+            }
+        }
+        best
+    }
+
+    /// Harmonic peak levels up to the ceiling; slots above are the floor.
     fn measure_harmonics(&mut self, f0: f32, out: &mut FrameAnalysis) {
-        let spacing = f0 / self.fpb;
-        let lobe = (spacing * 0.3).clamp(1.0, 2.0);
         let ceiling = self.ceiling_hz();
         let mut n = 0;
-        let mut on = 0.0f64;
         for k in 1..=MAX_HARM {
             let fk = k as f32 * f0;
             if fk > ceiling {
                 break;
             }
-            let c = fk / self.fpb;
-            out.harm_db[k - 1] = self.peak_db(c);
-            let lo = (c - lobe).ceil().max(1.0) as usize;
-            let hi = ((c + lobe).floor() as usize).min(self.half);
-            for b in lo..=hi {
-                on += self.pow[b] as f64;
-            }
+            out.harm_db[k - 1] = self.peak_db(fk / self.fpb);
             n = k;
         }
         for h in out.harm_db.iter_mut().skip(n) {
             *h = FLOOR_DB;
         }
         out.n_harm = n;
-        if n == 0 {
-            out.harmonicity = 0.0;
-            return;
-        }
-        let lo = (0.5 * spacing).ceil().max(1.0) as usize;
-        let hi = (((n as f32 + 0.5) * spacing) as usize).min(self.half);
-        let span: f64 = self.pow[lo..=hi.max(lo)].iter().map(|&p| p as f64).sum();
-        let r = if span > 0.0 { (on / span) as f32 } else { 0.0 };
-        let r0 = ((2.0 * lobe + 1.0) / spacing).min(0.95);
-        out.harmonicity = ((r - r0) / (1.0 - r0)).clamp(0.0, 1.0);
     }
 
     /// Peak power (dB) near fractional bin `c`, parabolic on the dB values.
@@ -339,15 +546,13 @@ impl ModelTarget {
     }
 
     /// Source level (dB) of harmonic `k` (1-based). Above the model's 16 the
-    /// last one rolls off at −18 dB/octave: a jaw harp has no 30th harmonic
-    /// to speak of, and a flat extension would read as hiss.
+    /// last one rolls off at [`HARM_ROLLOFF_DB_OCT`].
     pub fn source_db(&self, k: usize) -> f32 {
         let k = k.max(1);
         if k <= N_HARMONICS {
             20.0 * self.harmonics[k - 1].max(1e-6).log10()
         } else {
-            let last = 20.0 * self.harmonics[N_HARMONICS - 1].max(1e-6).log10();
-            last - 18.0 * (k as f32 / N_HARMONICS as f32).log2()
+            rolloff_db(20.0 * self.harmonics[N_HARMONICS - 1].max(1e-6).log10(), k, N_HARMONICS)
         }
     }
 
@@ -391,10 +596,14 @@ impl Default for TargetFrame {
 
 impl TargetFrame {
     /// From a measured profile. Harmonics transfer by number; the target's
-    /// envelope at its own harmonics is what Vowels divides out.
+    /// envelope at its own harmonics is what Vowels divides out. Above the
+    /// profile's last measured harmonic (16 for a 1 kHz target) the level
+    /// rolls off from it like the model's does — the floor there would drive
+    /// a lower voice's harmonics 17–40 to the −60 dB gain limit, a low-pass.
     pub fn from_profile(&mut self, p: &TimbreProfile, voiced_now: bool) {
-        self.harm_db = p.harm_db;
+        let n = valid_harmonics(&p.harm_db);
         for k in 0..MAX_HARM {
+            self.harm_db[k] = if k < n { p.harm_db[k] } else { rolloff_db(p.harm_db[n.max(1) - 1], k + 1, n) };
             self.filt_db[k] = grid_at(&p.env_db, (k + 1) as f32 * p.f0.max(1.0));
         }
         self.env_db = p.env_db;
@@ -579,10 +788,16 @@ pub fn morph_gains(
     let spacing = voice.f0 / fpb;
     let lobe = (spacing * 0.3).clamp(1.0, 2.0);
     let n = voice.n_harm;
+    // The tracked comb ends half a spacing above its last harmonic. Breath
+    // scales the noise *between* harmonics; above the comb there is nothing
+    // to be between, so that spectrum takes the envelope gain alone (at
+    // 100 Hz the comb stops at 4 kHz, and Breath 0.3 used to cut everything
+    // above it by 10 dB).
+    let comb_top = (n as f32 + 0.5) * voice.f0;
     for b in 0..nb {
         let f = b as f32 * fpb;
         let ge = grid_at(&sc.grid_gain, f);
-        if !harmonic {
+        if !harmonic || f > comb_top {
             gain_db[b] = ge;
             continue;
         }
@@ -616,66 +831,5 @@ pub fn morph_gains(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tone_spectrum(n: usize, sr: f32, f0: f32, amps: &[f32]) -> Vec<Complex<f32>> {
-        use realfft::RealFftPlanner;
-        let mut x: Vec<f32> = (0..n)
-            .map(|i| {
-                let t = i as f32 / sr;
-                let w = 0.5 - 0.5 * (core::f32::consts::TAU * i as f32 / n as f32).cos();
-                w * amps
-                    .iter()
-                    .enumerate()
-                    .map(|(k, a)| a * (core::f32::consts::TAU * f0 * (k + 1) as f32 * t).sin())
-                    .sum::<f32>()
-            })
-            .collect();
-        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(n);
-        let mut out = fft.make_output_vec();
-        fft.process(&mut x, &mut out).unwrap();
-        out
-    }
-
-    #[test]
-    fn harmonic_levels_and_voicing_of_a_known_tone() {
-        let amps: Vec<f32> = (1..=10).map(|k| 0.3 / k as f32).collect();
-        let spec = tone_spectrum(2048, 48_000.0, 220.0, &amps);
-        let mut an = Analyzer::new(1024, 48_000.0 / 2048.0);
-        let mut fa = FrameAnalysis::default();
-        an.analyze(&spec, 220.0, &mut fa);
-        assert!(fa.voiced, "harmonicity {}", fa.harmonicity);
-        for k in 1..10 {
-            let want = 20.0 * (amps[k] / amps[0]).log10();
-            let got = fa.harm_db[k] - fa.harm_db[0];
-            assert!((got - want).abs() < 0.6, "h{} {got} vs {want}", k + 1);
-        }
-    }
-
-    #[test]
-    fn morph_zero_is_unity_and_level_is_kept() {
-        let amps: Vec<f32> = (1..=10).map(|k| 0.3 / k as f32).collect();
-        let spec = tone_spectrum(2048, 48_000.0, 220.0, &amps);
-        let mut an = Analyzer::new(1024, 48_000.0 / 2048.0);
-        let mut fa = FrameAnalysis::default();
-        an.analyze(&spec, 220.0, &mut fa);
-        let m = ModelTarget {
-            harmonics: [1.0; N_HARMONICS],
-            bands: FormantBands::three([705.0, 1301.0, 2165.0], [200.0, 300.0, 400.0], [1.0, 0.9, 0.75]),
-            vox_mix: 1.0,
-        };
-        let mut t = TargetFrame::default();
-        t.from_model(&m, 220.0);
-        let mut sc = GainScratch::new();
-        let mut g = vec![0.0; 1025];
-        let mut s = MorphSettings { morph: 0.0, vowels: 0.0, breath: 0.3, tilt_db_oct: 0.0, harmonic: true };
-        assert_eq!(morph_gains(&fa, an.power(), 23.4375, &t, &s, &mut sc, &mut g), FrameMode::Pass);
-        assert!(g.iter().all(|&x| x == 0.0));
-        s.morph = 1.0;
-        assert_eq!(morph_gains(&fa, an.power(), 23.4375, &t, &s, &mut sc, &mut g), FrameMode::Harmonic);
-        let ein: f32 = an.power().iter().skip(1).sum();
-        let eout: f32 = an.power().iter().zip(&g).skip(1).map(|(p, d)| p * 10f32.powf(d / 10.0)).sum();
-        assert!((10.0 * (eout / ein).log10()).abs() < 0.01);
-    }
-}
+#[path = "timbre_tests.rs"]
+mod tests;

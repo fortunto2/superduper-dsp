@@ -28,7 +28,8 @@ Voices (1–4) · Timing (ms of drift, the double wanders between 0.3 and
 1 × Timing) · Pitch Var (cents) · Formant (small shift) · Spread · Level ·
 Dry (0 = print only the doubles) · Mix · Output · Seed · Mode · Key · Scale ·
 Retune · Key Open / Key Range (the doubles' level follows a bus key track,
-e.g. swell in the chorus; 0 = off).
+e.g. swell in the chorus; 0 = off, and with no key picked the doubles play
+as at 0, so "Chorus Swell" is audible before a key is chosen).
 
 Latency 2744 samples (57 ms at 48 kHz; the pitch engine's, same as Pitch and
 Tune). Mix 0 or Voices 0 = the input delayed by that, bit for bit.

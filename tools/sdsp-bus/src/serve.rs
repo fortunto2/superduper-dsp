@@ -14,26 +14,48 @@ use rmcp::{
     ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use superduper_dsp_sdk::bus::{band_edges, Reader, Snapshot, BANDS};
+use superduper_dsp_sdk::bus::{band_edges, Reader, Snapshot, BANDS, TRACK_MASTER};
 use superduper_synth_core::drumlib::{parse_key_name, song_key_path};
 use superduper_synth_core::melody::NOTE_NAMES;
-use superduper_synth_core::mixmap::{loudest_per_track, MaskingTracker, TrackSpectrum};
+use superduper_synth_core::mixmap::{loudest_per_track, sum_deficit_db, MaskingTracker, TrackSpectrum};
 
 /// Track name → plugin that stands for the track's output.
-type Prefer = std::collections::HashMap<String, String>;
+pub type Prefer = std::collections::HashMap<String, String>;
+/// Track name → its fader gain in dB (the bus measures pre-fader).
+pub type FaderDb = std::collections::HashMap<String, f32>;
 
 /// A per-track map entry for `track`, matched like every other track input:
 /// exact, then case-insensitive, then containment either way (the bus cuts
 /// names at 64 bytes, so the DAW's full name may be longer than the bus's).
-fn lookup<'a, V>(map: &'a std::collections::HashMap<String, V>, track: &str) -> Option<&'a V> {
+/// `track` as the agent's map (`prefer`, `fader_db`) names it: exact, then
+/// case-insensitive, then containment either way when that names one entry.
+/// `on_bus` is every track name in the frame: an entry that is exactly some
+/// other track's name belongs to it alone, so {"Gtr": …} with both "Gtr"
+/// and "Gtr DI" on the bus never moves "Gtr DI" (measured 2026-10-21: a
+/// partial map silently moved the wrong track).
+fn lookup<'a, V>(map: &'a std::collections::HashMap<String, V>, track: &str, on_bus: &[&str]) -> Option<&'a V> {
     let t = track.to_lowercase();
     map.get(track)
         .or_else(|| map.iter().find(|(k, _)| k.to_lowercase() == t).map(|(_, v)| v))
         .or_else(|| {
-            let hits: Vec<&V> = map.iter().filter(|(k, _)| { let k = k.to_lowercase(); t.contains(&k) || k.contains(&t) }).map(|(_, v)| v).collect();
+            let owned = |k: &str| on_bus.iter().any(|n| n.eq_ignore_ascii_case(k) && !n.eq_ignore_ascii_case(track));
+            let hits: Vec<&V> = map.iter()
+                .filter(|(k, _)| { let kl = k.to_lowercase(); (t.contains(&kl) || kl.contains(&t)) && !owned(k) })
+                .map(|(_, v)| v).collect();
             if hits.len() == 1 { Some(hits[0]) } else { None }
         })
 }
+
+/// Distinct track names in one bus read, for `lookup`.
+fn names_of(rows: &[Snapshot]) -> Vec<&str> {
+    let mut v: Vec<&str> = rows.iter().map(|s| s.track.as_str()).filter(|t| !t.is_empty()).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// The bus reads silence from an instance that has had no samples for 500 ms.
+fn silent_db(db: f32) -> bool { db <= -119.0 }
 
 /// One spectrum per track. The bus has no chain order, so by default a track
 /// is its loudest instance — wrong once a cut follows the instrument (the EQ
@@ -43,11 +65,12 @@ fn tracks(rows: &[Snapshot], prefer: &Prefer) -> Vec<TrackSpectrum> {
     // Track names in `prefer` match like everywhere else (case-insensitive,
     // substring); a preferred plugin that is not on the track falls back to
     // the loudest instance instead of silently dropping the track.
-    let pref_for = |track: &str| lookup(prefer, track).map(|p| p.to_lowercase());
+    let on_bus = names_of(rows);
+    let pref_for = |track: &str| lookup(prefer, track, &on_bus).map(|p| p.to_lowercase());
     // A bypassed plugin publishes nothing (its bypass path skips the scope),
     // so a preferred instance reading as bus silence is not the track's
     // output either: fall back to the loudest instance then.
-    let silent = |s: &Snapshot| s.rms_db <= -119.0;
+    let silent = |s: &Snapshot| silent_db(s.rms_db);
     let keep = |s: &&Snapshot| match pref_for(&s.track) {
         Some(p) => {
             let usable = |o: &Snapshot| o.track == s.track && o.plugin.to_lowercase().contains(&p) && !silent(o);
@@ -65,6 +88,133 @@ fn key_out(p: &std::path::Path, key: Option<String>) -> rmcp::Json<KeyOut> {
 
 fn reader() -> Result<Reader, McpError> {
     Reader::open().ok_or_else(|| McpError::internal_error(format!("cannot open {}", superduper_dsp_sdk::bus::bus_path().display()), None))
+}
+
+/// `n` reads of the bus, 100 ms apart: one frame per tick, what the
+/// listening tools collect before they measure anything.
+async fn listen(r: &Reader, n: usize) -> Vec<Vec<Snapshot>> {
+    let mut frames = Vec::with_capacity(n);
+    for _ in 0..n {
+        frames.push(r.read_all());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    frames
+}
+
+const NO_TRACKS_MASKING: &str = "nothing to measure: no named track on the bus (transport stopped, or no CLAP SuperDuper plugin on a track) — this is not 'no clashes'";
+const NO_MASTER: &str = "no SuperDuper plugin on the master: put one there (Spectrum or EQ, first in the chain)";
+const NO_TRACKS_PHASE: &str = "no named tracks on the bus — the host gives no track names (CLAP track-info) or every SuperDuper plugin is a wrapped AU/VST3; use the CLAP versions";
+
+/// `mix_masking` with the listening already done: `frames` is one bus read
+/// per 100 ms tick. Pure, so the known-answer controls (`controls.rs`,
+/// `sdsp-bus controls`) can plant a bus and check what the meter says of
+/// it. `seconds` comes out as frames/10 and `label` empty; the tool
+/// overwrites both with what it was asked for.
+pub fn masking_report(frames: &[Vec<Snapshot>], prefer: &Prefer, fader_db: Option<&FaderDb>) -> Result<MaskingOut, String> {
+    let mut tracker = MaskingTracker::mean();
+    // Per track, power sums over the frames it was audible in — per band for
+    // `by_db`, broadband for `levels` — so a part that plays half the run
+    // reads at its playing level, not 3 dB under it (what a whole-run mean
+    // said; measured by `sdsp-bus controls`).
+    #[derive(Default)]
+    struct Acc { band: [f64; BANDS], band_n: [f64; BANDS], rms: f64, rms_n: f64 }
+    let mut sums: std::collections::HashMap<String, Acc> = Default::default();
+    let mut names: Vec<String> = Vec::new();
+    for rows in frames {
+        let mut tracks = tracks(rows, prefer);
+        let on_bus = names_of(rows);
+        if let Some(f) = fader_db {
+            for t in &mut tracks {
+                if let Some(g) = lookup(f, &t.name, &on_bus) {
+                    t.rms_db += g;
+                    for b in t.bands_db.iter_mut() { *b += g; }
+                }
+            }
+        }
+        for t in &tracks {
+            if !t.bus && !names.contains(&t.name) { names.push(t.name.clone()); }
+            if silent_db(t.rms_db) { continue; }
+            let a = sums.entry(t.name.clone()).or_default();
+            a.rms += 10f64.powf(t.rms_db as f64 / 10.0);
+            a.rms_n += 1.0;
+            for (i, v) in t.bands_db.iter().enumerate() {
+                if *v > -100.0 {
+                    a.band[i] += 10f64.powf(*v as f64 / 10.0);
+                    a.band_n[i] += 1.0;
+                }
+            }
+        }
+        tracker.update(&tracks);
+    }
+    let edges = band_edges();
+    let avg = |name: &str, b: usize| sums.get(name).map_or(-120.0, |a| 10.0 * (a.band[b] / a.band_n[b].max(1.0) + 1e-12).log10()) as f32;
+    let clashes = tracker.top(8).into_iter().filter(|c| c.share > 0.05).map(|c| {
+        let (la, lb) = (avg(&c.a, c.band), avg(&c.b, c.band));
+        // Within half a dB neither side is louder; the field says so.
+        let (louder, by) = if (la - lb).abs() < 0.5 { (String::new(), (la - lb).abs()) }
+            else if la > lb { (c.a.clone(), la - lb) } else { (c.b.clone(), lb - la) };
+        ClashOut { low_hz: edges[c.band], high_hz: edges[c.band + 1], share: c.share, louder, by_db: by, a: c.a, b: c.b }
+    }).collect();
+    if names.is_empty() {
+        return Err(NO_TRACKS_MASKING.into());
+    }
+    let mut levels: Vec<TrackLevel> = names.iter()
+        .map(|t| TrackLevel { track: t.clone(), rms_db: sums.get(t).map_or(-120.0, |a| (10.0 * (a.rms / a.rms_n.max(1.0) + 1e-12).log10()) as f32) })
+        .collect();
+    levels.sort_by(|a, b| a.track.cmp(&b.track));
+    let buried = tracker.top_buried(8, None).into_iter().filter(|b| b.share > 0.2).map(|b| BuriedOut {
+        low_hz: edges[b.band], high_hz: edges[b.band + 1], share: b.share, quiet: b.quiet, under: b.loud,
+    }).collect();
+    Ok(MaskingOut { label: None, seconds: frames.len() as f32 / 10.0, tracks: names, clashes, buried, levels })
+}
+
+/// The master instance a phase run reads: flagged by the host or named
+/// "Master", narrowed to `plugin` (substring) when given; the loudest wins.
+fn master_of<'a>(rows: &'a [Snapshot], plugin: Option<&str>) -> Option<&'a Snapshot> {
+    let want = plugin.map(str::to_lowercase);
+    rows.iter()
+        .filter(|s| s.track_flags & TRACK_MASTER != 0 || s.track.eq_ignore_ascii_case("master"))
+        .filter(|s| want.as_ref().is_none_or(|p| s.plugin.to_lowercase().contains(p.as_str())))
+        .max_by(|a, b| a.rms_db.total_cmp(&b.rms_db))
+}
+
+/// `mix_phase` with the listening already done (see `masking_report`).
+/// Every frame must have a master instance; `seconds` comes out as frames/10.
+pub fn phase_report(frames: &[Vec<Snapshot>], prefer: &Prefer, fader_db: Option<&FaderDb>, master_plugin: Option<&str>) -> Result<PhaseOut, String> {
+    let (mut tp, mut mp) = ([0f64; BANDS], [0f64; BANDS]);
+    let mut master_name = String::new();
+    let mut contrib: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
+    for rows in frames {
+        let m = master_of(rows, master_plugin).ok_or_else(|| NO_MASTER.to_string())?;
+        master_name = m.plugin.clone();
+        for (b, v) in m.bands_db.iter().enumerate() { mp[b] += 10f64.powf(*v as f64 / 10.0); }
+        let on_bus = names_of(rows);
+        for t in tracks(rows, prefer).into_iter().filter(|t| !t.bus) {
+            let g = fader_db.and_then(|f| lookup(f, &t.name, &on_bus)).copied().unwrap_or(0.0);
+            let c = contrib.entry(t.name.clone()).or_insert([0.0; BANDS]);
+            for (b, v) in t.bands_db.iter().enumerate() {
+                let p = 10f64.powf((*v + g) as f64 / 10.0);
+                tp[b] += p;
+                c[b] += p;
+            }
+        }
+    }
+    if contrib.is_empty() {
+        // Every instance read as a bus: unnamed tracks (a host without CLAP
+        // track-info, or AU/VST3 wrappers). All zeros would read as "fine".
+        return Err(NO_TRACKS_PHASE.into());
+    }
+    let d = sum_deficit_db(&tp, &mp);
+    let edges = band_edges();
+    let nf = frames.len() as f64;
+    let mut cancelling: Vec<PhaseBand> = (0..BANDS).filter(|&b| d[b] < -2.0 && tp[b] > 1e-9 * nf).map(|b| {
+        let mut who: Vec<(&String, f64)> = contrib.iter().map(|(n, c)| (n, c[b])).collect();
+        who.sort_by(|x, y| y.1.total_cmp(&x.1));
+        PhaseBand { low_hz: edges[b], high_hz: edges[b + 1], deficit_db: d[b], tracks: who.into_iter().take(3).filter(|w| w.1 > 0.0).map(|w| w.0.clone()).collect() }
+    }).collect();
+    cancelling.sort_by(|a, b| a.deficit_db.total_cmp(&b.deficit_db));
+    let not_on_bus_hz = (0..BANDS).filter(|&b| d[b] > 6.0).map(|b| (edges[b] * edges[b + 1]).sqrt()).collect();
+    Ok(PhaseOut { seconds: frames.len() as f32 / 10.0, master: master_name, cancelling, deficit_db: d.to_vec(), not_on_bus_hz })
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -115,7 +265,7 @@ pub struct MaskingInput {
     /// measures where the plugin sits, before the fader: a guitar pulled
     /// down 10 dB still reads loud without this. Read it from the DAW
     /// (REAPER: track D_VOL → 20·log10) and pass the same map for runs you compare.
-    pub fader_db: Option<std::collections::HashMap<String, f32>>,
+    pub fader_db: Option<FaderDb>,
 }
 
 #[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
@@ -126,7 +276,8 @@ pub struct ClashOut {
     pub high_hz: f32,
     /// Share of the listened time that band clashed (both > −50 dB, within 6 dB).
     pub share: f32,
-    /// Which of the two is louder there on average, and by how much.
+    /// Which of the two is louder there while it plays, and by how much;
+    /// empty when they are within 0.5 dB.
     pub louder: String,
     pub by_db: f32,
 }
@@ -289,7 +440,7 @@ pub struct PhaseInput {
     /// Same as mix_masking: track → plugin that stands for its output.
     pub prefer: Option<Prefer>,
     /// Same as mix_masking: track → fader dB.
-    pub fader_db: Option<std::collections::HashMap<String, f32>>,
+    pub fader_db: Option<FaderDb>,
     /// Which master plugin to read (substring) — the first on the master is
     /// closest to the raw sum; default: the loudest master instance.
     pub master_plugin: Option<String>,
@@ -350,50 +501,11 @@ impl BusServer {
     #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first (clashes: both loud and within 6 dB), and which parts are buried 6-20 dB under a louder one (buried — a problem only for a part that must be heard there). Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
     async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer, fader_db }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
-        let r = reader()?;
-        let frames = (secs * 10.0) as usize;
-        let mut tracker = MaskingTracker::mean();
-        let mut sums: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
-        let mut power: std::collections::HashMap<String, f64> = Default::default();
-        let mut last = Vec::new();
-        for _ in 0..frames {
-            let mut tracks = tracks(&r.read_all(), prefer.as_ref().unwrap_or(&Prefer::new()));
-            if let Some(f) = &fader_db {
-                for t in &mut tracks {
-                    if let Some(g) = lookup(f, &t.name) {
-                        t.rms_db += g;
-                        for b in t.bands_db.iter_mut() { *b += g; }
-                    }
-                }
-            }
-            for t in &tracks {
-                *power.entry(t.name.clone()).or_default() += 10f64.powf(t.rms_db as f64 / 10.0);
-                let s = sums.entry(t.name.clone()).or_insert([0.0; BANDS]);
-                for (i, v) in t.bands_db.iter().enumerate() { s[i] += 10f64.powf(*v as f64 / 10.0); }
-            }
-            tracker.update(&tracks);
-            last = tracks;
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        let edges = band_edges();
-        let avg = |n: &str, b: usize| sums.get(n).map_or(-120.0, |s| 10.0 * (s[b] / frames as f64 + 1e-12).log10()) as f32;
-        let clashes = tracker.top(8).into_iter().filter(|c| c.share > 0.05).map(|c| {
-            let (la, lb) = (avg(&c.a, c.band), avg(&c.b, c.band));
-            let (louder, by) = if la >= lb { (c.a.clone(), la - lb) } else { (c.b.clone(), lb - la) };
-            ClashOut { low_hz: edges[c.band], high_hz: edges[c.band + 1], share: c.share, louder, by_db: by, a: c.a, b: c.b }
-        }).collect();
-        let names: Vec<String> = last.into_iter().filter(|t| !t.bus).map(|t| t.name).collect();
-        if names.is_empty() {
-            return Err(McpError::invalid_params("nothing to measure: no named track on the bus (transport stopped, or no CLAP SuperDuper plugin on a track) — this is not 'no clashes'", None));
-        }
-        let mut levels: Vec<TrackLevel> = power.into_iter()
-            .map(|(track, p)| TrackLevel { track, rms_db: (10.0 * (p / frames as f64 + 1e-12).log10()) as f32 })
-            .collect();
-        levels.sort_by(|a, b| a.track.cmp(&b.track));
-        let buried = tracker.top_buried(8, None).into_iter().filter(|b| b.share > 0.2).map(|b| BuriedOut {
-            low_hz: edges[b.band], high_hz: edges[b.band + 1], share: b.share, quiet: b.quiet, under: b.loud,
-        }).collect();
-        let out = MaskingOut { label, seconds: secs, tracks: names, clashes, buried, levels };
+        let frames = listen(&reader()?, (secs * 10.0) as usize).await;
+        let mut out = masking_report(&frames, prefer.as_ref().unwrap_or(&Prefer::new()), fader_db.as_ref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        out.label = label;
+        out.seconds = secs;
         if out.label.is_some() {
             use std::io::Write;
             let line = serde_json::to_string(&out).map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -406,51 +518,24 @@ impl BusServer {
 
     #[rmcp::tool(description = "Where parts cancel when summed (Sound Radix Pi's question): listens to the master and every track, and per band compares the master's energy with the sum of the tracks' — the broadband part (master limiter, fader offsets) removed. A band 2+ dB short is cancellation; its loudest tracks are the suspects (kick vs bass, layered kicks, two mics). Fix by flipping one suspect's polarity in the DAW (REAPER run_lua: SetMediaTrackInfo_Value(track, \"B_PHASE\", 1)) or nudging it a few ms, then run again and keep only what shrinks the deficit. Needs a SuperDuper plugin on the master and on every track that matters.")]
     async fn mix_phase(&self, Parameters(i): Parameters<PhaseInput>) -> Result<rmcp::Json<PhaseOut>, McpError> {
-        use superduper_dsp_sdk::bus::TRACK_MASTER;
         let secs = i.seconds.unwrap_or(10.0).clamp(2.0, 60.0);
         let r = reader()?;
-        let frames = (secs * 10.0) as usize;
+        let n = (secs * 10.0) as usize;
         let prefer = i.prefer.unwrap_or_default();
-        let (mut tp, mut mp) = ([0f64; BANDS], [0f64; BANDS]);
-        let mut master_name = String::new();
-        let mut contrib: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
-        for _ in 0..frames {
+        let mut frames = Vec::with_capacity(n);
+        for _ in 0..n {
             let rows = r.read_all();
-            let is_master = |s: &Snapshot| s.track_flags & TRACK_MASTER != 0 || s.track.eq_ignore_ascii_case("master");
-            let m = rows.iter().filter(|s| is_master(s))
-                .filter(|s| i.master_plugin.as_ref().is_none_or(|p| s.plugin.to_lowercase().contains(&p.to_lowercase())))
-                .max_by(|a, b| a.rms_db.total_cmp(&b.rms_db));
-            let Some(m) = m else {
-                return Err(McpError::invalid_params("no SuperDuper plugin on the master: put one there (Spectrum or EQ, first in the chain)", None));
-            };
-            master_name = m.plugin.clone();
-            for (b, v) in m.bands_db.iter().enumerate() { mp[b] += 10f64.powf(*v as f64 / 10.0); }
-            for t in tracks(&rows, &prefer).into_iter().filter(|t| !t.bus) {
-                let g = i.fader_db.as_ref().and_then(|f| lookup(f, &t.name)).copied().unwrap_or(0.0);
-                let c = contrib.entry(t.name.clone()).or_insert([0.0; BANDS]);
-                for (b, v) in t.bands_db.iter().enumerate() {
-                    let p = 10f64.powf((*v + g) as f64 / 10.0);
-                    tp[b] += p;
-                    c[b] += p;
-                }
+            // Say so on the first frame without a master, not after the whole listen.
+            if master_of(&rows, i.master_plugin.as_deref()).is_none() {
+                return Err(McpError::invalid_params(NO_MASTER, None));
             }
+            frames.push(rows);
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        if contrib.is_empty() {
-            // Every instance read as a bus: unnamed tracks (a host without CLAP
-            // track-info, or AU/VST3 wrappers). All zeros would read as "fine".
-            return Err(McpError::invalid_params("no named tracks on the bus — the host gives no track names (CLAP track-info) or every SuperDuper plugin is a wrapped AU/VST3; use the CLAP versions", None));
-        }
-        let d = superduper_synth_core::mixmap::sum_deficit_db(&tp, &mp);
-        let edges = band_edges();
-        let mut cancelling: Vec<PhaseBand> = (0..BANDS).filter(|&b| d[b] < -2.0 && tp[b] > 1e-9 * frames as f64).map(|b| {
-            let mut who: Vec<(&String, f64)> = contrib.iter().map(|(n, c)| (n, c[b])).collect();
-            who.sort_by(|x, y| y.1.total_cmp(&x.1));
-            PhaseBand { low_hz: edges[b], high_hz: edges[b + 1], deficit_db: d[b], tracks: who.into_iter().take(3).filter(|w| w.1 > 0.0).map(|w| w.0.clone()).collect() }
-        }).collect();
-        cancelling.sort_by(|a, b| a.deficit_db.total_cmp(&b.deficit_db));
-        let not_on_bus_hz = (0..BANDS).filter(|&b| d[b] > 6.0).map(|b| (edges[b] * edges[b + 1]).sqrt()).collect();
-        Ok(rmcp::Json(PhaseOut { seconds: secs, master: master_name, cancelling, deficit_db: d.to_vec(), not_on_bus_hz }))
+        let mut out = phase_report(&frames, &prefer, i.fader_db.as_ref(), i.master_plugin.as_deref())
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        out.seconds = secs;
+        Ok(rmcp::Json(out))
     }
 
     #[rmcp::tool(description = "Compare two labelled mix_masking runs (same section of the song): each clash's share before and after, and each track's level. Use after a change to see whether it helped; undo it in the DAW if it did not.")]

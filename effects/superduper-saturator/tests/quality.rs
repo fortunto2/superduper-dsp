@@ -49,8 +49,28 @@ fn quality_snapshot() {
     s.record("noise_gain_db", probes::gain_db(&noise, &noise_out));
     s.record("noise_max_step", probes::max_step(&noise_out));
 
+    // Inflate (Type 3) at its defaults on a −3 dBFS master: the input gain is
+    // Drive − 6 dB = unity, so the peaks stay under full scale.
+    let master = probes::tone(SR as f32, 1000.0, 10f32.powf(-3.0 / 20.0), frames);
+    let (inf_out, _) = render_inflate(&master);
+    s.record("inflate_tone_gain_db", probes::gain_db(&master, &inf_out));
+    s.record("inflate_tone_peak_db", db(probes::peak(&inf_out)));
+    s.record("inflate_tone_thd_db", probes::thd_at(&inf_out, 1000.0, SR as f32));
+
     sdsp_test_kit::params::record_table(&mut s, superduper_saturator::PARAMS);
     s.finish();
+}
+
+/// Render with Type = Inflate (every other param at its default).
+fn render_inflate(x: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    use clack_common::events::{event_types::ParamValueEvent, Pckn};
+    use clack_common::utils::{ClapId, Cookie};
+    let id = ClapId::new(superduper_saturator::P_TYPE as u32);
+    sdsp_test_kit::host::render_with::<Saturator>(SR, 512, x, x, move |pos, buf| {
+        if pos == 0 {
+            buf.push(&ParamValueEvent::new(0, id, Pckn::match_all(), 3.0, Cookie::empty()));
+        }
+    })
 }
 
 #[test]

@@ -355,9 +355,10 @@ fn draw_dual_and_key(ui: &mut egui::Ui, state: &mut GuiState) {
                 "Dual detector",
                 "Classic follows one envelope. Dual splits it: an RMS stage \
                  handles the program level (Threshold is an RMS level, Release \
-                 RMS sets recovery), and a peak stage only acts on transients \
-                 that rise more than Peak Crest above that level (Release Peak). \
-                 A steady tone never wakes the peak stage.",
+                 RMS sets recovery), and a peak stage with its threshold Peak \
+                 Crest higher (Release Peak). The deeper stage takes control, \
+                 so the peak stage leads only while the signal's crest factor \
+                 exceeds Peak Crest: a steady tone is the RMS stage's.",
             ),
             (
                 "Bus key",

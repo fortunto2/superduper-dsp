@@ -77,9 +77,15 @@ pub const PARAMS: &[ParamDef] = &[
     // for most cases), 2 = 4× (mastering-grade, ≥80 dB aliasing rejection).
     ParamDef { id: 5, name: b"OS",     min: 0.0,   max: 2.0,  default: 1.0,  unit: ""   },
     // Inflate's curve: −50 = clean (0 dB lift), 0 = +3.5 dB on quiet parts,
-    // +50 = +6 dB and the densest. Drive is its input gain, Mix its Effect.
+    // +50 = +6 dB and the densest. Its input gain is Drive − 6 dB (unity at
+    // the default Drive: a master at −3 dBFS keeps its peaks), Mix its Effect.
     ParamDef { id: 6, name: b"Curve",  min: -50.0, max: 50.0, default: 0.0,  unit: ""   },
 ];
+
+/// Inflate's input gain is Drive minus this, so the default Drive is unity.
+/// The curve clamps at full scale; with Drive's +6 dB default on top a
+/// master peaking at −3 dBFS came out flat-topped.
+pub const INFLATE_DRIVE_OFFSET_DB: f32 = 6.0;
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
 /// the host with IS_STEPPED so it quantises automation instead of sweeping
@@ -333,7 +339,13 @@ fn process_channel(
         let tone = smooth_tone.step(tone_target, sr);
         let out_db = smooth_output.step(output_db_target, sr);
         let mix = smooth_mix.step(mix_target, sr);
-        let drive_lin = 10f32.powf(drive_db / 20.0);
+        // Inflate takes Drive − 6 dB (unity at the default); the Classic
+        // curves take Drive as it is.
+        let drive_lin = if curve == 3 {
+            10f32.powf((drive_db - INFLATE_DRIVE_OFFSET_DB) / 20.0)
+        } else {
+            10f32.powf(drive_db / 20.0)
+        };
         let out_lin = 10f32.powf(out_db / 20.0);
 
         let cleaned = dc.process(input);
@@ -398,6 +410,14 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
@@ -408,10 +428,10 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
     }
     fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
-        ParamDef::write_display(PARAMS, id, v, w)
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

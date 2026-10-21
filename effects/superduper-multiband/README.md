@@ -13,14 +13,14 @@ compressing the output is the input bit for bit (measured −240 dB on 2, 3
 and 4 bands). Linkwitz-Riley crossovers only feed the detectors and Solo.
 Because shelves overlap, a Newton solver on the exact shelf response finds
 the shelf gains that put each band's *measured* gain where its detector asks
-(−12 dB requested on a ⅓-octave band measures −11.99); the meter reports the
+(−12 dB requested on a ½-octave band measures −11.99); the meter reports the
 gain the audio got, not the detector's wish.
 
 ## Parameters
 
 | Param | Range | What |
 |---|---|---|
-| Bands | 2–4 | band count; crossovers (draggable on the spectrum) keep ≥ ⅓ octave apart |
+| Bands | 2–4 | band count; crossovers (draggable on the spectrum) keep ≥ ½ octave apart (was ⅓: at ⅓ octave the shelves could not deliver a fifth of ordinary 4-band gain combinations) |
 | Xover 1–3 | Hz | crossover frequencies |
 | per band: Threshold, Ratio, Attack, Release, Knee, Makeup, Range | | the usual; **Ratio below 1:1 = upward** (quiet parts come up, limited by Range) |
 | per band: Key | 0..1 | blend the detector from the band's own signal toward the bus key's level in the band's range |

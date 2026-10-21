@@ -654,16 +654,10 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
     }
 }
 
-impl PluginMainThreadParams for PluginMainThread<'_> {
-    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
-    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
-    }
-    fn get_value(&mut self, id: ClapId) -> Option<f64> {
-        let i = id.get() as usize;
-        self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
-    }
-    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
         use core::fmt::Write;
         let pid = id.get() as usize;
         if pid == P_LOOP {
@@ -689,6 +683,20 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         }
         ParamDef::write_display(PARAMS, id, v, w)
     }
+}
+
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
+        ParamDef::write_info(PARAMS, idx, info);
+    }
+    fn get_value(&mut self, id: ClapId) -> Option<f64> {
+        let i = id.get() as usize;
+        self.shared.params.get(i).map(|a| a.load(Ordering::Relaxed) as f64)
+    }
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, v, w)
+    }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
         if id.get() as usize == P_PRESET {
             if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
@@ -699,7 +707,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 return Some(v);
             }
         }
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);

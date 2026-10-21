@@ -200,6 +200,26 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    engine: Engine,
+}
+
+/// Per-block control values, read from the params once per block.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockParams {
+    pub amount: f32,
+    pub sens: f32,
+    pub mix: f32,
+    pub output_db: f32,
+    /// Mode's excess → cut ratio (Soft 0.4 / Sharp 0.7 / Hard 1.0).
+    pub ratio: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+}
+
+/// The suppressor's DSP, free of CLAP so tests drive it directly: the
+/// bandpass bank, the per-band envelopes and cuts, the peaking-EQ bank and
+/// the key-cut compensation.
+pub struct Engine {
     /// Bandpass filters — measure the per-band energy. One bank per channel.
     bp_l: [Biquad; N_BANDS],
     bp_r: [Biquad; N_BANDS],
@@ -216,6 +236,9 @@ pub struct PluginAudioProcessor<'a> {
     /// Centres at which the BPs and EQs are tuned (Hz). Recomputed when
     /// Lo / Hi / Q params drift past the rebuild threshold.
     band_centres: [f32; N_BANDS],
+    /// Per-band scale on the key cut so a uniform key cut measures its
+    /// depth at every centre, see `key_scales`.
+    key_scale: [f32; N_BANDS],
     /// Last-applied Lo/Hi/Q so we only recoeff biquads when actually needed
     /// (re-running RBJ design 24× per sample is wasted CPU).
     last_lo: f32,
@@ -232,32 +255,267 @@ fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
     superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events);
 }
 
-/// Rebuild the bandpass + peaking EQ banks when the band geometry changes.
-/// Called off the audio hot path: only when Lo/Hi/Q drift beyond the
-/// rebuild threshold (cheaper than per-sample re-coeffing).
-fn rebuild_banks(p: &mut PluginAudioProcessor<'_>, lo: f32, hi: f32, q: f32) {
-    let sr = p.sample_rate;
-    let q_eq = q.max(2.0);
-    let q_bp = (q_eq * 1.2).max(2.0);
-    for i in 0..N_BANDS {
-        let f = band_freq(i, lo, hi).clamp(20.0, sr * 0.45);
-        p.band_centres[i] = f;
-        p.bp_l[i].set_bandpass(sr, f, q_bp);
-        p.bp_r[i].set_bandpass(sr, f, q_bp);
-        // Peaking EQ starts at 0 dB; per-sample gain comes from `cut_db`.
-        p.eq_l[i].set_peaking(sr, f, q_eq, 0.0);
-        p.eq_r[i].set_peaking(sr, f, q_eq, 0.0);
-        p.shared.band_freq_hz[i].store(f, Ordering::Relaxed);
+/// How much of a uniform key cut each band centre receives. The 24 peaking
+/// cuts cascade and their skirts overlap (0.245 octave apart at the default
+/// range), so with every band cut by D dB a band centre measures
+/// D × Σ_b leak[b], leak[b] being band b's cut there per dB of its own:
+/// −25.7 dB for D = 12 at Q 5 and −55 dB at Q 2, measured on the cascade.
+/// Returns the per-band scale s with Σ_b leak[k][b]·s[b] = 1 at every
+/// centre k; the key cut is multiplied by it, so a uniform key cut of D dB
+/// measures D ± 0.5 dB at every centre at Q 2, 5 and 12 (measured, 24
+/// bands, white noise). Evaluated at a 1 dB cut: the dB response is close
+/// to linear in the cut, and the scaled per-band cuts are smallest exactly
+/// where the leak is largest. The scale is built for a broadband key; a key
+/// that is loud in one band alone is cut by s·D there (0.5·D at Q 5), since
+/// its neighbours contribute nothing — the price of not over-cutting a
+/// broadband key by 14 dB. 24 × 24 magnitude evaluations and one 24 × 24
+/// elimination, run only when the banks are rebuilt.
+fn key_scales(centres: &[f32; N_BANDS], q: f32, sr: f32) -> [f32; N_BANDS] {
+    // leak[k][b]: band b's cut at centre k per dB of its own (≥ 0, 1 at k = b).
+    let mut leak = [[0.0f32; N_BANDS]; N_BANDS];
+    let mut bq = Biquad::default();
+    for (b, &f) in centres.iter().enumerate() {
+        bq.set_peaking(sr, f, q, -1.0);
+        for (k, &fk) in centres.iter().enumerate() {
+            leak[k][b] = -bq.magnitude_db_at(fk, sr);
+        }
     }
-    p.last_lo = lo;
-    p.last_hi = hi;
-    p.last_q = q;
+    // Solve leak · s = 1: with every band cut by D·s[b], centre k measures
+    // D · Σ_b leak[k][b]·s[b] = D. Dividing by the row sum alone is exact
+    // only while the cuts stay uniform, and they do not once scaled (Q 2
+    // read −9.9 dB on one band for a 12 dB key that way).
+    let row_sum: [f32; N_BANDS] = std::array::from_fn(|k| leak[k].iter().sum::<f32>().max(1.0));
+    let mut s = [1.0f32; N_BANDS];
+    if !solve_in_place(&mut leak, &mut s) || s.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        // Singular or ringing (never seen at Q 2..12): the row-sum scale.
+        return std::array::from_fn(|k| 1.0 / row_sum[k]);
+    }
+    s
+}
+
+/// Gaussian elimination with partial pivoting on `a`, solution in `b`.
+/// False if singular.
+fn solve_in_place(a: &mut [[f32; N_BANDS]; N_BANDS], b: &mut [f32; N_BANDS]) -> bool {
+    for col in 0..N_BANDS {
+        let p = (col..N_BANDS).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs())).unwrap_or(col);
+        if a[p][col].abs() < 1e-9 {
+            return false;
+        }
+        a.swap(col, p);
+        b.swap(col, p);
+        for row in col + 1..N_BANDS {
+            let f = a[row][col] / a[col][col];
+            if f != 0.0 {
+                for j in col..N_BANDS {
+                    a[row][j] -= f * a[col][j];
+                }
+                b[row] -= f * b[col];
+            }
+        }
+    }
+    for col in (0..N_BANDS).rev() {
+        let mut v = b[col];
+        for j in col + 1..N_BANDS {
+            v -= a[col][j] * b[j];
+        }
+        b[col] = v / a[col][col];
+    }
+    true
 }
 
 /// Convert ratio + attack/release to one-pole coefficients.
 #[inline]
 fn one_pole_coef(time_ms: f32, sr: f32) -> f32 {
     (-1.0 / (time_ms.max(0.05) * 0.001 * sr)).exp()
+}
+
+impl Engine {
+    /// A bank spanning `lo`..`hi` Hz with peaking Q `q`; the smoothed params
+    /// start at the given values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(sr: f32, lo: f32, hi: f32, q: f32, amount: f32, sens: f32, mix: f32, output_db: f32) -> Self {
+        let mut e = Self {
+            bp_l: [Biquad::default(); N_BANDS],
+            bp_r: [Biquad::default(); N_BANDS],
+            eq_l: [Biquad::default(); N_BANDS],
+            eq_r: [Biquad::default(); N_BANDS],
+            env: [EnvelopeDetector::default(); N_BANDS],
+            cut_db: [0.0; N_BANDS],
+            band_centres: [0.0; N_BANDS],
+            key_scale: [1.0; N_BANDS],
+            last_lo: 0.0,
+            last_hi: 0.0,
+            last_q: 0.0,
+            smooth_amount: SmoothedParam::new(amount),
+            smooth_sens: SmoothedParam::new(sens),
+            smooth_mix: SmoothedParam::new(mix),
+            smooth_output: SmoothedParam::new(output_db),
+            sample_rate: sr,
+        };
+        e.rebuild_banks(lo, hi, q);
+        e
+    }
+
+    pub fn band_centres(&self) -> &[f32; N_BANDS] {
+        &self.band_centres
+    }
+    pub fn cut_db(&self) -> &[f32; N_BANDS] {
+        &self.cut_db
+    }
+    pub fn key_scale(&self) -> &[f32; N_BANDS] {
+        &self.key_scale
+    }
+
+    /// Geometry change → rebuild filter banks. Threshold of 1 Hz on
+    /// freqs / 0.05 on Q keeps the audio thread from re-running RBJ
+    /// design when the user is just nudging things in real time.
+    pub fn geometry_moved(&self, lo: f32, hi: f32, q: f32) -> bool {
+        (lo - self.last_lo).abs() > 1.0 || (hi - self.last_hi).abs() > 1.0 || (q - self.last_q).abs() > 0.05
+    }
+
+    /// Rebuild the bandpass + peaking EQ banks when the band geometry changes.
+    /// Called off the audio hot path: only when Lo/Hi/Q drift beyond the
+    /// rebuild threshold (cheaper than per-sample re-coeffing).
+    pub fn rebuild_banks(&mut self, lo: f32, hi: f32, q: f32) {
+        let sr = self.sample_rate;
+        let q_eq = q.max(2.0);
+        let q_bp = (q_eq * 1.2).max(2.0);
+        for i in 0..N_BANDS {
+            let f = band_freq(i, lo, hi).clamp(20.0, sr * 0.45);
+            self.band_centres[i] = f;
+            self.bp_l[i].set_bandpass(sr, f, q_bp);
+            self.bp_r[i].set_bandpass(sr, f, q_bp);
+            // Peaking EQ starts at 0 dB; per-sample gain comes from `cut_db`.
+            self.eq_l[i].set_peaking(sr, f, q_eq, 0.0);
+            self.eq_r[i].set_peaking(sr, f, q_eq, 0.0);
+        }
+        self.key_scale = key_scales(&self.band_centres, q_eq, sr);
+        self.last_lo = lo;
+        self.last_hi = hi;
+        self.last_q = q;
+    }
+
+    /// The bus key's cut per band for this block, compensated for the
+    /// cascade (`key_scales`). `key_db_at` is the key's level at a frequency.
+    pub fn key_cuts(&self, key_db_at: impl Fn(f32) -> f32, depth: f32, range: f32) -> [f32; N_BANDS] {
+        if depth <= 0.0 {
+            return [0.0; N_BANDS];
+        }
+        std::array::from_fn(|b| key_cut_db(key_db_at(self.band_centres[b]), depth, range) * self.key_scale[b])
+    }
+
+    /// One block. `read_r` is `read_l` again (or shorter) when mono; the
+    /// right output is written when present.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_block(
+        &mut self,
+        read_l: &[f32],
+        read_r: &[f32],
+        write_l: &mut [f32],
+        mut write_r: Option<&mut [f32]>,
+        p: &BlockParams,
+        key_cut: &[f32; N_BANDS],
+        scope: Option<&superduper_synth_core::gui::LiveScope>,
+    ) {
+        let sr = self.sample_rate;
+        let n = read_l.len();
+        let coef_att = one_pole_coef(p.attack_ms, sr);
+        let coef_rel = one_pole_coef(p.release_ms, sr);
+
+        // Borrow-split — we mutate eq_l/eq_r/bp_*/env/cut_db inside the
+        // per-sample loop, so destructure into separate fields up front
+        // to keep the borrow checker happy.
+        let Engine { bp_l, bp_r, eq_l, eq_r, env, cut_db, band_centres, last_q, .. } = self;
+        let q = *last_q;
+
+        for i in 0..n {
+            let xl = read_l[i];
+            let xr = if read_r.len() == n { read_r[i] } else { xl };
+            let mid = (xl + xr) * 0.5;
+
+            let amount = self.smooth_amount.step(p.amount, sr);
+            let sens = self.smooth_sens.step(p.sens, sr);
+            let mix = self.smooth_mix.step(p.mix, sr);
+            let out_db = self.smooth_output.step(p.output_db, sr);
+            let out_lin = 10f32.powf(out_db / 20.0);
+
+            // 1) Bandpass + per-band envelope in dB on the mid signal.
+            // Two passes: first compute envelopes, then baselines + cuts so
+            // a band's neighbours are evaluated against the same snapshot.
+            let mut env_db = [0.0_f32; N_BANDS];
+            for b in 0..N_BANDS {
+                let band_mid = (bp_l[b].process(mid) + bp_r[b].process(mid)) * 0.5;
+                // The EnvelopeDetector does its own coefficient swap; the
+                // precomputed per-band coefs drive the cut smoothing below.
+                let lvl = env[b].process(band_mid.abs(), sr, 1.0, 20.0);
+                env_db[b] = 20.0 * (lvl + 1e-9).log10();
+            }
+
+            // 2) Baselines = mean of dB envelopes in a 5-band local window.
+            // Reflect at edges so the corner bands don't get smeared by zeros.
+            const W: i32 = 2;
+            let mut baseline_db = [0.0_f32; N_BANDS];
+            for b in 0..N_BANDS {
+                let mut sum = 0.0;
+                let mut count = 0;
+                for off in -W..=W {
+                    let j = (b as i32 + off).clamp(0, N_BANDS as i32 - 1) as usize;
+                    if j == b {
+                        continue;
+                    }
+                    sum += env_db[j];
+                    count += 1;
+                }
+                baseline_db[b] = sum / count.max(1) as f32;
+            }
+
+            // 3) Per-band excess → cut. Smoothed through att/rel.
+            for b in 0..N_BANDS {
+                let excess = env_db[b] - baseline_db[b] - sens;
+                let resonance_cut = if excess > 0.0 {
+                    -(excess * p.ratio * (amount / 12.0)).min(amount)
+                } else {
+                    0.0
+                };
+                // The key's duck (already scaled for the cascade) adds to the
+                // resonance cut, through the same attack/release.
+                let target_cut = (resonance_cut + key_cut[b]).max(-48.0);
+                // Faster attack on growing cuts, slower release on recovery.
+                let coef = if target_cut < cut_db[b] {
+                    coef_att
+                } else {
+                    coef_rel
+                };
+                cut_db[b] = target_cut + (cut_db[b] - target_cut) * coef;
+
+                // Update both peak EQs — bands are independent so re-tuning
+                // gain only is cheap (no full RBJ recompute, just b0/b1/b2
+                // scaling internal to set_peaking).
+                let f = band_centres[b];
+                eq_l[b].set_peaking(sr, f, q, cut_db[b]);
+                eq_r[b].set_peaking(sr, f, q, cut_db[b]);
+            }
+
+            // 4) Apply all 24 peaking EQs in cascade on each channel.
+            let mut yl = xl;
+            let mut yr = xr;
+            for b in 0..N_BANDS {
+                yl = eq_l[b].process(yl);
+                yr = eq_r[b].process(yr);
+            }
+
+            let out_l = xl * (1.0 - mix) + yl * mix * out_lin;
+            let out_r = xr * (1.0 - mix) + yr * mix * out_lin;
+            write_l[i] = out_l;
+            if let Some(ref mut w) = write_r {
+                w[i] = out_r;
+            }
+
+            if let Some(sc) = scope {
+                sc.push((out_l + out_r) * 0.5);
+            }
+        }
+    }
 }
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
@@ -273,26 +531,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         slog!("activate sr={}", audio_config.sample_rate);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let sr = audio_config.sample_rate as f32;
-        let mut me = Self {
-            shared,
-            bp_l: [Biquad::default(); N_BANDS],
-            bp_r: [Biquad::default(); N_BANDS],
-            eq_l: [Biquad::default(); N_BANDS],
-            eq_r: [Biquad::default(); N_BANDS],
-            env: [EnvelopeDetector::default(); N_BANDS],
-            cut_db: [0.0; N_BANDS],
-            band_centres: [0.0; N_BANDS],
-            last_lo: 0.0,
-            last_hi: 0.0,
-            last_q: 0.0,
-            smooth_amount: SmoothedParam::new(load(P_AMOUNT)),
-            smooth_sens: SmoothedParam::new(load(P_SENS)),
-            smooth_mix: SmoothedParam::new(load(P_MIX)),
-            smooth_output: SmoothedParam::new(load(P_OUTPUT)),
-            sample_rate: sr,
-        };
-        rebuild_banks(&mut me, load(P_LO), load(P_HI), load(P_Q));
-        Ok(me)
+        let engine = Engine::new(
+            sr, load(P_LO), load(P_HI), load(P_Q),
+            load(P_AMOUNT), load(P_SENS), load(P_MIX), load(P_OUTPUT),
+        );
+        for (i, f) in engine.band_centres().iter().enumerate() {
+            shared.band_freq_hz[i].store(*f, Ordering::Relaxed);
+        }
+        Ok(Self { shared, engine })
     }
 
     fn process(
@@ -305,62 +551,49 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
         // periodic ticks at the buffer rate. RAII restores host CSR.
         let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
+        let shared = self.shared;
+        apply_param_events(shared, events.input);
         superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
+            &shared.params,
+            &shared.dirty_params,
             events.output,
         );
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
+            &shared.gesture_begin,
+            &shared.gesture_end,
             events.output,
         );
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let amount_target = self.shared.params[P_AMOUNT].load(Ordering::Relaxed);
-        let sens_target = self.shared.params[P_SENS].load(Ordering::Relaxed);
-        let lo_target = self.shared.params[P_LO].load(Ordering::Relaxed);
-        let hi_target = self.shared.params[P_HI].load(Ordering::Relaxed);
-        let q_target = self.shared.params[P_Q].load(Ordering::Relaxed);
-        let attack_ms = self.shared.params[P_ATTACK].load(Ordering::Relaxed);
-        let release_ms = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
-        let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let output_target = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
-        let mode = self.shared.params[P_MODE]
-            .load(Ordering::Relaxed)
-            .round() as u32;
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
+        let (lo_target, hi_target, q_target) = (load(P_LO), load(P_HI), load(P_Q));
+        let mode = load(P_MODE).round() as u32;
 
-        // Geometry change → rebuild filter banks. Threshold of 1 Hz on
-        // freqs / 0.05 on Q keeps the audio thread from re-running RBJ
-        // design when the user is just nudging things in real time.
-        if (lo_target - self.last_lo).abs() > 1.0
-            || (hi_target - self.last_hi).abs() > 1.0
-            || (q_target - self.last_q).abs() > 0.05
-        {
-            rebuild_banks(self, lo_target, hi_target, q_target);
+        if self.engine.geometry_moved(lo_target, hi_target, q_target) {
+            self.engine.rebuild_banks(lo_target, hi_target, q_target);
+            for (i, f) in self.engine.band_centres().iter().enumerate() {
+                shared.band_freq_hz[i].store(*f, Ordering::Relaxed);
+            }
         }
 
-        // Mode tweaks the suppression ratio (excess → cut conversion).
-        let ratio = match mode {
-            0 => 0.4, // Soft — gentle, only the hottest peaks pull
-            2 => 1.0, // Hard — 1:1, every dB above baseline = a dB cut
-            _ => 0.7, // Sharp (default) — leans into peaks but stays musical
+        let bp = BlockParams {
+            amount: load(P_AMOUNT),
+            sens: load(P_SENS),
+            mix: load(P_MIX),
+            output_db: load(P_OUTPUT),
+            // Mode tweaks the suppression ratio (excess → cut conversion).
+            ratio: match mode {
+                0 => 0.4, // Soft — gentle, only the hottest peaks pull
+                2 => 1.0, // Hard — 1:1, every dB above baseline = a dB cut
+                _ => 0.7, // Sharp (default) — leans into peaks but stays musical
+            },
+            attack_ms: load(P_ATTACK),
+            release_ms: load(P_RELEASE),
         };
-
-        let sr = self.sample_rate;
-        let coef_att = one_pole_coef(attack_ms, sr);
-        let coef_rel = one_pole_coef(release_ms, sr);
 
         // Bus key, once per block: atomics only (the publisher thread fills
         // them ~20×/s, so finer resolution would buy nothing).
-        let key_depth = self.shared.params[P_KEY_DEPTH].load(Ordering::Relaxed);
-        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
-        let key_cut: [f32; N_BANDS] = if key_depth > 0.0 {
-            std::array::from_fn(|b| key_cut_db(self.shared.scope.key_db_at(self.band_centres[b]), key_depth, key_range))
-        } else {
-            [0.0; N_BANDS]
-        };
+        let key_cut = self.engine.key_cuts(|f| shared.scope.key_db_at(f), load(P_KEY_DEPTH), load(P_KEY_RANGE));
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
@@ -372,54 +605,33 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             let mut chans = channel_pairs.into_iter();
             let Some(ch_l) = chans.next() else { continue };
             let ch_r = chans.next();
-
-            // Buffer envelope per band for one block. We do per-sample
-            // processing so we don't need a buffer; baselines are
-            // computed sample-by-sample below.
-            process_block(
-                self,
-                ch_l,
-                ch_r,
-                bypassed,
-                amount_target,
-                sens_target,
-                mix_target,
-                output_target,
-                ratio,
-                coef_att,
-                coef_rel,
-                &key_cut,
-            );
+            process_port(&mut self.engine, ch_l, ch_r, bypassed, &bp, &key_cut, &shared.scope);
         }
 
         // Publish per-band cut to the GUI once per block (sub-Hz update
         // rate is enough for a meter).
-        for i in 0..N_BANDS {
-            self.shared.band_cut_db[i].store(self.cut_db[i], Ordering::Relaxed);
+        for (i, c) in self.engine.cut_db().iter().enumerate() {
+            shared.band_cut_db[i].store(*c, Ordering::Relaxed);
         }
 
         Ok(ProcessStatus::Continue)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn process_block(
-    p: &mut PluginAudioProcessor<'_>,
+/// One port's block: split the CLAP channel pairs into slices, pass through
+/// when bypassed, else run the engine.
+fn process_port(
+    engine: &mut Engine,
     ch_l: ChannelPair<'_, f32>,
     ch_r: Option<ChannelPair<'_, f32>>,
     bypassed: bool,
-    amount_target: f32,
-    sens_target: f32,
-    mix_target: f32,
-    output_target: f32,
-    ratio: f32,
-    coef_att: f32,
-    coef_rel: f32,
+    p: &BlockParams,
     key_cut: &[f32; N_BANDS],
+    scope: &superduper_synth_core::gui::LiveScope,
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     let Some((read_l, write_l)) = split_io(ch_l) else { return };
-    let (read_r, mut write_r): (&[f32], Option<&mut [f32]>) = if let Some(ch_r) = ch_r {
+    let (read_r, write_r): (&[f32], Option<&mut [f32]>) = if let Some(ch_r) = ch_r {
         let Some((r, w)) = split_io(ch_r) else { return };
         (r, Some(w))
     } else {
@@ -433,107 +645,7 @@ fn process_block(
         }
         return;
     }
-
-    let sr = p.sample_rate;
-    let n = read_l.len();
-
-    // Borrow-split — we mutate p.eq_l/p.eq_r/p.bp_*/p.env/p.cut_db inside
-    // the per-sample loop, so destructure into separate fields up front
-    // to keep the borrow checker happy.
-    let PluginAudioProcessor {
-        bp_l, bp_r, eq_l, eq_r, env, cut_db, ..
-    } = p;
-
-    for i in 0..n {
-        let xl = read_l[i];
-        let xr = if read_r.len() == n { read_r[i] } else { xl };
-        let mid = (xl + xr) * 0.5;
-
-        let amount = p.smooth_amount.step(amount_target, sr);
-        let sens = p.smooth_sens.step(sens_target, sr);
-        let mix = p.smooth_mix.step(mix_target, sr);
-        let out_db = p.smooth_output.step(output_target, sr);
-        let out_lin = 10f32.powf(out_db / 20.0);
-
-        // 1) Bandpass + per-band envelope in dB on the mid signal.
-        // Two passes: first compute envelopes, then baselines + cuts so
-        // a band's neighbours are evaluated against the same snapshot.
-        let mut env_db = [0.0_f32; N_BANDS];
-        for b in 0..N_BANDS {
-            let band_mid = (bp_l[b].process(mid) + bp_r[b].process(mid)) * 0.5;
-            // Coefficient swap inside EnvelopeDetector is asymmetric, but
-            // we already have per-band coefs precomputed — use the slow
-            // path here since the EnvelopeDetector API does both.
-            let lvl = env[b].process(band_mid.abs(), sr, 1.0, 20.0);
-            env_db[b] = 20.0 * (lvl + 1e-9).log10();
-            let _ = (coef_att, coef_rel);
-        }
-
-        // 2) Baselines = mean of dB envelopes in a 5-band local window.
-        // Reflect at edges so the corner bands don't get smeared by zeros.
-        const W: i32 = 2;
-        let mut baseline_db = [0.0_f32; N_BANDS];
-        for b in 0..N_BANDS {
-            let mut sum = 0.0;
-            let mut count = 0;
-            for off in -W..=W {
-                let j = (b as i32 + off).clamp(0, N_BANDS as i32 - 1) as usize;
-                if j == b {
-                    continue;
-                }
-                sum += env_db[j];
-                count += 1;
-            }
-            baseline_db[b] = sum / count.max(1) as f32;
-        }
-
-        // 3) Per-band excess → cut. Smoothed through att/rel.
-        for b in 0..N_BANDS {
-            let excess = env_db[b] - baseline_db[b] - sens;
-            let resonance_cut = if excess > 0.0 {
-                -(excess * ratio * (amount / 12.0)).min(amount)
-            } else {
-                0.0
-            };
-            // The key's duck adds to the resonance cut, through the same
-            // attack/release.
-            let target_cut = (resonance_cut + key_cut[b]).max(-48.0);
-            // Faster attack on growing cuts, slower release on recovery.
-            let coef = if target_cut < cut_db[b] {
-                coef_att
-            } else {
-                coef_rel
-            };
-            cut_db[b] = target_cut + (cut_db[b] - target_cut) * coef;
-
-            // Update both peak EQs — bands are independent so re-tuning
-            // gain only is cheap (no full RBJ recompute, just b0/b1/b2
-            // scaling internal to set_peaking).
-            let f = p.band_centres[b];
-            let q = p.last_q;
-            eq_l[b].set_peaking(sr, f, q, cut_db[b]);
-            eq_r[b].set_peaking(sr, f, q, cut_db[b]);
-        }
-
-        // 4) Apply all 24 peaking EQs in cascade on each channel.
-        let mut yl = xl;
-        let mut yr = xr;
-        for b in 0..N_BANDS {
-            yl = eq_l[b].process(yl);
-            yr = eq_r[b].process(yr);
-        }
-
-        let out_l = xl * (1.0 - mix) + yl * mix * out_lin;
-        let out_r = xr * (1.0 - mix) + yr * mix * out_lin;
-        write_l[i] = out_l;
-        if let Some(ref mut w) = write_r {
-            // Stored above as Option<&mut [f32]>; manual indexed write
-            // because the iterator captured it once. SAFETY ok: same len.
-            w[i] = out_r;
-        }
-
-        p.shared.scope.push((out_l + out_r) * 0.5);
-    }
+    engine.process_block(read_l, read_r, write_l, write_r, p, key_cut, Some(scope));
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +670,14 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 {
         PARAMS.len() as u32
@@ -572,16 +692,11 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             .get(i)
             .map(|a| a.load(Ordering::Relaxed) as f64)
     }
-    fn value_to_text(
-        &mut self,
-        id: ClapId,
-        v: f64,
-        w: &mut ParamDisplayWriter,
-    ) -> core::fmt::Result {
-        ParamDef::write_display(PARAMS, id, v, w)
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

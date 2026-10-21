@@ -433,6 +433,14 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, param_id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
+        ParamDef::write_display(PARAMS, param_id, value, writer)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
 
@@ -446,11 +454,11 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
 
     fn value_to_text(&mut self, param_id: ClapId, value: f64, writer: &mut ParamDisplayWriter) -> core::fmt::Result {
-        ParamDef::write_display(PARAMS, param_id, value, writer)
+        self.display_text(param_id, value, writer)
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, param_id, text)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, param_id, text, |v, s| self.display_text(param_id, v, s))
     }
 
     fn flush(&mut self, input_events: &InputEvents, _output_events: &mut OutputEvents) {

@@ -283,6 +283,8 @@ impl Default for Voice {
 // ---------------------------------------------------------------------------
 
 pub struct PluginMainThread<'a> {
+    /// To wake the main thread for a Preset recall requested from flush().
+    host_shared: clack_plugin::host::HostSharedHandle<'a>,
     track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     gui_handle: Option<baseview::WindowHandle>,
@@ -947,6 +949,25 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
     }
 }
 
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
+        let pid = id.get() as usize;
+        // Preset selector: show the preset name instead of "0.00".
+        if pid == P_PRESET {
+            if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
+                |i| PRESETS.get(i).map(|p| p.name),
+                v,
+                w,
+            ) {
+                return r;
+            }
+        }
+        ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 {
         PARAMS.len() as u32
@@ -961,24 +982,8 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             .get(i)
             .map(|a| a.load(Ordering::Relaxed) as f64)
     }
-    fn value_to_text(
-        &mut self,
-        id: ClapId,
-        v: f64,
-        w: &mut ParamDisplayWriter,
-    ) -> core::fmt::Result {
-        let pid = id.get() as usize;
-        // Preset selector: show the preset name instead of "0.00".
-        if pid == P_PRESET {
-            if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
-                |i| PRESETS.get(i).map(|p| p.name),
-                v,
-                w,
-            ) {
-                return r;
-            }
-        }
-        ParamDef::write_display(PARAMS, id, v, w)
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
         // Let "Choir" / "Glass" etc. resolve to the preset index too.
@@ -991,17 +996,22 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 return Some(v);
             }
         }
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
-        // Preset selector recall — main thread, so apply_preset is legal here.
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
+        // Preset selector: ask for the main-thread callback exactly as
+        // process() does, instead of recalling here. A recall inside flush()
+        // made the values a host reads back depend on which path set them
+        // (clap-validator state-reproducibility-flush, 2026-10-21).
+        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
             self.shared.params[P_PRESET].load(Ordering::Relaxed),
             &self.shared.active_preset,
             PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
+        )
+        .is_some()
+        {
+            self.host_shared.request_callback();
         }
     }
 }
@@ -1152,8 +1162,10 @@ impl DefaultPluginFactory for SuperDuperPad {
         host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        let host_shared = host.shared();
         let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
+            host_shared,
             track_watch,
             shared,
             gui_handle: None,

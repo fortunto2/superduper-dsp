@@ -302,7 +302,9 @@ impl LiveScope {
         let (i, f) = (pos.floor() as usize, pos.fract());
         let a = self.key_bands[i].load(Ordering::Relaxed);
         let b = self.key_bands[(i + 1).min(BANDS - 1)].load(Ordering::Relaxed);
-        a + (b - a) * f
+        let v = a + (b - a) * f;
+        // Whatever reached the bus, the audio thread gets a finite level.
+        if v.is_finite() { v } else { -120.0 }
     }
 
     pub fn set_sample_rate(&self, sr: f32) { self.sample_rate.store(sr, Ordering::Relaxed); }

@@ -37,6 +37,16 @@ the excess up to Amount.
 | Mix | 0..1 | 1 | Wet/dry blend |
 | Output | -24..+24 dB | 0 | Post-stage gain |
 | Mode | Soft / Sharp / Hard | Sharp | Suppression ratio (0.4 / 0.7 / 1.0) |
+| Key Depth | 0..24 dB | 0 | Bus key (Trackspacer): each band is cut by up to this as the key track gets loud in it. 0 = off |
+| Key Range | 6..40 dB | 24 | How far above −50 dB the key must be in a band for the full depth |
+
+Key Depth measures Key Depth: the 24 peaking cuts cascade 0.245 octave
+apart and their skirts overlap, so a 12 dB key cut on every band used to
+measure −25.7 dB at the band centres at Q 5 (−55 dB at Q 2). The cascade's
+response is computed when the banks are rebuilt and the key cut is scaled
+per band, so a broadband key at full depth now reads 12 ± 1 dB at every
+centre at any Q (the resonance path is untouched: only one or two bands
+exceed their baseline at once).
 
 ## Modes
 

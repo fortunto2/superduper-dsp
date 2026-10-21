@@ -32,7 +32,7 @@ pub fn span_level_db(bands: &[f32; BANDS], lo: f32, hi: f32) -> f32 {
     let p: f32 = (0..BANDS)
         .filter(|&b| (lo..=hi).contains(&band_centre(b)))
         // −120 is the bus's "nothing": count it as no power at all.
-        .map(|b| if bands[b] <= -119.0 { 0.0 } else { 10f32.powf(bands[b] / 10.0) })
+        .map(|b| if !(bands[b] > -119.0) { 0.0 } else { 10f32.powf(bands[b].min(40.0) / 10.0) })
         .sum();
     (10.0 * p.max(1e-12).log10()).max(-120.0)
 }
@@ -46,6 +46,8 @@ pub fn key_level_db(scope: &LiveScope) -> f32 {
 
 /// 0 below the floor, 1 once the key is `range` dB above it, linear between.
 pub fn key_factor(key_db: f32, range: f32) -> f32 {
+    // A NaN key (a NaN on the bus) must read as "no key", never reach a gain.
+    if !key_db.is_finite() || !range.is_finite() { return 0.0; }
     ((key_db - KEY_FLOOR_DB) / range.max(1.0)).clamp(0.0, 1.0)
 }
 
@@ -53,7 +55,7 @@ pub fn key_factor(key_db: f32, range: f32) -> f32 {
 /// at factor 0 or depth 0, so an unkeyed plugin is bit-identical to before.
 #[inline]
 pub fn duck_gain(f: f32, duck_db: f32) -> f32 {
-    if f <= 0.0 || duck_db <= 0.0 { 1.0 } else { 10f32.powf(-duck_db * f / 20.0) }
+    if !(f > 0.0) || !(duck_db > 0.0) { 1.0 } else { 10f32.powf(-duck_db.min(120.0) * f.min(1.0) / 20.0) }
 }
 
 /// One-pole coefficient for a time constant in ms.

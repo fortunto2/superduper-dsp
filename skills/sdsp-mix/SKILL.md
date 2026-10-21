@@ -43,7 +43,11 @@ seen while the song plays, without bouncing stems.
 - every track to judge has at least one SuperDuper plugin (any — a flat EQ or
   Spectrum at the end of the chain will do; the bus reads where it sits);
 - **all mutes off** and a section where everything plays (the chorus) —
-  a muted or silent part hides every clash it causes.
+  a muted or silent part hides every clash it causes;
+- **before trusting a zero from the bus, run `sdsp-bus controls`** (15 known-answer
+  scenes on a temp bus: planted clash found, nothing found where nothing is,
+  returns never paired, a partial `fader_db` never moves the wrong track). A
+  meter you have not seen go red is not a meter.
 
 ```bash
 ~/.cargo-target/release/sdsp-bus                      # table: track, plugin, level, spectrum strip
@@ -133,7 +137,7 @@ exact names; everything below is off by default):
 | one band of a part needs taming only while the key plays | EQ `Dyn Source`=Key, `Dyn Gain` (−dB) at Mid Freq, key = the lead; `Self` = classic dynamic EQ |
 | level jumps; transparent program control | Compressor `Detector`=Dual (RMS stage + peak stage above `Peak Crest`), `Release RMS`/`Release Peak`; read GR: `plugin_get(…, "Compressor", "meter")` |
 | slow ducking from another track, no routing | Compressor `Key` 0..1 with `Key Lo`/`Key Hi`; for kick pumping use the side-chain input instead |
-| one region too dynamic (mud, harshness, boom) | Multiband: 2–4 bands, transparent when idle (bit-exact), per-band `B<n> Key` (%); presets De-Mud Low-Mid, Vocal De-Harsh, Bass Control, Mastering Glue |
+| one region too dynamic (mud, harshness, boom) | Multiband: 2–4 bands, transparent when idle (bit-exact), per-band `B<n> Key` (%); presets De-Mud Low-Mid, Vocal De-Harsh, Bass Control, Mastering Glue. Crossovers at least ½ octave apart (the sanitiser enforces it: closer than that the shelf solver misses its targets by up to 12 dB, measured on 2000 random settings) |
 | reverb/delay wash over the vocal | Reverb/Delay `Key Duck` (dB) + `Key Range`, key = the vocal |
 | pad/synth in the vocal's way | Filter `Key Mod` (octaves, negative closes) while the key plays |
 | vocal level vs the music | Vocal `Rider`, `Rider Target` (dB over the key), `Rider Max`; key = the instrumental bus, not the master |
@@ -535,6 +539,15 @@ mixcheck numbers to compare per question. Audio stays local
 (`~/Music/references/<genre>/`, lossless, never committed); compare the same
 section, gain-matched: `mixcheck.py mix.wav --start A --end B --ref ref.wav
 --ref-start C --ref-end D`; `--json` writes a section's profile.
+
+**Keeping a change honestly**: `references/verify.md` — `tools/mixverify.py
+before.toml after.toml --question masking` keeps a move only when the live bus
+and the offline render agree on it; one instrument is a reason to look, never
+to keep. **Searching for the numbers**: `references/optimize.md` —
+`tools/mixopt.py base.toml --vary "gtr.eq.Mid Gain:-12:0" --loss
+"ref:ref.wav,masking"` runs a bounded Nelder–Mead over a whitelist of chain
+params (0.14 s per evaluation, every step logged); the EQ step after register
+and timing are settled, never taste.
 
 The ten that matter most (MS ch):
 1. Balance is the goal; process a track only when its fader will not settle (8, 15).

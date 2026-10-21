@@ -153,12 +153,19 @@ impl SharedParamsInner {
 
     pub fn save_state_json(&self) -> String {
         let captured = self.captured.load();
+        // The model the audio thread would be using: the factory table for
+        // the current Target unless the store already reflects it (a custom
+        // model from the mailbox, or a restored project). Saving the store as
+        // is made two instances with the same parameters save different
+        // state when only one had processed (clap-validator, 2026-10-21).
+        let target = self.params[P_TARGET].load(Ordering::Relaxed).round().clamp(0.0, (KUBYZ_COUNT - 1) as f32) as u32;
+        let model = if self.model.from_target.load(Ordering::Relaxed) == target { self.model.load() } else { targets::kubyz_model(target as usize) };
         let st = targets::MorphState {
             version: targets::STATE_VERSION,
             params: self.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
             bypass: self.bypass.load(Ordering::Relaxed),
             active_preset: self.active_preset.load(Ordering::Relaxed),
-            model: targets::ModelJson::from_model(&self.model.load()),
+            model: targets::ModelJson::from_model(&model),
             captured: captured.env_valid.then(|| targets::ProfileJson::from_profile(&captured)),
         };
         serde_json::to_string(&st).unwrap_or_default()
@@ -417,17 +424,10 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
     }
 }
 
-impl PluginMainThreadParams for PluginMainThread<'_> {
-    fn count(&mut self) -> u32 {
-        PARAMS.len() as u32
-    }
-    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
-    }
-    fn get_value(&mut self, id: ClapId) -> Option<f64> {
-        self.shared.params.get(id.get() as usize).map(|a| a.load(Ordering::Relaxed) as f64)
-    }
-    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
         use core::fmt::Write;
         let names: Option<&[&str]> = match id.get() as usize {
             P_SOURCE => Some(&SOURCE_NAMES),
@@ -440,8 +440,23 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             None => ParamDef::write_display(PARAMS, id, v, w),
         }
     }
+}
+
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 {
+        PARAMS.len() as u32
+    }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
+    }
+    fn get_value(&mut self, id: ClapId) -> Option<f64> {
+        self.shared.params.get(id.get() as usize).map(|a| a.load(Ordering::Relaxed) as f64)
+    }
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, v, w)
+    }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);

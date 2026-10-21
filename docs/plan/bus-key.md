@@ -59,4 +59,44 @@ the real side-chain input stays for that.
       "Kubyz Drone C"). Add a target f0 hint / use the bus key's pitch, or a subharmonic check in
       the YIN pass for strongly formant-ed sources
 
+- [x] clap-validator (tools/validate_claps.py, `make validate`, pre-commit via `make hooks`), first run 2026-10-21:
+      - [x] param-conversions in 21 plugins — fixed 2026-10-21 without per-plugin tables: every
+        plugin's display moved into one `display_text<W: fmt::Write>` and `text_to_value` falls
+        back to `ParamDef::text_to_value_by_display` (scan the integer steps of a ≤512-step param
+        through the display; wider ranges try the number in the text and both ends, "random #731"),
+        so the entry accepts exactly what the display shows. Drum 'Key': "Auto (…)" is checked
+        before the key-name parser. 28 plugins converted; the 6 the DSP agent owns follow
+      - [ ] Pad, Wind: a *parameter* ("Preset") that recalls every other parameter makes
+        `flush()` and `process()` report different values: the validator runs `on_main_thread()`
+        right after flush and not after process, so no plugin-side ordering passes it (tried
+        2026-10-21: flush now requests the callback like process does — one recall path, same
+        verdict). Listed as `known` in tools/validate_claps.py. The fix is the selector as a
+        mailbox doc (`preset`), the param a label; Wave/Drum/Kubyz/Sampler share the pattern
+        and pass only because their random draw lands on the active preset
+      - [x] Morph: the saved `model` was the store as is, so an instance that had processed
+        (factory table loaded for its Target) saved differently from one that had not; the
+        state now saves the model the audio thread would use for the current Target
+      - scan-time warnings 0.3–2 s (Vocoder 2 s, Wind 0.8 s): find what runs at entry init
+- [x] effect::stereo_block (events, dirty/gesture, bypass that feeds the scope) — EQ migrated;
+      the other 30 plugins one batch at a time, each batch with its quality snapshots unchanged
+- [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,
+      RBJ shelf with slope > 1 gives NaN coefficients; both guarded
+- [x] bus meter controls (`sdsp-bus controls`, tools/sdsp-bus/src/controls.rs, 15 known-answer
+      scenes; tests/controls.rs pins them). Fixed what they found: a partial `fader_db`/`prefer`
+      leaked by containment ("Gtr" moved "Gtr DI"); `by_db` averaged silent frames (+3 dB on a
+      half-time clash); `levels` carried buses; `tracks` was the last frame only; equal-level
+      clashes now say `louder: ""`
+- [x] mixopt (tools/mixopt.py, references/optimize.md): bounded Nelder–Mead over a whitelist of
+      chain params against ref band shape / LUFS / masking / stem level, 0.14 s per evaluation
+- [ ] Morph f0 (done by agent: autocorrelation voicing, −18 dB/oct profile roll-off, Breath only
+      inside the comb, warm-up gate) — re-measure on the Kubyz Drone side-chain in the demo project
+- [x] DSP review fixes (agent, 2026-10-21): Soothe key cut is a host-free `Engine` with the 24-band
+      leak matrix solved exactly (Key Depth 12 reads −12.1…−12.6 at every Q; was −25.7 at Q 5);
+      Multiband band-count change resets the old top band (−15.7 dB first block → 0), NaN/−120 key
+      → no gain, damped Newton + continuation and a ½-octave minimum crossover (251 → 20 misses >1 dB
+      on 2000 random targets, 0 at ½ oct); Compressor Dual peak stage runs in parallel on the raw
+      peak, gr = min(rms, peak), Classic↔Dual seeds/clears the RMS state; Double Key Open with no
+      key on the bus = gain 1.0 (was −151 dBFS); Saturator Inflate input gain = Drive − 6 dB (0
+      flat-topped samples on a −3 dBFS tone, was 9351)
+
 ## Done

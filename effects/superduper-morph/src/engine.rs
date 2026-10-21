@@ -3,8 +3,9 @@
 //! layer in `lib.rs` only moves buffers and params.
 //!
 //! Per hop (N = 2048, hop = 512 → 10.7 ms at 48 kHz):
-//! 1. The sidechain's STFT frame is analysed (its own YIN f0 → harmonic
-//!    levels by number, envelope, noise) and folded into the live profile.
+//! 1. The sidechain's STFT frame is analysed (its own YIN f0, refined and
+//!    voiced on the analyser's 60 ms time-domain ring → harmonic levels by
+//!    number, envelope, noise) and folded into the live profile.
 //! 2. The main mid signal is analysed the same way.
 //! 3. The target for this frame is built from the selected source.
 //! 4. `timbre::morph_gains` gives one gain per bin; it is smoothed over
@@ -35,6 +36,13 @@ const DRY_XFADE: f32 = 0.05;
 const GAIN_SMOOTH: f32 = 0.35;
 /// Per-hop smoothing of the sidechain's live profile. ~50 ms.
 const PROFILE_SMOOTH: f32 = 0.6;
+/// Frames the STFT fires before its analysis window has filled (N/hop − 1):
+/// 512·k samples of signal and the rest zeros. Any gain curve on that
+/// truncation turns the frame's conserved power into a click (measured on
+/// the quality tone: 0.85 peak from a 0.5 sine, 3.0 once a partial sine
+/// frame was correctly called voiced), so they pass at 0 dB and the
+/// sidechain profile does not fold them in.
+const WARM_HOPS: u32 = (N / HOP - 1) as u32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -104,6 +112,8 @@ pub struct MorphEngine {
     out_s: f32,
     coef: f32,
     fpb: f32,
+    /// Hops seen so far, saturating at `WARM_HOPS`.
+    warm: u32,
 }
 
 impl MorphEngine {
@@ -134,6 +144,7 @@ impl MorphEngine {
             out_s: -100.0,
             coef: (-1.0 / (0.01 * sr.max(1.0))).exp(),
             fpb,
+            warm: 0,
         }
     }
 
@@ -174,18 +185,22 @@ impl MorphEngine {
         let scm = 0.5 * (sc_l + sc_r);
         self.yin.push(mid);
         self.yin_sc.push(scm);
+        self.an.push(mid);
+        self.an_sc.push(scm);
         let morph = self.morph_s;
 
         let MorphEngine {
             stft, yin, yin_sc, an, an_sc, frame, frame_sc, sc_live, captured, model, target,
-            gains, gain_db, gain_lin, mode, fpb, ..
+            gains, gain_db, gain_lin, mode, fpb, warm, ..
         } = self;
         let [st_l, st_r, st_sc] = stft;
 
         // 1. Sidechain analysis (its synthesis output is discarded).
         st_sc.process_sample(&[scm], |ana, syn| {
             an_sc.analyze(ana[0], yin_sc.current_hz(), frame_sc);
-            sc_live.update(frame_sc, PROFILE_SMOOTH);
+            if *warm >= WARM_HOPS {
+                sc_live.update(frame_sc, PROFILE_SMOOTH);
+            }
             syn.iter_mut().for_each(|c| *c = Default::default());
         });
 
@@ -204,7 +219,13 @@ impl MorphEngine {
                 tilt_db_oct: s.tilt_db_oct,
                 harmonic: s.harmonic,
             };
-            *mode = morph_gains(frame, an.power(), *fpb, target, &ms, gains, gain_db);
+            *mode = if *warm < WARM_HOPS {
+                *warm += 1;
+                gain_db.fill(0.0);
+                FrameMode::Pass
+            } else {
+                morph_gains(frame, an.power(), *fpb, target, &ms, gains, gain_db)
+            };
             for (b, c) in syn.iter_mut().enumerate() {
                 let g = 10f32.powf(gain_db[b] * 0.05);
                 let gl = &mut gain_lin[b];

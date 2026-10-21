@@ -581,13 +581,10 @@ impl PluginNotePortsImpl for PluginMainThread<'_> {
     }
 }
 
-impl PluginMainThreadParams for PluginMainThread<'_> {
-    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
-    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) { ParamDef::write_info(PARAMS, idx, info); }
-    fn get_value(&mut self, id: ClapId) -> Option<f64> {
-        self.shared.params.get(id.get() as usize).map(|a| a.load(Ordering::Relaxed) as f64)
-    }
-    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+impl PluginMainThread<'_> {
+    /// What a parameter value reads as — the one place for it, so the host's
+    /// text entry (`text_to_value`) accepts exactly what the display shows.
+    fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
         use core::fmt::Write;
         match id.get() as usize {
             P_INSTRUMENT => {
@@ -599,6 +596,17 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
             _ => {}
         }
         ParamDef::write_display(PARAMS, id, v, w)
+    }
+}
+
+impl PluginMainThreadParams for PluginMainThread<'_> {
+    fn count(&mut self) -> u32 { PARAMS.len() as u32 }
+    fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) { ParamDef::write_info(PARAMS, idx, info); }
+    fn get_value(&mut self, id: ClapId) -> Option<f64> {
+        self.shared.params.get(id.get() as usize).map(|a| a.load(Ordering::Relaxed) as f64)
+    }
+    fn value_to_text(&mut self, id: ClapId, v: f64, w: &mut ParamDisplayWriter) -> core::fmt::Result {
+        self.display_text(id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
         // Accept a pack or instrument name for Instrument ("salamander").
@@ -613,7 +621,7 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
                 }
             }
         }
-        ParamDef::parse_text(PARAMS, id, t)
+        superduper_dsp_sdk::clap_helpers::ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))
     }
     fn flush(&mut self, ev: &InputEvents, _: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);

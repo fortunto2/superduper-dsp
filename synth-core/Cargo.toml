@@ -38,6 +38,7 @@ sfz-load = ["dep:symphonia"]
 gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lot", "dep:clack-plugin", "dep:clack-extensions"]
 
 [dev-dependencies]
+proptest = "1"
 # Test fixtures only. Cargo allows the cycle (test-kit depends on this crate)
 # for dev-dependencies, and it keeps the reference signals out of the shipping
 # library, which cross-compiles to iOS.

@@ -607,7 +607,16 @@ plugin window (`[ ] mix` strip, `mix_view`) and full size in Spectrum.
 **MCP-first is the rule** (`skills/superduper-plugin` §1b): a feature an agent
 cannot reach over the bus does not exist; the same change updates
 `skills/sdsp-mix` ("Which plugin for what") and the chain registries.
-`tools/plugin_smoke.py` renders every effect headless as the CLI gate.
+`tools/plugin_smoke.py` renders every effect headless as the CLI gate;
+`make validate` runs the official `clap-validator` over `dist/` (and `make
+hooks` installs it as the pre-commit for touched plugin crates — a bundle
+older than its sources is UNCHECKED, never a pass); `cargo test -p
+superduper-synth-core --test invariants` are the proptest invariants of the
+shared DSP blocks (any input: finite, bounded, odd where promised);
+`sdsp-bus controls` plants 15 known spectra on a temp bus and checks what
+`mix_masking` / `mix_phase` say of them — run it before reading a zero from
+the live bus. Parameter text: one `display_text<W>` per plugin and
+`ParamDef::text_to_value_by_display` for the entry, never a second names table.
 
 ## Headless CLI tools (no REAPER required)
 
@@ -671,6 +680,14 @@ cannot reach over the bus does not exist; the same change updates
   `--start/--end` + `--ref-start/--ref-end` compare chorus with chorus,
   `--json` writes a section's profile. Known answers in `tools/test_mixcheck.py`.
   See the `sdsp-mix` skill for how to act on the numbers.
+- **`tools/mixverify.py`** — a change stays only if two instruments agree:
+  `before.toml after.toml --question masking` reads the offline render
+  (sdsp-chain → mixcheck.profile) and the live bus log and keeps the move only
+  when both go the same way (skills/sdsp-mix/references/verify.md).
+- **`tools/mixopt.py`** — bounded Nelder–Mead over a whitelist of chain
+  params against a measured loss (ref band shape, LUFS, masking, stem level),
+  0.14 s per evaluation, every step in `<out>.jsonl`, `--resume`
+  (references/optimize.md). The EQ step after register and timing, never taste.
 - **`tools/wave-inspect`** — diagnostic CLI for Wave's WAV-to-wavetable
   pipeline. Pitch detection, single + multi-frame extraction,
   spectrum diff per transform, asserts on invariants. Default input

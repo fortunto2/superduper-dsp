@@ -34,6 +34,8 @@ pub const MAX_XOVERS: usize = MAX_BANDS - 1;
 /// Upward expansion (ratio < 1) with Range off would grow without limit.
 const UPWARD_CAP_DB: f32 = 12.0;
 const KEY_SILENT_DB: f32 = -119.0;
+/// A key level above this is a bus fault, not a signal.
+const KEY_MAX_DB: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BandSettings {
@@ -75,16 +77,25 @@ impl Default for Settings {
     }
 }
 
+/// Smallest ratio between neighbouring crossovers: half an octave. The GUI
+/// drag limits and `Settings::sanitized` both use it. It was ⅓ octave until
+/// 2026-10-21; measured with `SolverProbe` over 2000 random band gains held
+/// for 8 samples, the 8th-order shelves could not deliver a fifth of the
+/// ordinary 0..−12 dB combinations at ⅓ octave × 4 bands (395 of 2000 more
+/// than 1 dB off with a shelf pinned at its ±72 dB limit) and 822 of the
+/// −24..+6 dB ones at 3 bands. At ½ octave both read 0 of 2000.
+pub const MIN_XOVER_RATIO: f32 = core::f32::consts::SQRT_2;
+
 impl Settings {
-    /// Bands clamped to 2..=4, crossovers kept ascending with ≥ ⅓ octave
-    /// between them and inside 20 Hz .. 0.45·sr.
+    /// Bands clamped to 2..=4, crossovers kept ascending with
+    /// ≥ `MIN_XOVER_RATIO` (½ octave) between them and inside 20 Hz .. 0.45·sr.
     pub fn sanitized(mut self, sr: f32) -> Self {
         self.bands = self.bands.clamp(2, MAX_BANDS);
         let top = (sr * 0.45).min(20_000.0);
         let mut lo = 20.0f32;
         for c in self.xover_hz.iter_mut() {
             *c = c.clamp(lo, top);
-            lo = (*c * 1.26).min(top);
+            lo = (*c * MIN_XOVER_RATIO).min(top);
         }
         self
     }
@@ -122,6 +133,19 @@ pub fn static_gain_db(x_db: f32, threshold_db: f32, ratio: f32, knee_db: f32, ra
 pub fn band_key_db(scope: &superduper_synth_core::gui::LiveScope, lo: f32, hi: f32) -> f32 {
     let (l, h) = (lo.max(20.0).ln(), hi.max(lo + 1.0).ln());
     (0..9).map(|i| scope.key_db_at((l + (h - l) * i as f32 / 8.0).exp())).fold(-120.0f32, f32::max)
+}
+
+/// The bus key's level over every band, read over the crossovers the engine
+/// really uses (sanitised: ascending, ≥ ½ octave apart, inside 20 Hz..0.45·sr),
+/// not the raw params — a crossover dragged below its neighbour would
+/// otherwise key a band on a range it never processes. Atomics only, once
+/// per block.
+pub fn key_levels(scope: &superduper_synth_core::gui::LiveScope, s: &Settings, sr: f32) -> [f32; MAX_BANDS] {
+    let s = s.sanitized(sr);
+    std::array::from_fn(|b| {
+        let (lo, hi) = band_range(s.bands, &s.xover_hz, b);
+        band_key_db(scope, lo, hi)
+    })
 }
 
 /// Where band `b`'s gain is defined and measured: the log centre of an inner
@@ -205,6 +229,12 @@ const SHELF_LIMIT_DB: f64 = 72.0;
 const SHELF_SNAP_DB: f64 = 0.005;
 /// Band gains closer than this to the last solved ones reuse that solution.
 const SOLVE_REUSE_DB: f64 = 1e-3;
+/// Newton iterations per sample. A solve still further off than
+/// `SOLVE_TOL_DB` after them carries on from where it stopped on the next
+/// sample (the gains usually hold after a jump), until it lands or a whole
+/// pass stops improving — an unreachable request then costs nothing more.
+const SOLVE_ITERS: usize = 16;
+const SOLVE_TOL_DB: f64 = 0.25;
 /// Applied-vs-requested differences below this are not reported to the meter.
 const METER_ERR_DB: f64 = 0.05;
 /// An inner band can be pushed away from its neighbours by at most about
@@ -288,7 +318,15 @@ impl ShelfState {
 /// the broadband top gain whose summed dB response hits every band's gain at
 /// its reference point (`band_ref_hz`): Newton on the exact closed-form shelf
 /// response, warm-started from the previous sample, so it is one or two
-/// iterations while the gains move and none while they hold.
+/// iterations while the gains move and none while they hold. Each step is
+/// damped (halved while it makes the fit worse), and a jump (a transient)
+/// that needs more than one sample's worth of iterations carries on while
+/// the gains hold, see `SOLVE_ITERS`. Before 2026-10-21 four undamped
+/// iterations were the lot and a held target reused them as they were: at
+/// ⅓ octave × 4 bands, 0..−12 dB band gains, 251 of 2000 random held targets
+/// were more than 1 dB off with no shelf at its limit (the worst by 11.8 dB);
+/// with damping and continuation that reads 0. What is left over is what
+/// the shelves cannot reach at all, see `MIN_XOVER_RATIO`.
 #[derive(Clone, Copy)]
 struct GainSolver {
     /// Band count the influence table was built for; 0 = stale.
@@ -303,11 +341,18 @@ struct GainSolver {
     target: [f64; MAX_BANDS],
     applied: [f64; MAX_BANDS],
     fresh: bool,
+    /// Largest |target − applied| of the last solve, and whether a whole
+    /// pass of iterations on these targets stopped improving it.
+    err: f64,
+    stuck: bool,
 }
 
 impl GainSolver {
     fn new() -> Self {
-        Self { nb: 0, u: [[0.0; MAX_XOVERS]; MAX_BANDS], reach: [0.0; MAX_BANDS], x: [0.0; MAX_BANDS], target: [0.0; MAX_BANDS], applied: [0.0; MAX_BANDS], fresh: false }
+        Self {
+            nb: 0, u: [[0.0; MAX_XOVERS]; MAX_BANDS], reach: [0.0; MAX_BANDS], x: [0.0; MAX_BANDS],
+            target: [0.0; MAX_BANDS], applied: [0.0; MAX_BANDS], fresh: false, err: 0.0, stuck: false,
+        }
     }
 
     fn refresh(&mut self, sr: f32, xover: &[f32; MAX_XOVERS], nb: usize) {
@@ -344,6 +389,64 @@ impl GainSolver {
         }
     }
 
+    /// Largest |target − response| over the bands for unknowns `x`.
+    fn max_err(&self, x: &[f64; MAX_BANDS], t: &[f64; MAX_BANDS]) -> f64 {
+        let nb = self.nb;
+        let a: [f64; MAX_XOVERS] = std::array::from_fn(|c| if c + 1 < nb { 10f64.powf(x[c] / 20.0) } else { 1.0 });
+        let mut worst = 0.0f64;
+        for k in 0..nb {
+            let mut s = x[nb - 1];
+            for c in 0..nb - 1 {
+                let (ac, u) = (a[c], self.u[k][c]);
+                s += 10.0 * ((ac + u) / (1.0 / ac + u)).log10();
+            }
+            worst = worst.max((t[k] - s).abs());
+        }
+        worst
+    }
+
+    /// Up to `SOLVE_ITERS` damped Newton iterations on targets `t` from
+    /// unknowns `start`. Returns the best iterate seen (unknowns, response,
+    /// largest |error|): a step that made things worse is undone.
+    fn newton_pass(&mut self, t: &[f64; MAX_BANDS], start: [f64; MAX_BANDS]) -> ([f64; MAX_BANDS], [f64; MAX_BANDS], f64) {
+        let nb = self.nb;
+        self.x = start;
+        let mut act = [0.0; MAX_BANDS];
+        let mut jac = [[0.0; MAX_BANDS]; MAX_BANDS];
+        let (mut best_x, mut best_act, mut best_err) = (self.x, act, f64::INFINITY);
+        for it in 0..SOLVE_ITERS {
+            self.eval(&mut act, &mut jac);
+            let mut r: [f64; MAX_BANDS] = std::array::from_fn(|k| if k < nb { t[k] - act[k] } else { 0.0 });
+            let err = r[..nb].iter().fold(0.0f64, |m, e| m.max(e.abs()));
+            if err < best_err { (best_x, best_act, best_err) = (self.x, act, err); }
+            if it + 1 == SOLVE_ITERS || err < SOLVE_REUSE_DB { break; }
+            if !lin_solve(&mut jac, &mut r, nb) { break; }
+            self.step(&r, t, err);
+        }
+        (best_x, best_act, best_err)
+    }
+
+    /// One damped Newton step along `d`: the full step when it improves
+    /// the fit, else halved up to three times (far from the solution the
+    /// shelves' log response is not what the Jacobian says and a full step
+    /// overshoots into a worse place, which is where the undamped solver
+    /// went round in circles).
+    fn step(&mut self, d: &[f64; MAX_BANDS], t: &[f64; MAX_BANDS], err: f64) {
+        let nb = self.nb;
+        let base = self.x;
+        let mut scale = 1.0;
+        for attempt in 0..4 {
+            let mut x = base;
+            for i in 0..nb { x[i] += (d[i] * scale).clamp(-24.0, 24.0); }
+            for v in x[..nb - 1].iter_mut() { *v = v.clamp(-SHELF_LIMIT_DB, SHELF_LIMIT_DB); }
+            if attempt == 3 || self.max_err(&x, t) < err {
+                self.x = x;
+                return;
+            }
+            scale *= 0.5;
+        }
+    }
+
     /// Shelf gains (0 = shelf off) and top gain for these band gains.
     fn solve(&mut self, band_db: &[f32; MAX_BANDS]) -> ([f64; MAX_XOVERS], f64) {
         let nb = self.nb;
@@ -359,36 +462,65 @@ impl GainSolver {
             self.target = t;
             self.applied = t;
             self.fresh = true;
+            self.err = 0.0;
+            self.stuck = false;
             return ([0.0; MAX_XOVERS], t[0]);
         }
-        let near = (0..nb).all(|b| (t[b] - self.target[b]).abs() <= SOLVE_REUSE_DB);
-        if !(self.fresh && near) {
-            let mut act = [0.0; MAX_BANDS];
-            let mut jac = [[0.0; MAX_BANDS]; MAX_BANDS];
-            // Keep the best iterate: a step that made things worse is undone.
-            let (mut best_x, mut best_act, mut best_err) = (self.x, act, f64::INFINITY);
-            for it in 0..4 {
-                self.eval(&mut act, &mut jac);
-                let mut r: [f64; MAX_BANDS] = std::array::from_fn(|k| if k < nb { t[k] - act[k] } else { 0.0 });
-                let err = r[..nb].iter().fold(0.0f64, |m, e| m.max(e.abs()));
-                if err < best_err { (best_x, best_act, best_err) = (self.x, act, err); }
-                if it == 3 || err < SOLVE_REUSE_DB { break; }
-                if !lin_solve(&mut jac, &mut r, nb) { break; }
-                for (i, d) in r[..nb].iter().enumerate() {
-                    self.x[i] += d.clamp(-24.0, 24.0);
-                }
-                for v in self.x[..nb - 1].iter_mut() { *v = v.clamp(-SHELF_LIMIT_DB, SHELF_LIMIT_DB); }
+        let near = self.fresh && (0..nb).all(|b| (t[b] - self.target[b]).abs() <= SOLVE_REUSE_DB);
+        // Same targets as last sample: done if that solve landed, or if it
+        // can go no further. Otherwise keep iterating from where it stopped.
+        if !(near && (self.err <= SOLVE_TOL_DB || self.stuck)) {
+            let before = if near { self.err } else { f64::INFINITY };
+            let warm = self.x;
+            let (mut best_x, mut best_act, mut best_err) = self.newton_pass(&t, warm);
+            if best_err > SOLVE_TOL_DB {
+                // The warm start can sit in the wrong basin: shelves left at
+                // ±70 dB by a target the layout could not reach keep Newton
+                // from the modest solution a flat start finds (13 of 13 such
+                // misses at ½ octave × 4 bands, measured). Try from flat too.
+                let mut flat = [0.0; MAX_BANDS];
+                flat[nb - 1] = t[..nb].iter().sum::<f64>() / nb as f64;
+                let (cx, cact, cerr) = self.newton_pass(&t, flat);
+                if cerr < best_err { (best_x, best_act, best_err) = (cx, cact, cerr); }
             }
             self.x = best_x;
             self.applied = best_act;
             self.target = t;
             self.fresh = true;
+            self.stuck = best_err > before - SOLVE_REUSE_DB;
+            self.err = best_err;
         }
         let shelf = std::array::from_fn(|c| {
             let v = if c + 1 < nb { self.x[c] } else { 0.0 };
             if v.abs() < SHELF_SNAP_DB { 0.0 } else { v }
         });
         (shelf, self.x[nb - 1])
+    }
+}
+
+/// Test hook: the gain solver on its own, so a suite can measure how close
+/// the staircase lands to what the bands ask for at a given layout.
+#[doc(hidden)]
+pub struct SolverProbe(GainSolver);
+
+impl SolverProbe {
+    pub fn new(sr: f32, xover: &[f32; MAX_XOVERS], bands: usize) -> Self {
+        let mut g = GainSolver::new();
+        g.refresh(sr, xover, bands.clamp(2, MAX_BANDS));
+        Self(g)
+    }
+
+    /// One solve, warm from the last one, as the engine does per sample.
+    /// Returns (target the solver aimed at after the reach clamp, response it
+    /// achieved) per band, in dB.
+    pub fn solve(&mut self, band_db: &[f32; MAX_BANDS]) -> ([f32; MAX_BANDS], [f32; MAX_BANDS]) {
+        let _ = self.0.solve(band_db);
+        (self.0.target.map(|v| v as f32), self.0.applied.map(|v| v as f32))
+    }
+
+    /// Shelf gains of the last solve (dB), and the limit they are held to.
+    pub fn shelves(&self) -> ([f32; MAX_XOVERS], f32) {
+        (std::array::from_fn(|c| self.0.x[c] as f32), SHELF_LIMIT_DB as f32)
     }
 }
 
@@ -530,11 +662,15 @@ impl Engine {
         }
     }
 
-    /// Band count changed while playing: bands coming back start from a
-    /// silent detector (GR 0), and the audio gains glide from what was
-    /// applied to the new layout instead of jumping (dropped shelves fade out).
+    /// Band count changed while playing: every band whose range changed —
+    /// the old top band, whose upper edge moves, and everything above it —
+    /// starts from a silent detector (GR 0), and the audio gains glide from
+    /// what was applied to the new layout instead of jumping (dropped shelves
+    /// fade out). Resetting only the bands that came back left the old top
+    /// band's wide-band envelope on a now-narrow band: 2 → 4 bands measured
+    /// −15.7 dB on its first block against −10.5 dB at steady state.
     fn change_bands(&mut self, nb: usize) {
-        for b in self.nb..nb {
+        for b in self.nb.min(nb).saturating_sub(1)..MAX_BANDS {
             self.env[b] = 0.0;
             self.key_env[b] = 0.0;
         }
@@ -569,8 +705,12 @@ impl Engine {
         });
         let atk: [f32; MAX_BANDS] = std::array::from_fn(|b| tc_coef(s.band[b].attack_ms, sr));
         let rel: [f32; MAX_BANDS] = std::array::from_fn(|b| tc_coef(s.band[b].release_ms, sr));
+        // `key_db_at` interpolates bus bands and can hand back NaN or ±inf
+        // when a neighbour is ±inf; through the one-pole that would latch
+        // every keyed detector off until deactivate. Not-a-number and
+        // anything at or under the silent line is silence; the top is capped.
         let key_lin: [f32; MAX_BANDS] = std::array::from_fn(|b| {
-            if key_db[b] <= KEY_SILENT_DB { 0.0 } else { 10f32.powf(key_db[b] * 0.05) }
+            if key_db[b] > KEY_SILENT_DB { 10f32.powf(key_db[b].min(KEY_MAX_DB) * 0.05) } else { 0.0 }
         });
         let any_solo = (0..nb).any(|b| s.band[b].solo);
         let solo_t: [f32; MAX_BANDS] = std::array::from_fn(|b| if any_solo && b < nb && s.band[b].solo { 1.0 } else { 0.0 });
@@ -597,6 +737,7 @@ impl Engine {
                 self.env[b] = peak + (self.env[b] - peak) * c;
                 let kc = if key_lin[b] > self.key_env[b] { atk[b] } else { rel[b] };
                 self.key_env[b] = key_lin[b] + (self.key_env[b] - key_lin[b]) * kc;
+                if !self.key_env[b].is_finite() { self.key_env[b] = 0.0; }
                 let k = bs.key.clamp(0.0, 1.0);
                 let det = self.env[b] * (1.0 - k) + self.key_env[b] * k;
                 let det_db = 20.0 * det.max(1e-9).log10();

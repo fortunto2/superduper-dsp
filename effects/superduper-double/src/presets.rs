@@ -52,6 +52,7 @@ pub static PRESETS: &[Preset] = &[
         (P_LEVEL, 0.0),
     ]),
     // Doubles open up only when the key track (master, drums) gets loud.
+    // Until a key is picked they play in full (no key = no reaction).
     Preset::from_overrides("Chorus Swell", &[
         (P_VOICES, 3.0),
         (P_KEY_OPEN, 1.0),

@@ -5,11 +5,15 @@
 //!     sdsp-bus --json     machine-readable (agents)
 //!     sdsp-bus serve      MCP server on 127.0.0.1:7892/mcp (`--port N`)
 //!     sdsp-bus serve --stdio   MCP over stdio — the client starts it, no daemon
+//!     sdsp-bus controls   known-answer checks of the meter on a temp bus: plant
+//!                         clashes, see mix_masking/mix_phase find them and
+//!                         nothing else; exit 1 on any miss. Run before trusting
+//!                         a zero from the live bus.
 //!
 //! Each row is one plugin instance: its track, level, peak, a 32-band
 //! spectrum as a bar strip (20 Hz on the left, 20 kHz on the right) and the
 //! key it detected, if it detects one.
-mod serve;
+use sdsp_bus::{controls, serve};
 
 use superduper_dsp_sdk::bus::{band_edges, Reader, BANDS};
 
@@ -25,6 +29,9 @@ fn strip(bands: &[f32; BANDS]) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("controls") {
+        std::process::exit(controls::main());
+    }
     if args.get(1).map(String::as_str) == Some("serve") {
         let res = if args.iter().any(|a| a == "--stdio") {
             serve::run_stdio()

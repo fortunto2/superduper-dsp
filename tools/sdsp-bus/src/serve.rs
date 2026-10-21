@@ -190,13 +190,17 @@ fn find_instance(track: &str, plugin: &str) -> Result<u64, McpError> {
     }
 }
 
-async fn mail(track: &str, plugin: &str, doc: &str, op: &str, value: serde_json::Value) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+/// MCP wants an object schema at the root, so the document rides in `value`.
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct DocOut { pub value: serde_json::Value }
+
+async fn mail(track: &str, plugin: &str, doc: &str, op: &str, value: serde_json::Value) -> Result<rmcp::Json<DocOut>, McpError> {
     let id = find_instance(track, plugin)?;
     let (doc, op) = (doc.to_string(), op.to_string());
     let out = tokio::task::spawn_blocking(move || {
         superduper_synth_core::bus_mail::call(id, &doc, &op, value, std::time::Duration::from_secs(3))
     }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
-    out.map(rmcp::Json).map_err(|e| McpError::invalid_params(e, None))
+    out.map(|value| rmcp::Json(DocOut { value })).map_err(|e| McpError::invalid_params(e, None))
 }
 
 #[derive(Clone)]
@@ -291,17 +295,17 @@ impl BusServer {
     }
 
     #[rmcp::tool(description = "Which documents a plugin instance exposes beyond its parameters (Wave: \"wavetable\"), with the shape plugin_get returns and plugin_set takes.")]
-    async fn plugin_docs(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+    async fn plugin_docs(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, "", "list", serde_json::Value::Null).await
     }
 
     #[rmcp::tool(description = "Read a plugin document (e.g. Wave's wavetable as harmonic amplitudes per frame) from the running instance on a track.")]
-    async fn plugin_get(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+    async fn plugin_get(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, &i.doc, "get", serde_json::Value::Null).await
     }
 
     #[rmcp::tool(description = "Replace a plugin document in the running instance (e.g. Wave wavetable {harmonics: [[1, 0.3, 0, 0.1]]} — fundamental, some 2nd, no 3rd). Read it first with plugin_get to keep the old one for undo; measure with mix_masking before and after.")]
-    async fn plugin_set(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+    async fn plugin_set(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, &i.doc, "set", i.value).await
     }
 
@@ -365,4 +369,16 @@ pub fn run_stdio() -> std::io::Result<()> {
         svc.waiting().await.map_err(std::io::Error::other)?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// rmcp checks every tool's output schema when the router is built and
+    /// panics on a bad one — which killed the server at startup once
+    /// (Json<Value> has no root "type"). Building the router is the test.
+    #[test]
+    fn every_tool_schema_is_accepted() {
+        let tools = super::BusServer::new().tool_router.list_all();
+        assert!(tools.len() >= 8, "{} tools", tools.len());
+    }
 }

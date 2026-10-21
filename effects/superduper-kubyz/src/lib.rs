@@ -1280,7 +1280,7 @@ impl DefaultPluginFactory for SuperDuperKubyz {
             }
             formants::restore_free(&shared.inner, preset.extra.formant_count, &preset.extra.formant_free);
         }
-        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Kubyz", &shared.inner, |s| &s.scope, Some(mail::handle));
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Kubyz", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(

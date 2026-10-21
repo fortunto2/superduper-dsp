@@ -724,7 +724,7 @@ impl DefaultPluginFactory for SuperDuperSoothe {
             build_date!()
         );
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Soothe", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Soothe", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
 

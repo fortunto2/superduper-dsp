@@ -990,7 +990,7 @@ impl DefaultPluginFactory for SuperDuperDrum {
         slog!("new_shared: Drum — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
         pads::spawn_loader(&shared.inner);
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Drum", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Drum", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
 

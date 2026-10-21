@@ -764,7 +764,7 @@ impl DefaultPluginFactory for SuperDuperPiano {
         let n = refresh_library(&shared.inner);
         slog!("Piano new_shared: {} instruments under {}", n, shared.pack_root.display());
         spawn_loader(&shared.inner);
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Piano", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Piano", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
     fn new_main_thread<'a>(host: HostMainThreadHandle<'a>, shared: &'a PluginShared) -> Result<PluginMainThread<'a>, PluginError> {

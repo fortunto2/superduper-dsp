@@ -838,7 +838,7 @@ impl DefaultPluginFactory for SuperDuperSampler {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             });
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Sampler", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Sampler", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
     fn new_main_thread<'a>(host: HostMainThreadHandle<'a>, shared: &'a PluginShared)

@@ -113,6 +113,35 @@ pitch survives through its harmonics): 69% → 0%, guitar −2.2 dB.
   WT Pos (a parameter) morphs between Wave's frames, so an
   automation envelope on it changes the timbre per section.
 
+**Drive the plugins through the bus first (MCP-first).** Every SuperDuper
+plugin answers on the bus server without the DAW: `plugin_params(track,
+plugin)` lists every parameter with its range, `plugin_set_params(track,
+plugin, {"Name": value})` sets them (clamped; the host sees the change, so it
+saves with the project and can be automated), `plugin_docs` lists the rest.
+Keep the `plugin_params` reading from before a change: that is the undo.
+REAPER MCP is for what the bus cannot do — adding or removing FX, MIDI,
+volume/pan, transport, render.
+
+**Ducking: when two parts must both play** (MS ch14). If register and timing
+are right and a part still covers a more important one *only while that one
+plays* — guitar or pad under the vocal, a synth under the lead — the fix is not
+a static EQ cut (it thins the part all the time) but a duck in the shared
+bands, only while the key plays: `duck_under(track, key, depth_db,
+range_db, amount_db)`.
+1. the yielding track needs a SuperDuper Soothe as its *last* enabled plugin
+   (REAPER MCP `track_fx_add_by_name "CLAP: SuperDuper Soothe"`; then
+   `amount_db: 0` so it only ducks);
+2. loop the section; `mix_masking(seconds=20, label="pre-duck", prefer={track:
+   "Soothe"})` — a clash or a `buried` entry for the key is the evidence;
+3. `duck_under(track, key="<lead>", depth_db=6)`; start at 3–6 dB, Key Range
+   24 dB; more than ~9 dB is audible as pumping;
+4. measure again with the same prefer, `mix_compare`: the clash/buried share
+   for that pair should fall, the yielding track's average level should lose
+   no more than ~1–2 dB (it only moves while the key plays);
+5. undo: `duck_under(track, key="")`.
+Not for kick→bass pumping: the bus lags 50–100 ms, so the duck lands late on a
+transient. That is the compressor's side-chain input, routed in the DAW.
+
 **Deciding the fix** — one band, one owner:
 - the part whose *job* is that band keeps it: kick and bass under ~150 Hz,
   the vocal 1–4 kHz, the lead its own fundamental;

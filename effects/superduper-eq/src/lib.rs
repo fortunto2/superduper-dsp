@@ -400,7 +400,7 @@ impl DefaultPluginFactory for SuperDuperEq {
         init_logging();
         slog!("new_shared: EQ — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper EQ", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper EQ", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
 

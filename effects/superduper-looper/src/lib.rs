@@ -743,7 +743,7 @@ impl DefaultPluginFactory for SuperDuperLooper {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Looper", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Looper", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
         Ok(shared)
     }
     fn new_main_thread<'a>(host: HostMainThreadHandle<'a>, shared: &'a PluginShared)

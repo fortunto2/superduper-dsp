@@ -1019,7 +1019,7 @@ impl DefaultPluginFactory for SuperDuperCompressor {
         init_logging();
         slog!("new_shared: Compressor — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Compressor", &shared.inner, |s| &s.scope, Some(mail::handle));
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Compressor", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
 

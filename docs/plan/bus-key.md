@@ -19,6 +19,7 @@ the real side-chain input stays for that.
 - [ ] Reverb / Delay: duck the tail while the key plays (MS ch17)
 - [ ] Vocal: rider — hold the vocal a set dB over the mix (MS ch19)
 - [ ] Filter: key-driven cutoff — close/move while the key plays (pad out of the vocal's way)
-- [ ] sdsp-mix skill: when to key what; measure with mix_compare
+- [x] sdsp-mix skill: when to key what; measure with mix_compare (Soothe/duck_under; extend per plugin)
+- [x] MCP-first: generic `params` doc in all 31 plugins; plugin_params / plugin_set_params / duck_under
 
 ## Done

@@ -1455,7 +1455,7 @@ impl DefaultPluginFactory for SuperDuperWave {
             let mips: Vec<_> = frames.iter().map(|f| osc::mip_from_table(f)).collect();
             push_custom_frames(&shared, mips);
         }
-        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Wave", &shared.inner, |s| &s.scope, Some(mail::handle));
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Wave", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(

@@ -220,6 +220,30 @@ async fn mail(track: &str, plugin: &str, doc: &str, op: &str, value: serde_json:
     out.map(|value| rmcp::Json(DocOut { value })).map_err(|e| McpError::invalid_params(e, None))
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetParamsInput {
+    pub track: String,
+    pub plugin: String,
+    /// {"Param Name": value, …} — names exactly as plugin_params lists them
+    /// (case-insensitive); values are clamped to each parameter's range.
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DuckInput {
+    /// The track to push down (its last SuperDuper Soothe does the work).
+    pub track: String,
+    /// The track it makes room for (as bus_list shows it); "" removes the duck.
+    pub key: String,
+    /// Deepest cut per band while the key is loud there, dB (default 6, max 24).
+    pub depth_db: Option<f32>,
+    /// How far above -50 dB the key must be in a band for the full depth (default 24).
+    pub range_db: Option<f32>,
+    /// Set Soothe's own resonance Amount too — pass 0 when this Soothe was
+    /// added only for ducking; omit to leave it.
+    pub amount_db: Option<f32>,
+}
+
 #[derive(Clone)]
 pub struct BusServer { tool_router: ToolRouter<Self> }
 
@@ -329,6 +353,27 @@ impl BusServer {
         mail(&i.track, &i.plugin, &i.doc, "set", i.value).await
     }
 
+    #[rmcp::tool(description = "Every parameter of a running SuperDuper plugin (name, value, min, max, default, unit) — read before setting.")]
+    async fn plugin_params(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
+        mail(&i.track, &i.plugin, "params", "get", serde_json::Value::Null).await
+    }
+
+    #[rmcp::tool(description = "Set parameters of a running SuperDuper plugin by name, without the DAW: clamped to range, and the host sees the change (automation, project save). Read plugin_params first and keep the old values — that is the undo.")]
+    async fn plugin_set_params(&self, Parameters(i): Parameters<SetParamsInput>) -> Result<rmcp::Json<DocOut>, McpError> {
+        mail(&i.track, &i.plugin, "params", "set", serde_json::Value::Object(i.values)).await
+    }
+
+    #[rmcp::tool(description = "Duck one track under another in the bands where they fight, only while the key plays (Trackspacer, no routing): sets the bus key and Key Depth/Range of the SuperDuper Soothe on `track`. Use for a part that must stay but yields to a more important one (guitar/pad under the vocal, synth under the lead); not for kick-bass pumping (the bus lags 50-100 ms — use the compressor side-chain). Soothe must be the last enabled plugin on that track: add it with REAPER MCP track_fx_add_by_name \"CLAP: SuperDuper Soothe\" and pass amount_db: 0 if it is only there to duck. Measure mix_masking (prefer {track: \"Soothe\"}) before and after and mix_compare.")]
+    async fn duck_under(&self, Parameters(i): Parameters<DuckInput>) -> Result<rmcp::Json<DocOut>, McpError> {
+        let key = mail(&i.track, "Soothe", "key", "set", serde_json::json!({"track": i.key})).await?;
+        let mut v = serde_json::Map::new();
+        v.insert("Key Depth".into(), serde_json::json!(if i.key.is_empty() { 0.0 } else { i.depth_db.unwrap_or(6.0) }));
+        v.insert("Key Range".into(), serde_json::json!(i.range_db.unwrap_or(24.0)));
+        if let Some(a) = i.amount_db { v.insert("Amount".into(), serde_json::json!(a)); }
+        let params = mail(&i.track, "Soothe", "params", "set", serde_json::Value::Object(v)).await?;
+        Ok(rmcp::Json(DocOut { value: serde_json::json!({"key": key.0.value, "params": params.0.value}) }))
+    }
+
     #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).")]
     async fn get_song_key(&self) -> Result<rmcp::Json<KeyOut>, McpError> {
         let p = song_key_path();
@@ -362,7 +407,7 @@ impl ServerHandler for BusServer {
         rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
             .with_server_info(info)
-            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
+            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), plugin_params/plugin_set_params (any SuperDuper plugin's parameters, no DAW needed), duck_under (Soothe keyed ducking), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics; every plugin also has \"key\"), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
     }
 }
 

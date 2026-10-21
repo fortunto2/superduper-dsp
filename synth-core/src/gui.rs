@@ -438,6 +438,27 @@ pub fn spawn_bus_publisher_with_mail<T: Send + Sync + 'static>(
     scope: fn(&T) -> &LiveScope,
     mail: Option<MailHandler<T>>,
 ) {
+    spawn_bus_publisher_mcp(plugin, shared, scope, None, mail);
+}
+
+/// What the bus needs to read and set a plugin's parameters, so an agent can
+/// drive any plugin through the bus alone (MCP-first): the defs, the live
+/// values, and the dirty flags that make the host see the change.
+pub struct ParamsAccess<T> {
+    pub defs: &'static [superduper_dsp_sdk::clap_helpers::ParamDef],
+    pub values: fn(&T) -> &[AtomicF32],
+    pub dirty: Option<fn(&T) -> &[std::sync::atomic::AtomicBool]>,
+}
+
+/// The full form: bus slot, bus key, the generic "params" and "key"
+/// documents, and the plugin's own documents (`mail`).
+pub fn spawn_bus_publisher_mcp<T: Send + Sync + 'static>(
+    plugin: &'static str,
+    shared: &std::sync::Arc<T>,
+    scope: fn(&T) -> &LiveScope,
+    params: Option<ParamsAccess<T>>,
+    mail: Option<MailHandler<T>>,
+) {
     let weak = std::sync::Arc::downgrade(shared);
     let _ = std::thread::Builder::new().name("sdsp-bus".into()).spawn(move || {
         let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
@@ -486,11 +507,16 @@ pub fn spawn_bus_publisher_with_mail<T: Send + Sync + 'static>(
             if let Some(req) = crate::bus_mail::take_request(publisher.instance()) {
                 let out = match (req.doc.as_str(), mail) {
                     ("key", _) => key_doc(sc, &req.op, req.value),
-                    ("", Some(handle)) if req.op == "list" => handle(&inner, "", "list", req.value)
-                        .map(|v| key_doc_list(v)),
-                    ("", None) if req.op == "list" => Ok(key_doc_list(serde_json::json!([]))),
+                    ("params", _) => match &params {
+                        Some(p) => params_doc(p, &inner, &req.op, req.value),
+                        None => Err("this plugin does not expose its parameters on the bus".into()),
+                    },
+                    ("", m) if req.op == "list" => {
+                        let own = match m { Some(handle) => handle(&inner, "", "list", req.value), None => Ok(serde_json::json!([])) };
+                        own.map(|v| generic_docs_list(v, params.is_some()))
+                    }
                     (_, Some(handle)) => handle(&inner, &req.doc, &req.op, req.value),
-                    (d, None) => Err(format!("this plugin has only the \"key\" document; got {d:?}")),
+                    (d, None) => Err(format!("this plugin has only the \"key\" and \"params\" documents; got {d:?}")),
                 };
                 crate::bus_mail::reply(publisher.instance(), req.id, out);
             }
@@ -515,6 +541,46 @@ fn key_doc(sc: &LiveScope, op: &str, value: serde_json::Value) -> Result<serde_j
         "list" => Ok(key_doc_list(serde_json::json!([]))),
         _ => Err(format!("key: list/get/set, got {op:?}")),
     }
+}
+
+/// Every plugin's "params" document: its CLAP parameters by name.
+fn params_doc<T>(p: &ParamsAccess<T>, inner: &T, op: &str, value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let name = |d: &superduper_dsp_sdk::clap_helpers::ParamDef| String::from_utf8_lossy(d.name).trim_end_matches('\0').to_string();
+    let values = (p.values)(inner);
+    match op {
+        "get" | "list" => Ok(serde_json::Value::Array(p.defs.iter().zip(values).map(|(d, v)| serde_json::json!({
+            "name": name(d), "value": v.load(Ordering::Relaxed), "min": d.min, "max": d.max, "default": d.default, "unit": d.unit,
+        })).collect())),
+        "set" => {
+            let obj = value.as_object().ok_or("set needs {\"Param Name\": value, …} (names from get)")?;
+            let mut done = serde_json::Map::new();
+            for (k, v) in obj {
+                let x = v.as_f64().ok_or(format!("{k}: a number"))?;
+                let i = p.defs.iter().position(|d| name(d).eq_ignore_ascii_case(k.trim()))
+                    .ok_or_else(|| format!("no parameter {k:?}; have: {}", p.defs.iter().map(&name).collect::<Vec<_>>().join(", ")))?;
+                let d = &p.defs[i];
+                let x = x.clamp(d.min, d.max) as f32;
+                values[i].store(x, Ordering::Relaxed);
+                // The host hears it on the next process() (automation, save).
+                if let Some(dirty) = p.dirty { dirty(inner)[i].store(true, Ordering::Relaxed); }
+                done.insert(name(d), serde_json::json!(x));
+            }
+            Ok(serde_json::Value::Object(done))
+        }
+        _ => Err(format!("params: list/get/set, got {op:?}")),
+    }
+}
+
+fn generic_docs_list(plugin_docs: serde_json::Value, has_params: bool) -> serde_json::Value {
+    let mut v = key_doc_list(plugin_docs).as_array().cloned().unwrap_or_default();
+    if has_params {
+        v.push(serde_json::json!({
+            "doc": "params",
+            "get": "every CLAP parameter: name, value, min, max, default, unit",
+            "set": "{\"Param Name\": value, …} — clamped to the range; the host sees it (automation, project save)",
+        }));
+    }
+    serde_json::Value::Array(v)
 }
 
 fn key_doc_list(plugin_docs: serde_json::Value) -> serde_json::Value {
@@ -1627,6 +1693,26 @@ fn top_bar_inner(
 #[cfg(test)]
 mod key_tests {
     use super::*;
+
+    #[test]
+    fn params_doc_sets_by_name_clamps_and_tells_the_host() {
+        use superduper_dsp_sdk::clap_helpers::ParamDef;
+        static DEFS: &[ParamDef] = &[
+            ParamDef { id: 0, name: b"Key Depth", min: 0.0, max: 24.0, default: 0.0, unit: "dB" },
+            ParamDef { id: 1, name: b"Mix", min: 0.0, max: 1.0, default: 1.0, unit: "" },
+        ];
+        struct S { v: [AtomicF32; 2], d: [std::sync::atomic::AtomicBool; 2] }
+        let s = S { v: [AtomicF32::new(0.0), AtomicF32::new(1.0)], d: Default::default() };
+        let p = ParamsAccess::<S> { defs: DEFS, values: |s| &s.v, dirty: Some(|s| &s.d) };
+        let out = params_doc(&p, &s, "set", serde_json::json!({"key depth": 30.0})).expect("set");
+        assert_eq!(out["Key Depth"], 24.0, "case-insensitive, clamped to max");
+        assert_eq!(s.v[0].load(Ordering::Relaxed), 24.0);
+        assert!(s.d[0].load(Ordering::Relaxed) && !s.d[1].load(Ordering::Relaxed), "only the changed one is dirty");
+        let e = params_doc(&p, &s, "set", serde_json::json!({"Depth": 1.0})).unwrap_err();
+        assert!(e.contains("Key Depth, Mix"), "{e}");
+        let got = params_doc(&p, &s, "get", serde_json::Value::Null).expect("get");
+        assert_eq!(got[1]["name"], "Mix");
+    }
 
     #[test]
     fn key_level_reads_the_band_at_its_centre_and_interpolates_between() {

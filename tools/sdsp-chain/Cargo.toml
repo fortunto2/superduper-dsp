@@ -36,6 +36,8 @@ superduper-wind       = { path = "../../effects/superduper-wind" }
 superduper-ambient    = { path = "../../effects/superduper-ambient" }
 superduper-soothe     = { path = "../../effects/superduper-soothe" }
 superduper-multiband  = { path = "../../effects/superduper-multiband" }
+superduper-morph      = { path = "../../effects/superduper-morph" }
+superduper-double     = { path = "../../effects/superduper-double" }
 # Instruments: not renderable here (the chain has no MIDI), but their parameter
 # and preset tables are what you need when driving them over MCP in a DAW.
 superduper-wave       = { path = "../../effects/superduper-wave" }

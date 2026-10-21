@@ -14,8 +14,8 @@ the real side-chain input stays for that.
 - [x] Soothe: keyed spectral ducking (Trackspacer) — per band cut grows with
       the key's level in that band; params Key Depth / Key Range; mix with the
       resonance mode
-- [ ] Compressor: detector from the key track in a band (lo/hi Hz) + dual detector mode (peak + RMS stages, Peak Crest) — agent running
-- [ ] EQ: dynamic band keyed by the bus (cut only while the key plays there) — agent running
+- [x] Compressor: key detector in a band + Dual detector (RMS + peak stages, Peak Crest)
+- [x] EQ: dynamic Mid band keyed by the bus or by itself
 - [ ] Reverb / Delay: duck the tail while the key plays (MS ch17)
 - [ ] Vocal: rider — hold the vocal a set dB over the mix (MS ch19)
 - [ ] Filter: key-driven cutoff — close/move while the key plays (pad out of the vocal's way)
@@ -29,12 +29,14 @@ the real side-chain input stays for that.
       pair how much energy the sum loses (kick vs bass, layered kicks, mics);
       fix with polarity / allpass rotation. Needs a bigger slot → bus VERSION 2
 
-- [ ] Reverb/Delay duck, Filter key mod, Vocal rider — agent running
-- [ ] NEW SuperDuper Multiband (Pro-MB style: dynamic phase, bands on the spectrum, per-band bus key) — agent running
+- [x] Reverb/Delay Key Duck, Filter Key Mod, Vocal Rider (synth-core::bus_key)
+- [x] NEW SuperDuper Multiband (bit-exact idle, bands on the spectrum, per-band bus key; 8th-order shelves + Newton solver after review)
 - [x] Saturator Inflate (Oxford Inflator curve)
 
-- [ ] tools/sdsp-chain + sdsp-mash: register Multiband, Morph, Double (and the new params) once Morph/Double land
-- [ ] skills: Morph + Double rows in sdsp-mix once installed
+- [x] tools/sdsp-chain: Multiband, Morph, Double registered; tools/plugin_smoke.py renders all 24 (sdsp-mash still to do)
+- [x] skills: Morph + Double rows in sdsp-mix
+- [x] NEW SuperDuper Morph (any timbre onto any performance; Sidechain / Captured / Model)
+- [x] NEW SuperDuper Double (drifting PSOLA heads, Tuned modes, Key Open)
 
 - [ ] genre target curve (Ozone Tonal Balance, transparent): `mixcheck --target refs/*.json` — the corridor (mean ± spread) of 5–10 reference choruses per band; the agent moves EQ/Multiband only where the mix leaves it
 

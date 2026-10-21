@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 32 plugins (25 effects + 7 instruments)
+## Current state — 35 plugins (28 effects + 7 instruments)
 
 **Effects (audio-in, audio-out):**
 
@@ -67,6 +67,16 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   Amount. Tames rolled-r resonances, harsh sibilance, mud peaks.
   Soft / Sharp / Hard modes (ratio 0.4 / 0.7 / 1.0). 5 presets
   including Russian Voice + Master Polish.
+- **superduper-multiband** *(new)* — 2–4-band compressor, bit-exact when
+  idle (band gains as 8th-order shelves at the crossovers, LR4 only in the
+  detectors), per-band bus key (one band ducks under the vocal while the
+  others compress their own signal), upward below 1:1, Solo/Bypass per band.
+- **superduper-morph** *(new)* — any timbre onto any performance: STFT
+  gain-per-bin morph (Harmonic / Envelope), target from the side-chain,
+  a captured snapshot, or the Kubyz model; Vowels keeps the voice's envelope.
+- **superduper-double** *(new)* — vocal doubler: up to 4 PSOLA heads with
+  independent slow time/pitch drift (a second take, not a delay), Tuned /
+  Tuned Lead modes on Tune's scale quantiser, Key Open from the bus.
 - **superduper-nam** *(new)* — Neural Amp Modeler. Pure-Rust port
   of Steven Atkinson's WaveNet / LSTM / Linear inference (see
   `synth_core::nam`), bit-compatible weight ordering with NAM

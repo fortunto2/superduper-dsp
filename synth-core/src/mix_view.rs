@@ -97,7 +97,8 @@ impl MixView {
         // Every frame for the curves; masking counts 10 frames a second so
         // its shares do not depend on the repaint rate.
         let rows = r.read_all();
-        let fresh = mixmap::loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)));
+        // Effect returns count as buses here: drawn grey, never a clash.
+        let fresh = mixmap::loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus() || mixmap::is_return_name(&s.track), s.rms_db, &s.bands_db)));
         if self.polled.elapsed().as_millis() >= 100 {
             self.polled = std::time::Instant::now();
             self.masking.update(&fresh);

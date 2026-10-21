@@ -25,6 +25,16 @@ pub const CLOSE_DB: f32 = 6.0;
 /// simply owns the band.
 pub const BURY_DB: f32 = 20.0;
 
+/// An effect return (reverb, delay, …) carries other tracks' signal, so it
+/// "clashes" with its own source in every band — counted, it paints the whole
+/// map red (measured 2026-10-21: Vox Reverb × the vocal, 1.9–3.6 kHz, 75 %).
+/// Hosts do not flag returns, so the name decides: treat these as buses.
+pub fn is_return_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    ["reverb", "verb", "delay", "echo", "return", "send", "aux", "fx", "wet", "ревер", "дилей", "эхо"]
+        .iter().any(|w| n.contains(w))
+}
+
 /// One track's current spectrum (the loudest instance on that track).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSpectrum {
@@ -266,6 +276,12 @@ mod tests {
         assert!(all[3] > 0.99 && all[9] > 0.99 && all[0] == 0.0);
         let b = m.band_heat(Some("B"));
         assert!(b[3] > 0.99 && b[9] == 0.0, "C's clash with A is not B's business");
+    }
+
+    #[test]
+    fn effect_returns_are_recognised_by_name() {
+        for n in ["Vox Reverb", "Vox Delay", "FX Return", "Send 1", "Aux Verb", "Ревер"] { assert!(is_return_name(n), "{n}"); }
+        for n in ["Голос Рустам", "Бас 808 (Sampler)", "Гитара 2015", "Drums"] { assert!(!is_return_name(n), "{n}"); }
     }
 
     #[test]

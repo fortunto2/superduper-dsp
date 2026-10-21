@@ -54,4 +54,9 @@ the real side-chain input stays for that.
       Fix in the plugins: push the dry signal on bypass (31 process() paths); until then serve.rs
       falls back to the loudest instance when the preferred one is silent
 
+- [ ] Morph: side-chain f0 on a jaw-harp drone read 943 Hz / unvoiced (the formant, not the
+      fundamental ~130 Hz), so Harmonic mode fell back to Envelope (measured 2026-10-21 on
+      "Kubyz Drone C"). Add a target f0 hint / use the bus key's pitch, or a subharmonic check in
+      the YIN pass for strongly formant-ed sources
+
 ## Done

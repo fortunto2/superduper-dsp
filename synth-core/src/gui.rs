@@ -557,11 +557,17 @@ fn params_doc<T>(p: &ParamsAccess<T>, inner: &T, op: &str, value: serde_json::Va
         })).collect())),
         "set" => {
             let obj = value.as_object().ok_or("set needs {\"Param Name\": value, …} (names from get)")?;
-            let mut done = serde_json::Map::new();
+            // Resolve every name and value first: one bad entry means nothing
+            // is applied (it used to stop half-way through, alphabetically).
+            let mut plan = Vec::with_capacity(obj.len());
             for (k, v) in obj {
                 let x = v.as_f64().ok_or(format!("{k}: a number"))?;
                 let i = p.defs.iter().position(|d| name(d).eq_ignore_ascii_case(k.trim()))
                     .ok_or_else(|| format!("no parameter {k:?}; have: {}", p.defs.iter().map(&name).collect::<Vec<_>>().join(", ")))?;
+                plan.push((i, x));
+            }
+            let mut done = serde_json::Map::new();
+            for (i, x) in plan {
                 let d = &p.defs[i];
                 let x = x.clamp(d.min, d.max) as f32;
                 values[i].store(x, Ordering::Relaxed);

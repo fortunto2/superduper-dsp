@@ -44,7 +44,8 @@ fn tracks(rows: &[Snapshot], prefer: &Prefer) -> Vec<TrackSpectrum> {
         }
         None => true,
     };
-    loudest_per_track(rows.iter().filter(keep).map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)))
+    use superduper_synth_core::mixmap::is_return_name;
+    loudest_per_track(rows.iter().filter(keep).map(|s| (s.track.as_str(), s.is_bus() || is_return_name(&s.track), s.rms_db, &s.bands_db)))
 }
 
 fn key_out(p: &std::path::Path, key: Option<String>) -> rmcp::Json<KeyOut> {

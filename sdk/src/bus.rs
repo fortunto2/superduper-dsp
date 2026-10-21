@@ -157,7 +157,11 @@ impl Publisher {
         let map = open_map()?;
         // Unique across instances (counter), restarts (time) and processes (pid).
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = (now_ms() << 20) ^ ((std::process::id() as u64) << 44) ^ NEXT.fetch_add(1, Ordering::Relaxed) | 1;
+        // The counter sits above the forced low bit: `x ^ counter | 1` made
+        // counters 2k and 2k+1 the same id, so two instances created in one
+        // millisecond (project load, track duplicate) answered each other's
+        // mail and read each other as "self" for the key.
+        let id = ((now_ms() << 20) ^ ((std::process::id() as u64) << 44) ^ (NEXT.fetch_add(1, Ordering::Relaxed) << 1)) | 1;
         let now = now_ms();
         for slot in 0..SLOTS {
             let b = slot_base(slot);
@@ -275,11 +279,28 @@ impl Reader {
 mod tests {
     use super::*;
 
+    /// Tests share one process and `SUPERDUPER_BUS` is process-wide, so they
+    /// run one at a time (parallel, one test's publishers took the other's slots).
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_bus<R>(tag: &str, f: impl FnOnce() -> R) -> R {
+        let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let p = std::env::temp_dir().join(format!("sdsp-bus-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_file(&p);
         std::env::set_var("SUPERDUPER_BUS", &p);
         f()
+    }
+
+    #[test]
+    fn back_to_back_publishers_never_share_an_id() {
+        with_bus("ids", || {
+            let ps: Vec<Publisher> = (0..8).map(|_| Publisher::open("SuperDuper Soothe").expect("open")).collect();
+            let mut ids: Vec<u64> = ps.iter().map(|p| p.instance()).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), 8, "eight instances in one millisecond, eight ids");
+            assert!(ps.iter().all(|p| p.instance() & 1 == 1), "odd, never 0 (= free slot)");
+        });
     }
 
     #[test]

@@ -220,6 +220,14 @@ the faders — REAPER MCP `run_lua` with
 `local o={} for i=0,reaper.CountTracks(0)-1 do local t=reaper.GetTrack(0,i) local _,n=reaper.GetTrackName(t) o[n]=20*math.log(reaper.GetMediaTrackInfo_Value(t,"D_VOL"),10) end return o`
 — and pass the map as `fader_db`. Same map for runs you compare.
 
+**Name effect returns so the map knows them.** A reverb or delay return holds
+its source's signal and clashes with it in every band; the bus cannot see
+routing, so a track whose name contains Reverb / Verb / Delay / Echo / Return
+/ Send / Aux / FX / Wet (or ревер / дилей / эхо) counts as a bus: drawn grey,
+never a clash, never buried. Measured 2026-10-21: with "Vox Reverb" counted,
+the whole heat strip was red (75 % at 1.9–3.6 kHz against the vocal) and the
+real clash, 808 × guitar 140–173 Hz 40 %, was buried in the list.
+
 **Measuring right:** loop one section for every labelled run (otherwise the
 song moves on and every level shifts — a bass that nobody touched dropped 6 dB
 between two runs); pass `prefer={"<track>": "EQ"}` naming the last enabled

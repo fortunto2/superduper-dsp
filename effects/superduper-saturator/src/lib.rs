@@ -46,7 +46,7 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    oversample_apply, tanh_drive, tape_clip, tube_clip, DcBlocker, LatencyDelay, Oversampler2x,
+    oversample_apply, inflate, tanh_drive, tape_clip, tube_clip, DcBlocker, LatencyDelay, Oversampler2x,
     SmoothedParam, Tilt, OVERSAMPLE_LATENCY,
 };
 
@@ -67,14 +67,18 @@ use superduper_dsp_sdk::slog;
 
 pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"Drive",  min: 0.0,   max: 36.0, default: 6.0,  unit: "dB" },
-    // 0 = Tape, 1 = Tube, 2 = Soft (tanh)
-    ParamDef { id: 1, name: b"Type",   min: 0.0,   max: 2.0,  default: 0.0,  unit: ""   },
+    // 0 = Tape, 1 = Tube, 2 = Soft (tanh), 3 = Inflate (mastering loudness:
+    // lifts low/mid levels, full scale stays full scale)
+    ParamDef { id: 1, name: b"Type",   min: 0.0,   max: 3.0,  default: 0.0,  unit: ""   },
     ParamDef { id: 2, name: b"Tone",   min: -1.0,  max: 1.0,  default: 0.0,  unit: ""   },
     ParamDef { id: 3, name: b"Output", min: -24.0, max: 12.0, default: 0.0,  unit: "dB" },
     ParamDef { id: 4, name: b"Mix",    min: 0.0,   max: 1.0,  default: 1.0,  unit: ""   },
     // Oversampling — 0 = off (cheap, aliasing at high drive), 1 = 2× (good
     // for most cases), 2 = 4× (mastering-grade, ≥80 dB aliasing rejection).
     ParamDef { id: 5, name: b"OS",     min: 0.0,   max: 2.0,  default: 1.0,  unit: ""   },
+    // Inflate's curve: −50 = clean (0 dB lift), 0 = +3.5 dB on quiet parts,
+    // +50 = +6 dB and the densest. Drive is its input gain, Mix its Effect.
+    ParamDef { id: 6, name: b"Curve",  min: -50.0, max: 50.0, default: 0.0,  unit: ""   },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -89,6 +93,7 @@ pub const P_TONE: usize = 2;
 pub const P_OUTPUT: usize = 3;
 pub const P_MIX: usize = 4;
 pub const P_OS: usize = 5;
+pub const P_CURVE: usize = 6;
 
 // ---------------------------------------------------------------------------
 // Shared params (Arc pattern shared with the GUI thread)
@@ -186,10 +191,11 @@ fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
 
 /// Pick the curve by Type param value.
 #[inline]
-fn saturate(curve_idx: u32, x: f32, drive: f32) -> f32 {
+fn saturate(curve_idx: u32, x: f32, drive: f32, inflate_curve: f32) -> f32 {
     match curve_idx {
         1 => tube_clip(x, drive),
         2 => tanh_drive(x, drive),
+        3 => inflate(x * drive, inflate_curve),
         _ => tape_clip(x, drive),
     }
 }
@@ -249,6 +255,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let curve = self.shared.params[P_TYPE].load(Ordering::Relaxed).round() as u32;
+        let inflate_curve = self.shared.params[P_CURVE].load(Ordering::Relaxed);
         let os_mode = self.shared.params[P_OS].load(Ordering::Relaxed).round() as u32;
         let drive_db_target = self.shared.params[P_DRIVE].load(Ordering::Relaxed);
         let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
@@ -270,7 +277,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     dc, tilt, os1, os2, pad, dry,
                     &mut self.smooth_drive, &mut self.smooth_tone,
                     &mut self.smooth_output, &mut self.smooth_mix,
-                    channel_pair, sr, curve, os_mode,
+                    channel_pair, sr, curve, inflate_curve, os_mode,
                     drive_db_target, tone_target, output_db_target, mix_target,
                     bypassed,
                     // One channel feeds the scope: both, one block after the
@@ -298,6 +305,7 @@ fn process_channel(
     channel: ChannelPair<'_, f32>,
     sr: f32,
     curve: u32,
+    inflate_curve: f32,
     os_mode: u32,
     drive_db_target: f32,
     tone_target: f32,
@@ -334,7 +342,7 @@ fn process_channel(
         // non-linearity fold cleanly back into the original Nyquist, then pad
         // the 1× / 2× paths so every mode leaves SAT_LATENCY late.
         let mode = os_mode.min(2);
-        let sat = oversample_apply(cleaned, mode, os1, os2, |x| saturate(curve, x, drive_lin));
+        let sat = oversample_apply(cleaned, mode, os1, os2, |x| saturate(curve, x, drive_lin, inflate_curve));
         let saturated = match pad.get_mut(mode as usize) {
             Some(p) => p.process(sat),
             None => sat,

@@ -6,7 +6,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DRIVE, P_MIX, P_OS, P_OUTPUT, P_TONE, P_TYPE, PARAMS, SharedParams};
+use crate::{P_CURVE, P_DRIVE, P_MIX, P_OS, P_OUTPUT, P_TONE, P_TYPE, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 340;
@@ -20,7 +20,7 @@ pub fn new_resize_bridge() -> ResizeBridge {
     core_gui::new_resize_bridge(DEFAULT_WIDTH, DEFAULT_HEIGHT)
 }
 
-const CURVE_NAMES: [&str; 3] = ["Tape", "Tube", "Soft (tanh)"];
+const CURVE_NAMES: [&str; 4] = ["Tape", "Tube", "Soft (tanh)", "Inflate"];
 const OS_NAMES: [&str; 3] = ["Off", "2×", "4×"];
 
 struct GuiState {
@@ -114,6 +114,10 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end },
                     P_TYPE,
                 );
+                // Inflate's own knob; the other curves ignore it.
+                if state.shared.params[P_TYPE].load(std::sync::atomic::Ordering::Relaxed).round() as u32 == 3 {
+                    core_gui::dirty_param_row_g(ui, &state.shared.params[P_CURVE], &PARAMS[P_CURVE], &state.shared.dirty_params[P_CURVE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_CURVE);
+                }
             });
 
             core_gui::section(ui, "Tone", |ui| {

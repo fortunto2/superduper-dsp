@@ -398,6 +398,25 @@ pub fn tanh_drive(x: f32, drive: f32) -> f32 {
     (x * drive).tanh()
 }
 
+/// "Inflate": the mastering loudness curve (after the Oxford Inflator, from
+/// a public reconstruction — not Sonnox's code). A static odd-symmetric
+/// polynomial, not a compressor: low and mid levels come *up* (small-signal
+/// gain 1 + (curve+50)/100: 0 dB at −50, +3.5 dB at 0, +6 dB at +50) while
+/// full scale stays exactly full scale with zero slope — a soft knee into
+/// 0 dBFS. `curve` −50..50; |x| ≥ 1 clips to ±1.
+#[inline]
+pub fn inflate(x: f32, curve: f32) -> f32 {
+    let c = curve.clamp(-50.0, 50.0);
+    let a = x.abs().min(1.0);
+    let a1 = 1.0 + (c + 50.0) / 100.0;
+    let a2 = -c / 50.0;
+    let a3 = (c - 50.0) / 100.0;
+    let a4 = 0.0625 - c / 400.0 + c * c / 40000.0;
+    let (a_2, a_3) = (a * a, a * a * a);
+    let y = a1 * a + a2 * a_2 + a3 * a_3 - a4 * (a_2 - 2.0 * a_3 + a_3 * a);
+    y.copysign(x)
+}
+
 /// "Tape" style soft-clip — flatter saturation than tanh, with audible
 /// even-order harmonics. Algebraic — `y = x / (1 + |x|)`.
 #[inline]
@@ -1434,5 +1453,39 @@ impl Xorshift {
     #[inline]
     pub fn next_bipolar(&mut self) -> f32 {
         self.next_f32() * 2.0 - 1.0
+    }
+}
+
+#[cfg(test)]
+mod inflate_tests {
+    use super::inflate;
+
+    #[test]
+    fn full_scale_stays_full_scale_for_every_curve() {
+        for c in [-50.0f32, -25.0, 0.0, 25.0, 50.0] {
+            assert!((inflate(1.0, c) - 1.0).abs() < 1e-6, "curve {c}: {}", inflate(1.0, c));
+            assert_eq!(inflate(3.0, c), 1.0, "past full scale: clipped");
+        }
+    }
+
+    #[test]
+    fn small_signals_come_up_by_the_curve() {
+        let g = |c: f32| 20.0 * (inflate(1e-4, c) / 1e-4).log10();
+        assert!(g(-50.0).abs() < 0.01 && (g(0.0) - 3.52).abs() < 0.01 && (g(50.0) - 6.02).abs() < 0.01,
+            "{} {} {}", g(-50.0), g(0.0), g(50.0));
+    }
+
+    #[test]
+    fn monotonic_and_odd() {
+        for c in [-50.0f32, 0.0, 50.0] {
+            let mut prev = 0.0;
+            for i in 1..=1000 {
+                let x = i as f32 / 1000.0;
+                let y = inflate(x, c);
+                assert!(y >= prev - 1e-6, "curve {c} not monotonic at {x}");
+                assert_eq!(inflate(-x, c), -y);
+                prev = y;
+            }
+        }
     }
 }

@@ -2,7 +2,7 @@
 # Local macOS release build for v$V with the same asset names as release.yml.
 set -euo pipefail
 V="$1"
-ROOT=~/Music/1music/superduper-dsp
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 OUT="$ROOT/dist/release-mac-$V"; rm -rf "$OUT"; mkdir -p "$OUT/macos" "$OUT/vst3" "$OUT/au"
 T="${CARGO_TARGET_DIR:-$ROOT/target}"

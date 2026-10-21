@@ -192,6 +192,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -281,29 +282,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         // Swap in a freshly loaded model if the main thread dropped one
         // into the pending box. `try_lock` keeps us off the slow path
         // if no swap is pending — and if the GUI is mid-load the audio
         // thread silently keeps using the current net.
-        if let Some(mut guard) = self.shared.pending_net.try_lock() {
+        if let Some(mut guard) = shared.pending_net.try_lock() {
             if let Some(new_net) = guard.take() {
                 // Move, don't clone. NamModel derives Clone over its weight
                 // Vecs, so `net_l = new.clone(); net_r = new;` deep-copied
@@ -314,12 +304,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             }
         }
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let input_target = self.shared.params[P_INPUT].load(Ordering::Relaxed);
-        let drive_target = self.shared.params[P_DRIVE].load(Ordering::Relaxed);
-        let output_target = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
-        let mix_target = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let tone_target = self.shared.params[P_TONE].load(Ordering::Relaxed);
+        let input_target = shared.params[P_INPUT].load(Ordering::Relaxed);
+        let drive_target = shared.params[P_DRIVE].load(Ordering::Relaxed);
+        let output_target = shared.params[P_OUTPUT].load(Ordering::Relaxed);
+        let mix_target = shared.params[P_MIX].load(Ordering::Relaxed);
+        let tone_target = shared.params[P_TONE].load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
         // Run the network ONCE per sample on a mono sum (L+R)/2 and
@@ -331,10 +320,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // wider stereo amp, it gives you a mono amp on summed signal.
         // Dry path stays stereo so Mix < 1 preserves the original
         // image untouched.
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
-            };
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |read_l, write_l, r| {
             process_stereo_mono_net(
                 &mut self.net_l,
                 &mut self.dc_l,
@@ -346,23 +332,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 &mut self.smooth_output,
                 &mut self.smooth_mix,
                 &mut self.smooth_tone,
-                channel_pairs.into_iter(),
+                read_l, write_l, r,
                 sr,
                 input_target,
                 drive_target,
                 output_target,
                 mix_target,
                 tone_target,
-                bypassed,
-                &self.shared.scope,
             );
-        }
-        Ok(ProcessStatus::Continue)
+        })
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_stereo_mono_net<'a>(
+fn process_stereo_mono_net(
     net: &mut NamModel,
     dc_l: &mut DcBlocker,
     dc_r: &mut DcBlocker,
@@ -375,36 +358,20 @@ fn process_stereo_mono_net<'a>(
     smooth_tone: &mut SmoothedParam,
     // Takes the iterator itself: collecting into a Vec allocated once per
     // block for no reason other than to call .into_iter() on it again.
-    chans: impl Iterator<Item = ChannelPair<'a, f32>>,
+    read_l: &[f32],
+    write_l: &mut [f32],
+    r: Option<(&[f32], &mut [f32])>,
     sr: f32,
     input_target: f32,
     drive_target: f32,
     output_target: f32,
     mix_target: f32,
     tone_target: f32,
-    bypassed: bool,
-    scope: &superduper_synth_core::gui::LiveScope,
 ) {
-    use superduper_dsp_sdk::clap_helpers::split_io;
-    // Two channels expected (stereo plugin); split each.
-    let mut iter = chans;
-    let Some(ch0) = iter.next() else { return };
-    let ch1 = iter.next();
-    let Some((read_l, write_l)) = split_io(ch0) else { return };
-    let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch1 {
-        Some(c) => match split_io(c) {
-            Some((r, w)) => (r, Some(w)),
-            None => return,
-        },
+    let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match r {
+        Some((rr, rw)) => (rr, Some(rw)),
         None => (read_l, None),
     };
-    if bypassed {
-        write_l.copy_from_slice(read_l);
-        if let Some(w) = write_r {
-            w.copy_from_slice(read_r);
-        }
-        return;
-    }
 
     let n = read_l.len();
     let mut maybe_write_r = write_r;
@@ -441,7 +408,6 @@ fn process_stereo_mono_net<'a>(
         if let Some(ref mut w) = maybe_write_r {
             w[i] = mixed_r;
         }
-        scope.push((mixed_l + mixed_r) * 0.5);
     }
 }
 

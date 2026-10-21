@@ -74,7 +74,10 @@ DAW UI. A plugin without these is invisible to it:
   |l_in, l_out, r| …)` (denormals, bypass that still feeds the bus scope, the port walk, the
   scope fed from the output). `impl_shared_host!(SharedParamsInner)` next to the Deref. No own
   `scope.push`, no own bypass branch. A side-chain plugin captures its key port first
-  (`sc.capture(&mut audio, 1)`) — the main-port-only variant is on the plan.
+  (`sc.capture(&mut audio, 1)`) and uses `run_main_port` (port 0 only). A plugin whose bypass
+  must keep its latency delay running (bypass must not move PDC: Saturator, Double, Vocoder,
+  Pitch, Tune, Stretch, Granular, Formant) uses `run_ports_with` / `run_main_port_with` — the
+  closure gets the bypass flag and writes the bypassed output itself.
 - [ ] `new_main_thread`: `let track_watch = TrackInfoWatch::new(host, &shared.scope);` stored on
   the main thread, `.register::<clack_extensions::track_info::PluginTrackInfo>()`, and
   `impl PluginTrackInfoImpl for PluginMainThread<'_> { fn changed(&self) { self.track_watch.refresh(); } }`

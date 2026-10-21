@@ -239,6 +239,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -467,50 +468,41 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        let ess_thr_t = self.shared.params[P_ESS_THR].load(Ordering::Relaxed);
-        let ess_freq_t = self.shared.params[P_ESS_FREQ].load(Ordering::Relaxed);
-        let ess_amt_t = self.shared.params[P_ESS_AMT].load(Ordering::Relaxed);
-        let ess_range_t = self.shared.params[P_ESS_RANGE].load(Ordering::Relaxed);
-        let lo_thr_t = self.shared.params[P_LO_THR].load(Ordering::Relaxed);
-        let lo_freq_t = self.shared.params[P_LO_FREQ].load(Ordering::Relaxed);
-        let lo_amt_t = self.shared.params[P_LO_AMT].load(Ordering::Relaxed);
-        let clk_sens_t = self.shared.params[P_CLK_SENS].load(Ordering::Relaxed);
-        let clk_amt_t = self.shared.params[P_CLK_AMT].load(Ordering::Relaxed);
-        let clk_floor_t = self.shared.params[P_CLK_FLOOR].load(Ordering::Relaxed);
-        let output_t = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
-        let mix_t = self.shared.params[P_MIX].load(Ordering::Relaxed);
-        let ext_key_on = self.shared.params[P_EXT_KEY].load(Ordering::Relaxed) >= 0.5;
-        let plos_on = self.shared.params[P_PLOS_ON].load(Ordering::Relaxed) >= 0.5;
-        let plos_thr_t = self.shared.params[P_PLOS_THR].load(Ordering::Relaxed);
-        let plos_amt_t = self.shared.params[P_PLOS_AMT].load(Ordering::Relaxed);
-        let plos_freq_t = self.shared.params[P_PLOS_FREQ].load(Ordering::Relaxed);
-        let hum_on = self.shared.params[P_HUM_ON].load(Ordering::Relaxed) >= 0.5;
-        let hum_freq_t = self.shared.params[P_HUM_FREQ].load(Ordering::Relaxed);
-        let hum_str_t = self.shared.params[P_HUM_STR].load(Ordering::Relaxed);
-        let ess_track = self.shared.params[P_ESS_TRACK].load(Ordering::Relaxed) >= 0.5;
-        let ess_listen = self.shared.params[P_ESS_LISTEN].load(Ordering::Relaxed) >= 0.5;
+        let ess_thr_t = shared.params[P_ESS_THR].load(Ordering::Relaxed);
+        let ess_freq_t = shared.params[P_ESS_FREQ].load(Ordering::Relaxed);
+        let ess_amt_t = shared.params[P_ESS_AMT].load(Ordering::Relaxed);
+        let ess_range_t = shared.params[P_ESS_RANGE].load(Ordering::Relaxed);
+        let lo_thr_t = shared.params[P_LO_THR].load(Ordering::Relaxed);
+        let lo_freq_t = shared.params[P_LO_FREQ].load(Ordering::Relaxed);
+        let lo_amt_t = shared.params[P_LO_AMT].load(Ordering::Relaxed);
+        let clk_sens_t = shared.params[P_CLK_SENS].load(Ordering::Relaxed);
+        let clk_amt_t = shared.params[P_CLK_AMT].load(Ordering::Relaxed);
+        let clk_floor_t = shared.params[P_CLK_FLOOR].load(Ordering::Relaxed);
+        let output_t = shared.params[P_OUTPUT].load(Ordering::Relaxed);
+        let mix_t = shared.params[P_MIX].load(Ordering::Relaxed);
+        let ext_key_on = shared.params[P_EXT_KEY].load(Ordering::Relaxed) >= 0.5;
+        let plos_on = shared.params[P_PLOS_ON].load(Ordering::Relaxed) >= 0.5;
+        let plos_thr_t = shared.params[P_PLOS_THR].load(Ordering::Relaxed);
+        let plos_amt_t = shared.params[P_PLOS_AMT].load(Ordering::Relaxed);
+        let plos_freq_t = shared.params[P_PLOS_FREQ].load(Ordering::Relaxed);
+        let hum_on = shared.params[P_HUM_ON].load(Ordering::Relaxed) >= 0.5;
+        let hum_freq_t = shared.params[P_HUM_FREQ].load(Ordering::Relaxed);
+        let hum_str_t = shared.params[P_HUM_STR].load(Ordering::Relaxed);
+        let ess_track = shared.params[P_ESS_TRACK].load(Ordering::Relaxed) >= 0.5;
+        let ess_listen = shared.params[P_ESS_LISTEN].load(Ordering::Relaxed) >= 0.5;
         // Sub mode masks everything except the de-esser core. Done in
         // the audio thread so the user's actual param values are left
         // intact (toggling Sub off restores their previous setup).
-        let sub_mode = self.shared.params[P_SUB_MODE].load(Ordering::Relaxed) >= 0.5;
+        let sub_mode = shared.params[P_SUB_MODE].load(Ordering::Relaxed) >= 0.5;
         let (plos_on, hum_on, lo_amt_t, clk_amt_t) = if sub_mode {
             (false, false, 0.0, 0.0)
         } else {
@@ -533,26 +525,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let mut max_ess_gr_db: f32 = 0.0;
         let mut max_click_gr_db: f32 = 0.0;
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((rr, rw)) = r {
-                    rw.copy_from_slice(rr);
-                }
-                continue;
-            }
-
-            // Carve out the SC scratch slices outside the &mut self
-            // borrow so we don't tangle the borrow checker.
+        superduper_synth_core::effect::run_main_port(&**shared, &mut audio, |l_read, l_write, r| {
             let sc_slice: Option<(&[f32], &[f32])> = if use_ext {
                 Some((&self.sc.l[..n_frames], &self.sc.r[..n_frames]))
             } else {
@@ -601,7 +574,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     );
                 }
             }
-        }
+        })?;
 
         self.shared.ess_gr_db.store(max_ess_gr_db, Ordering::Relaxed);
         self.shared.click_gr_db.store(max_click_gr_db, Ordering::Relaxed);
@@ -921,7 +894,6 @@ fn process_stereo(
         let (fl, fr) = (fl * ride, fr * ride);
         l_write[i] = fl;
         r_write[i] = fr;
-        p.shared.scope.push((fl + fr) * 0.5);
         if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
         if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
     }
@@ -957,7 +929,6 @@ fn process_mono(
         );
         let fl = fl * p.rider.step(s, s);
         l_write[i] = fl;
-        p.shared.scope.push(fl);
         if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }
         if click_gr < *max_click_gr_db { *max_click_gr_db = click_gr; }
     }

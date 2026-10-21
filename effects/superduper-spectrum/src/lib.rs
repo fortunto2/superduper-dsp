@@ -83,6 +83,10 @@ pub type SharedParams = std::sync::Arc<SharedParamsInner>;
 
 pub struct SharedParamsInner {
     pub params: [AtomicF32; PARAMS.len()],
+    /// GUI-side changes to report to the host (effect::begin_events emits them).
+    pub dirty_params: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_begin: [std::sync::atomic::AtomicBool; PARAMS.len()],
+    pub gesture_end: [std::sync::atomic::AtomicBool; PARAMS.len()],
     pub bypass: std::sync::atomic::AtomicBool,
     pub ab_snapshot: superduper_synth_core::gui::AbSnapshot,
     pub scope: superduper_synth_core::gui::LiveScope,
@@ -105,6 +109,9 @@ impl PluginShared {
         Self {
             inner: std::sync::Arc::new(SharedParamsInner {
                 params: std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32)),
+                dirty_params: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
+                gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 bypass: std::sync::atomic::AtomicBool::new(false),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(4096),
@@ -128,6 +135,7 @@ impl std::ops::Deref for PluginShared {
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -197,81 +205,41 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            // Collect L (and optional R) slices first so the loudness
-            // meter sees true stereo. The spectrum visualiser then
-            // pushes L into its own ring.
-            // Two fixed slots instead of a Vec: `Vec::with_capacity(2)` still
-            // allocates, once per block, on the audio thread — 84 allocations
-            // over 32 blocks in the counting-allocator test. An analyzer that
-            // mallocs every block is the last plugin that should.
-            let mut slices: [Option<&[f32]>; 2] = [None, None];
-            let mut n_slices = 0;
-            for channel_pair in channel_pairs {
-                let captured = match channel_pair {
-                    ChannelPair::InputOutput(input, output) => {
-                        output.copy_from_slice(input);
-                        Some(&*input)
-                    }
-                    ChannelPair::InPlace(buf) => Some(&*buf),
-                    ChannelPair::OutputOnly(buf) => {
-                        buf.fill(0.0);
-                        None
-                    }
-                    ChannelPair::InputOnly(input) => Some(&*input),
-                };
-                if let Some(slice) = captured {
-                    if n_slices < slices.len() {
-                        slices[n_slices] = Some(slice);
-                        n_slices += 1;
-                    }
+        // Events, bypass and the port walk live in synth-core::effect; the
+        // runner copies the input through and feeds the bus scope (so a
+        // bypassed Spectrum still shows its track on the bus), the analysis
+        // below is skipped when bypassed.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let (true_peak, loudness, producer) = (&mut self.true_peak, &mut self.loudness, &mut self.producer);
+        superduper_synth_core::effect::run_ports_with(&**shared, &mut audio, |bypassed, left, l_out, r| {
+            l_out.copy_from_slice(left);
+            let right: &[f32] = match r {
+                Some((r_in, r_out)) => { r_out.copy_from_slice(r_in); r_in }
+                None => left,
+            };
+            if bypassed {
+                return;
+            }
+            let mut block_rolled_over = false;
+            let n = left.len().min(right.len());
+            for i in 0..n {
+                let (l, r) = (left[i], right[i]);
+                true_peak.process_stereo(l, r);
+                if loudness.process_stereo(l, r) {
+                    block_rolled_over = true;
                 }
             }
-            if !bypassed {
-                if let Some(left) = slices[0] {
-                    let right = slices[1].unwrap_or(left);
-                    let mut block_rolled_over = false;
-                    let n = left.len().min(right.len());
-                    for i in 0..n {
-                        let l = left[i];
-                        let r = right[i];
-                        self.true_peak.process_stereo(l, r);
-                        self.shared.scope.push(0.5 * (l + r));
-                        if self.loudness.process_stereo(l, r) {
-                            block_rolled_over = true;
-                        }
-                    }
-                    // Publish on 100 ms boundary — GUI reads at 60 Hz
-                    // anyway, no need to hit the atomic every sample.
-                    if block_rolled_over {
-                        self.shared
-                            .lufs_momentary
-                            .store(self.loudness.momentary_lufs(), Ordering::Relaxed);
-                        self.shared
-                            .lufs_short_term
-                            .store(self.loudness.short_term_lufs(), Ordering::Relaxed);
-                        self.shared
-                            .lufs_integrated
-                            .store(self.loudness.integrated_lufs(), Ordering::Relaxed);
-                        self.shared
-                            .true_peak_dbtp
-                            .store(self.true_peak.dbtp(), Ordering::Relaxed);
-                    }
-                    Self::push_to_ring(&mut self.producer, left);
-                }
+            if block_rolled_over {
+                shared.lufs_momentary.store(loudness.momentary_lufs(), Ordering::Relaxed);
+                shared.lufs_short_term.store(loudness.short_term_lufs(), Ordering::Relaxed);
+                shared.lufs_integrated.store(loudness.integrated_lufs(), Ordering::Relaxed);
+                shared.true_peak_dbtp.store(true_peak.dbtp(), Ordering::Relaxed);
             }
-        }
-        Ok(ProcessStatus::Continue)
+            Self::push_to_ring(producer, left);
+        })
     }
 }
 

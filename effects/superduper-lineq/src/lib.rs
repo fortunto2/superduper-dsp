@@ -137,6 +137,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -257,96 +258,60 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        // begin_block does the four opening steps in the one order that works,
-        // and hands back `changed` sampled BEFORE the dirty flags are consumed.
-        // Reading those flags afterwards is what silently disabled this
-        // plugin's FIR rebuild under host automation.
-        let prelude = superduper_dsp_sdk::clap_helpers::begin_block(
-            superduper_dsp_sdk::clap_helpers::BlockInputs {
-                params: &self.shared.params,
-                dirty: &self.shared.dirty_params,
-                gesture_begin: &self.shared.gesture_begin,
-                gesture_end: &self.shared.gesture_end,
-                bypass: &self.shared.bypass,
-            },
-            events.input,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         // Designing the FIR means an FFT plan, three Vec allocations and two
         // deallocations — ~30 ms by this crate's own estimate, against a 2.7 ms
         // block budget at 128 frames. It used to run right here, so dragging a
         // band gain dropped audio for the length of the drag. Now the audio
         // thread only notices the change and asks; the main thread designs.
-        let mut curve_moved =
-            self.shared.fir_dirty.swap(false, Ordering::AcqRel) || prelude.changed;
-        // The snapshot stays as a backstop: `changed` covers params that moved
-        // this block, this covers anything that moved while we were not looking
-        // (state load, preset recall through flush).
+        // A moved parameter shows up as a changed value below, whoever moved
+        // it (host automation, state load, the GUI), so no event-level change
+        // flag is needed; begin_events has already applied this block's events.
+        let mut curve_moved = shared.fir_dirty.swap(false, Ordering::AcqRel);
         for (i, last) in self.last_params.iter_mut().enumerate() {
-            let now = self.shared.params[i].load(Ordering::Relaxed);
+            let now = shared.params[i].load(Ordering::Relaxed);
             if *last != now {
                 *last = now;
                 curve_moved = true;
             }
         }
         if curve_moved {
-            self.shared.fir_request.store(true, Ordering::Release);
+            shared.fir_request.store(true, Ordering::Release);
             self.host.shared().request_callback();
         }
         // try_lock, never lock: the main thread holds this while designing, and
         // waiting on it would hand the audio callback's deadline to a normal
         // priority thread.
-        if let Some(mut slot) = self.shared.pending_fir.try_lock() {
+        if let Some(mut slot) = shared.pending_fir.try_lock() {
             if let Some(fir) = slot.take() {
                 self.conv_l.replace_fir(fir.clone());
                 self.conv_r.replace_fir(fir);
             }
         }
 
-        let bypassed = prelude.bypassed;
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((r_read, r_write)) = r {
-                    r_write.copy_from_slice(r_read);
-                }
-                continue;
-            }
+        let (conv_l, conv_r) = (&mut self.conv_l, &mut self.conv_r);
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             match r {
                 Some((r_read, r_write)) => {
                     let n = l_read.len().min(r_read.len());
                     for i in 0..n {
-                        let lo = self.conv_l.process(l_read[i]);
-                        let ro = self.conv_r.process(r_read[i]);
-                        l_write[i] = lo;
-                        r_write[i] = ro;
-                        self.shared.scope.push((lo + ro) * 0.5);
+                        l_write[i] = conv_l.process(l_read[i]);
+                        r_write[i] = conv_r.process(r_read[i]);
                     }
                 }
                 None => {
                     for i in 0..l_read.len() {
-                        let s = self.conv_l.process(l_read[i]);
-                        l_write[i] = s;
-                        self.shared.scope.push(s);
+                        l_write[i] = conv_l.process(l_read[i]);
                     }
                 }
             }
-        }
-        Ok(ProcessStatus::Continue)
+        })
     }
 }
 

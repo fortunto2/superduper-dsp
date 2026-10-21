@@ -211,6 +211,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 /// GUI helper: submit a track command via the shared atomic so the
@@ -278,19 +279,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
         // Drain transport + MIDI from the event stream.
@@ -298,7 +293,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             if let Some(core) = ev.as_core_event() {
                 match core {
                     CoreEventSpace::Transport(t) => {
-                        self.shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
+                        shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
                     }
                     CoreEventSpace::Midi(m) => {
                         let d = m.data();
@@ -307,7 +302,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                 // Bottom half of CC range = release;
                                 // only fire on the press half.
                                 if d[2] >= 64 {
-                                    submit_track_command(&self.shared.inner, track, cmd);
+                                    submit_track_command(&shared.inner, track, cmd);
                                 }
                             }
                         }
@@ -318,15 +313,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
 
         // Process commands now that all submissions for this block landed.
-        let sync_on = self.shared.params[P_SYNC].load(Ordering::Relaxed) >= 0.5;
-        let bars_target = self.shared.params[P_BARS].load(Ordering::Relaxed).round() as u32;
-        let bpm = self.shared.host_bpm.load(Ordering::Relaxed).max(20.0);
+        let sync_on = shared.params[P_SYNC].load(Ordering::Relaxed) >= 0.5;
+        let bars_target = shared.params[P_BARS].load(Ordering::Relaxed).round() as u32;
+        let bpm = shared.host_bpm.load(Ordering::Relaxed).max(20.0);
         // 1 bar = 4 beats × (60 / bpm) seconds × sr samples.
         let bar_samples = (sr * 60.0 / bpm * 4.0) as usize;
         for t in 0..TRACK_COUNT {
             // GUI / MIDI atoms first, then per-track buttons.
             let gui_cmd = TrackCommand::from_u32(
-                self.shared.track_command[t].swap(0, Ordering::AcqRel)
+                shared.track_command[t].swap(0, Ordering::AcqRel)
             );
             let buf_cmd = self.tracks[t].take_command();
             for cmd in [gui_cmd, buf_cmd] {
@@ -337,42 +332,29 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
 
         // Audio render.
-        let dry_gain = self.shared.params[P_DRY].load(Ordering::Relaxed);
-        let master_db = self.shared.params[P_MASTER].load(Ordering::Relaxed);
+        let dry_gain = shared.params[P_DRY].load(Ordering::Relaxed);
+        let master_db = shared.params[P_MASTER].load(Ordering::Relaxed);
         let master_lin = 10f32.powf(master_db / 20.0);
         let levels = [
-            self.shared.params[track_level_idx(0)].load(Ordering::Relaxed),
-            self.shared.params[track_level_idx(1)].load(Ordering::Relaxed),
-            self.shared.params[track_level_idx(2)].load(Ordering::Relaxed),
-            self.shared.params[track_level_idx(3)].load(Ordering::Relaxed),
+            shared.params[track_level_idx(0)].load(Ordering::Relaxed),
+            shared.params[track_level_idx(1)].load(Ordering::Relaxed),
+            shared.params[track_level_idx(2)].load(Ordering::Relaxed),
+            shared.params[track_level_idx(3)].load(Ordering::Relaxed),
         ];
         let feedbacks = [
-            self.shared.params[track_fb_idx(0)].load(Ordering::Relaxed),
-            self.shared.params[track_fb_idx(1)].load(Ordering::Relaxed),
-            self.shared.params[track_fb_idx(2)].load(Ordering::Relaxed),
-            self.shared.params[track_fb_idx(3)].load(Ordering::Relaxed),
+            shared.params[track_fb_idx(0)].load(Ordering::Relaxed),
+            shared.params[track_fb_idx(1)].load(Ordering::Relaxed),
+            shared.params[track_fb_idx(2)].load(Ordering::Relaxed),
+            shared.params[track_fb_idx(3)].load(Ordering::Relaxed),
         ];
         let mutes = [
-            self.shared.params[track_mute_idx(0)].load(Ordering::Relaxed) >= 0.5,
-            self.shared.params[track_mute_idx(1)].load(Ordering::Relaxed) >= 0.5,
-            self.shared.params[track_mute_idx(2)].load(Ordering::Relaxed) >= 0.5,
-            self.shared.params[track_mute_idx(3)].load(Ordering::Relaxed) >= 0.5,
+            shared.params[track_mute_idx(0)].load(Ordering::Relaxed) >= 0.5,
+            shared.params[track_mute_idx(1)].load(Ordering::Relaxed) >= 0.5,
+            shared.params[track_mute_idx(2)].load(Ordering::Relaxed) >= 0.5,
+            shared.params[track_mute_idx(3)].load(Ordering::Relaxed) >= 0.5,
         ];
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-                continue;
-            }
-
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             match r {
                 Some((r_read, r_write)) => {
                     self.render_stereo(l_read, l_write, r_read, r_write,
@@ -385,7 +367,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         sync_on, bars_target, bar_samples);
                 }
             }
-        }
+        })?;
 
         // Publish progress + state surface for the GUI.
         for t in 0..TRACK_COUNT {
@@ -556,7 +538,6 @@ impl<'a> PluginAudioProcessor<'a> {
             let out_r = dry_r * dry_gain + wet_r;
             l_write[i] = out_l * master_lin;
             r_write[i] = out_r * master_lin;
-            self.shared.scope.push((out_l + out_r) * 0.5 * master_lin);
         }
     }
 

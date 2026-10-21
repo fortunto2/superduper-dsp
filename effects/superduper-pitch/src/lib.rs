@@ -158,6 +158,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ===========================================================================
@@ -217,64 +218,40 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let params = PitchParams {
             pitch_st: load(P_PITCH),
             formant_st: load(P_FORMANT),
             mix: load(P_MIX),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
-            bypassed: self.shared.bypass.load(Ordering::Relaxed),
+            bypassed: shared.bypass.load(Ordering::Relaxed),
         };
         self.engine.set_mode(mode_from_param(load(P_MODE)));
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-
-            let Some((read_l, write_l)) = split_io(ch_l) else { continue };
-            let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch_r {
-                Some(c) => match split_io(c) {
-                    Some((r, w)) => (r, Some(w)),
-                    None => (read_l, None),
-                },
-                None => (read_l, None),
-            };
-
-            // Feed the key detector from the (mono-summed) input — runs in both
-            // modes so the GUI always shows the incoming key.
+        // Bypass stays the DSP's own (params.bypassed): its latency delay keeps
+        // running, so bypass never moves PDC. The runner feeds the bus scope.
+        let (engine, keydet) = (&mut self.engine, &mut self.keydet);
+        superduper_synth_core::effect::run_ports_with(&**shared, &mut audio, |_bypassed, read_l, write_l, r| {
+            let read_r: &[f32] = r.as_ref().map_or(read_l, |(rr, _)| rr);
             let kn = read_l.len().min(read_r.len());
             for i in 0..kn {
-                self.keydet.push((read_l[i] + read_r[i]) * 0.5);
+                keydet.push((read_l[i] + read_r[i]) * 0.5);
             }
-
-            let empty: &mut [f32] = &mut [];
-            match write_r {
-                Some(w) => self.engine.process(read_l, read_r, write_l, w, &params),
-                None => self.engine.process(read_l, read_r, write_l, empty, &params),
+            match r {
+                Some((read_r, write_r)) => engine.process(read_l, read_r, write_l, write_r, &params),
+                None => {
+                    let empty: &mut [f32] = &mut [];
+                    engine.process(read_l, read_l, write_l, empty, &params);
+                }
             }
-            for &s in write_l.iter() {
-                self.shared.scope.push(s);
-            }
-        }
+        })?;
 
         self.shared
             .key_index

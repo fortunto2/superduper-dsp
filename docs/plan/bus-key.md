@@ -49,10 +49,6 @@ the real side-chain input stays for that.
       places tracks on the map and the bus map shows the room. Not a Dolby Atmos encoder (an
       Apple Spatial Audio delivery needs an ADM BWF master from Dolby's renderer / Fiedler Composer)
 
-- [ ] bypassed plugin = silence on the bus: every plugin's bypass path copies dry and returns before
-      `scope.push`, so a bypassed Morph read −120 and `prefer: Morph` lost the 808 (measured 2026-10-21).
-      Fix in the plugins: push the dry signal on bypass (31 process() paths); until then serve.rs
-      falls back to the loudest instance when the preferred one is silent
 
 - [ ] Morph: side-chain f0 on a jaw-harp drone read 943 Hz / unvoiced (the formant, not the
       fundamental ~130 Hz), so Harmonic mode fell back to Envelope (measured 2026-10-21 on
@@ -105,9 +101,14 @@ the real side-chain input stays for that.
       - [x] batch 3: Multiband, Soothe, Compressor, Morph (plain), and `run_*_with` — the closure
         sees the bypass flag and writes the bypassed output itself — for Double, Vocoder,
         Saturator, whose bypass keeps the latency delay running (bypass must not move PDC)
-      - [ ] the rest: LinEQ (`begin_block` prelude + host callback), Vocal, Pitch, Tune, Stretch,
-        Granular, Formant, Ambient, Looper, NAM, Spectrum; the synths have their own shape
-        (notes in, no input port) and stay as they are
+      - [x] batch 4: Pitch, Tune, Stretch, Granular, Formant (DSP-owned bypass → `run_*_with`),
+        Vocal, Looper, LinEQ (its `begin_block` prelude replaced by `begin_events` + the value
+        snapshot it already kept), Spectrum (gained the dirty/gesture flags its GUI moves never
+        reported), NAM. Every effect is on the shared runner now; `clap_helpers::begin_block`
+        has no users left. Ambient is a generator (output-only ports) and the synths have their
+        own shape (notes in): they stay as they are
+- [x] bypassed plugin = silence on the bus — closed by the migration above: the runner feeds the
+      scope on bypass in all 30 effects
 - [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,
       RBJ shelf with slope > 1 gives NaN coefficients; both guarded
 - [x] bus meter controls (`sdsp-bus controls`, tools/sdsp-bus/src/controls.rs, 15 known-answer

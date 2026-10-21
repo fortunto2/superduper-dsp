@@ -175,6 +175,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ===========================================================================
@@ -309,23 +310,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
         self.handle_note_events(events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
 
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let scale_idx = (load(P_SCALE).round() as usize).min(scale::NUM_SCALES - 1);
         let params = TuneParams {
             key: load(P_KEY).round().clamp(0.0, 11.0) as u8,
@@ -339,7 +332,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             midi_note: self.midi_target(),
             use_swiftf0: load(P_MODEL) >= 0.5,
             engine: engine_from_param(load(P_ENGINE)),
-            bypassed: self.shared.bypass.load(Ordering::Relaxed),
+            bypassed: shared.bypass.load(Ordering::Relaxed),
         };
 
         // ---- Snapshot the sidechain reference (input port 1) ---------------
@@ -363,40 +356,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
 
         // ---- Process the main port (index 0) -------------------------------
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let ch_r = iter.next();
-
-            let Some((read_l, write_l)) = split_io(ch_l) else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch_r {
-                Some(c) => match split_io(c) {
-                    Some((r, w)) => (r, Some(w)),
-                    None => (read_l, None),
-                },
-                None => (read_l, None),
-            };
-
-            let sc_l = &self.sc_l[..n_frames];
-            let sc_r = &self.sc_r[..n_frames];
-            match write_r {
-                Some(w) => self.tune.process(read_l, read_r, sc_l, sc_r, write_l, w, &params),
+        // Bypass stays the DSP's own (params.bypassed): its latency delay keeps
+        // running, so bypass never moves PDC. The runner feeds the bus scope.
+        let (sc_l, sc_r) = (&self.sc_l[..n_frames], &self.sc_r[..n_frames]);
+        superduper_synth_core::effect::run_main_port_with(&**shared, &mut audio, |_bypassed, read_l, write_l, r| {
+            match r {
+                Some((read_r, write_r)) => self.tune.process(read_l, read_r, sc_l, sc_r, write_l, write_r, &params),
                 None => {
                     let empty: &mut [f32] = &mut [];
-                    self.tune.process(read_l, read_r, sc_l, sc_r, write_l, empty, &params);
+                    self.tune.process(read_l, read_l, sc_l, sc_r, write_l, empty, &params);
                 }
             }
-            for &s in write_l.iter() {
-                self.shared.scope.push(s);
-            }
-        }
+        })?;
 
         self.shared
             .detected_hz

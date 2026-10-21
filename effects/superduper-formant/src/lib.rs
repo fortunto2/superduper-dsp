@@ -187,6 +187,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 /// GUI helper — write a param and flag it so the host records the move into its
@@ -338,29 +339,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // High-Q band-passes spin up denormals on release tails.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
         self.handle_events(events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
 
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let synced = load(P_SYNC) >= 0.5;
         let rate_hz = if synced {
             sync_division_hz(
                 load(P_DIV).round() as u32,
-                self.shared.host_bpm.load(Ordering::Relaxed),
+                shared.host_bpm.load(Ordering::Relaxed),
             )
         } else {
             load(P_RATE)
@@ -381,7 +373,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             drive: load(P_DRIVE),
             mix: load(P_MIX),
             output_lin: 10f32.powf(load(P_OUTPUT) / 20.0),
-            bypassed: self.shared.bypass.load(Ordering::Relaxed),
+            bypassed: shared.bypass.load(Ordering::Relaxed),
         };
 
         // ---- Snapshot the voice sidechain (input port 1) -------------------
@@ -405,44 +397,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
 
         // ---- Main port ----------------------------------------------------
-        if let Some(mut main_pair) = audio.port_pair(0) {
-            let Some(channel_pairs) = main_pair.channels()?.into_f32() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let ch_r = iter.next();
-
-            let Some((read_l, write_l)) = split_io(ch_l) else {
-                return Ok(ProcessStatus::Continue);
-            };
-            let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match ch_r {
-                Some(c) => match split_io(c) {
-                    Some((r, w)) => (r, Some(w)),
-                    None => (read_l, None),
-                },
-                None => (read_l, None),
-            };
-
-            let sc_l = &self.sc_l[..n_frames];
-            let sc_r = &self.sc_r[..n_frames];
-            match write_r {
-                Some(w) => self
-                    .fx
-                    .process_stereo(read_l, read_r, write_l, w, sc_l, sc_r, &params),
+        // Bypass stays the DSP's own (params.bypassed): its latency delay keeps
+        // running, so bypass never moves PDC. The runner feeds the bus scope.
+        let (sc_l, sc_r) = (&self.sc_l[..n_frames], &self.sc_r[..n_frames]);
+        superduper_synth_core::effect::run_main_port_with(&**shared, &mut audio, |_bypassed, read_l, write_l, r| {
+            match r {
+                Some((read_r, write_r)) => self.fx.process_stereo(read_l, read_r, write_l, write_r, sc_l, sc_r, &params),
                 None => {
                     let empty: &mut [f32] = &mut [];
-                    self.fx
-                        .process_stereo(read_l, read_r, write_l, empty, sc_l, sc_r, &params)
+                    self.fx.process_stereo(read_l, read_l, write_l, empty, sc_l, sc_r, &params);
                 }
             }
-
-            for &s in write_l.iter() {
-                self.shared.scope.push(s);
-            }
-        }
+        })?;
 
         // ---- Publish live state for the GUI (once per block) ---------------
         let live = self.fx.current_formants();

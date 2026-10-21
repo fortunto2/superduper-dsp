@@ -4,7 +4,7 @@
 //! compresses only its own range, and a keyed band reacts to the bus key's
 //! level in its range even when its own input is quiet.
 
-use superduper_multiband::dsp::{band_key_db, band_range, static_gain_db, Engine, Settings, MAX_BANDS};
+use superduper_multiband::dsp::{band_key_db, band_range, band_ref_hz, static_gain_db, Engine, Settings, MAX_BANDS};
 use superduper_synth_core::gui::LiveScope;
 
 const SR: f32 = 48_000.0;
@@ -178,4 +178,125 @@ fn static_curve_shape() {
         assert!(g <= prev + 1e-5, "monotonic through the knee");
         prev = g;
     }
+}
+
+/// Render with the settings chosen per block; returns (out_l, reports).
+fn render_with(x: &[f32], block: usize, mut at: impl FnMut(usize) -> Settings) -> (Vec<f32>, Vec<[f32; MAX_BANDS]>) {
+    let mut e = Engine::new(SR, &at(0));
+    let mut out = vec![0.0; x.len()];
+    let mut scratch = vec![0.0; block];
+    let mut reps = Vec::new();
+    for (bi, (xi, oi)) in x.chunks(block).zip(out.chunks_mut(block)).enumerate() {
+        let n = xi.len();
+        reps.push(e.process(&at(bi * block), &NO_KEY, xi, xi, oi, &mut scratch[..n]).gr_db);
+    }
+    (out, reps)
+}
+
+/// Largest |4th difference| in `x[a..b]`: a high-pass (+24 dB/oct) under
+/// which a step is ~6× its size while a tone at f is ×(2·sin(πf/sr))⁴ — so
+/// a click stands out, a smooth gain change does not. The tones used here sit
+/// low; the output of a downward compressor is never louder than the input,
+/// so the input's own figure is the ceiling.
+fn max_click(x: &[f32], a: usize, b: usize) -> f32 {
+    (a.max(4)..b).map(|i| (x[i] - 4.0 * x[i - 1] + 6.0 * x[i - 2] - 4.0 * x[i - 3] + x[i - 4]).abs()).fold(0.0, f32::max)
+}
+
+#[test]
+fn narrow_bands_get_the_gain_they_ask_for() {
+    // Band 2 asks −12 dB (as makeup, so the request is exact). The shelves'
+    // tails overlap when crossovers are close; the solver must still land the
+    // band centre on −12 and leave the neighbours alone.
+    for oct in [1.0f32, 1.0 / 3.0] {
+        let c0 = 500.0;
+        let mut s = Settings { bands: 3, xover_hz: [c0, c0 * 2f32.powf(oct), 16000.0], ..Default::default() };
+        for b in s.band.iter_mut() { b.threshold_db = 0.0; b.knee_db = 0.0; }
+        s.band[1].makeup_db = -12.0;
+        let fs: Vec<f32> = (0..3).map(|b| band_ref_hz(3, &s.xover_hz, b, SR)).collect();
+        let n = SR as usize;
+        let x: Vec<f32> = (0..n).map(|i| fs.iter().map(|f| 0.05 * (std::f32::consts::TAU * f * i as f32 / SR).sin()).sum()).collect();
+        let (out, _) = render(&s, &NO_KEY, &x);
+        let d: Vec<f32> = fs.iter().map(|&f| level_db(&out, f, n / 2) - level_db(&x, f, n / 2)).collect();
+        println!("{oct:.2} oct: {:.0}/{:.0}/{:.0} Hz → {:+.2} {:+.2} {:+.2} dB", fs[0], fs[1], fs[2], d[0], d[1], d[2]);
+        assert!((d[1] + 12.0).abs() < 1.0, "{oct:.2} oct: band 2 got {:+.2} dB, asked −12", d[1]);
+        assert!(d[0].abs() < 1.0 && d[2].abs() < 1.0, "{oct:.2} oct: neighbours moved ({:+.2}, {:+.2})", d[0], d[2]);
+    }
+}
+
+#[test]
+fn narrow_band_meter_reports_what_the_audio_got() {
+    // A ⅓-octave band compressing: the meter's GR is the cut the tone really
+    // gets (within 1 dB), whatever the solver could or could not reach.
+    let c0 = 1000.0;
+    let mut s = Settings { bands: 3, xover_hz: [c0, c0 * 1.26, 16000.0], ..Default::default() };
+    for b in s.band.iter_mut() { b.threshold_db = 0.0; }
+    s.band[1].threshold_db = -40.0;
+    s.band[1].ratio = 20.0;
+    s.band[1].knee_db = 0.0;
+    s.band[1].range_db = 0.0;
+    let f = band_ref_hz(3, &s.xover_hz, 1, SR);
+    let n = SR as usize;
+    let x = tone(f, 0.3, n);
+    let (out, gr) = render(&s, &NO_KEY, &x);
+    let d = level_db(&out, f, n / 4) - level_db(&x, f, n / 4);
+    println!("⅓-oct band: meter {:+.2} dB, tone {d:+.2} dB", gr[1]);
+    assert!(d < -10.0, "the band should be cut (got {d:+.2})");
+    assert!((d - gr[1]).abs() < 1.0, "meter {:+.2} vs measured {d:+.2}", gr[1]);
+}
+
+#[test]
+fn unsolo_does_not_click() {
+    // Band 1 compressing, solo it for a while, unsolo: the staircase kept
+    // running and the switch crossfades, so no step at either transition.
+    let n = SR as usize * 2;
+    let x: Vec<f32> = (0..n).map(|i| {
+        let t = i as f32 / SR;
+        0.5 * (std::f32::consts::TAU * 60.0 * t).sin() + 0.2 * (std::f32::consts::TAU * 1500.0 * t).sin()
+    }).collect();
+    let mut base = Settings { bands: 3, xover_hz: [200.0, 4000.0, 8000.0], ..Default::default() };
+    for b in base.band.iter_mut() { b.threshold_db = 0.0; }
+    base.band[0].threshold_db = -30.0;
+    base.band[0].ratio = 6.0;
+    let (solo_at, unsolo_at) = (SR as usize / 2, SR as usize);
+    let (out, _) = render_with(&x, 128, |i| {
+        let mut s = base;
+        s.band[0].solo = (solo_at..unsolo_at).contains(&i);
+        s
+    });
+    let ceiling = max_click(&x, 0, n);
+    let at_solo = max_click(&out, solo_at - 10, solo_at + 960);
+    let at_unsolo = max_click(&out, unsolo_at - 10, unsolo_at + 960);
+    println!("4th diff: input {ceiling:.5}, solo {at_solo:.5}, unsolo {at_unsolo:.5}");
+    let steady = ceiling;
+    assert!(at_solo < steady * 1.2, "click entering solo ({at_solo:.4} vs {steady:.4})");
+    assert!(at_unsolo < steady * 1.2, "click leaving solo ({at_unsolo:.4} vs {steady:.4})");
+}
+
+#[test]
+fn band_count_change_while_playing_does_not_click() {
+    // 4 → 2 → 4 bands with every band compressing. Re-enabled bands start
+    // from GR 0 (not a stale envelope) and the audio glides between layouts.
+    let n = SR as usize * 3;
+    let fs = [50.0f32, 200.0, 800.0, 3200.0];
+    let x: Vec<f32> = (0..n).map(|i| fs.iter().map(|f| 0.2 * (std::f32::consts::TAU * f * i as f32 / SR).sin()).sum()).collect();
+    let mut base = Settings { bands: 4, xover_hz: [100.0, 400.0, 1600.0], ..Default::default() };
+    for b in base.band.iter_mut() { b.threshold_db = -30.0; b.ratio = 4.0; b.knee_db = 0.0; }
+    let block = 32;
+    let (to2, to4) = (SR as usize, SR as usize * 2);
+    let (out, reps) = render_with(&x, block, |i| {
+        let mut s = base;
+        s.bands = if (to2..to4).contains(&i) { 2 } else { 4 };
+        s
+    });
+    let steady = max_click(&x, 0, n);
+    let at2 = max_click(&out, to2 - 10, to2 + 960);
+    let at4 = max_click(&out, to4 - 10, to4 + 960);
+    println!("4th diff: input {steady:.5}, 4→2 {at2:.5}, 2→4 {at4:.5}");
+    assert!(at2 < steady * 1.2, "click at 4→2 ({at2:.4} vs {steady:.4})");
+    assert!(at4 < steady * 1.2, "click at 2→4 ({at4:.4} vs {steady:.4})");
+    let before = reps[to2 / block - 1];
+    let back = reps[to4 / block];
+    println!("GR before {before:?}, first block back {back:?}");
+    assert!(before[3] < -5.0, "band 4 should be compressing before the switch");
+    assert!(back[3].abs() < 1.0, "band 4 must restart from GR 0, got {:.2}", back[3]);
 }

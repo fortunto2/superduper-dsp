@@ -6,20 +6,22 @@
 //!   detector:  x ─► LR4 tree ─► band b ─► |·| max(L,R) ─► envelope ─┐
 //!                                       key level (bus) ─► blend ───┴► curve ─► band dB
 //!
-//!   audio:     x ─► low shelf @c1 (dB0−dB1) ─► … ─► low shelf @c(n−1) ─► × 10^(dB(n−1)/20)
+//!   audio:     x ─► low shelf @c1 ─► … ─► low shelf @c(n−1) ─► × top gain
+//!              (shelf + top gains solved so each band centre gets its band dB)
 //! ```
 //!
 //! **Dynamic phase.** The audio never goes through the crossover. The band
-//! gains are applied as a staircase of low shelves: the shelf at crossover
-//! `c` carries the *difference* between the band below and the band above,
-//! the top band's gain is a plain multiplier. Below `c1` the shelves multiply
-//! out to band 0's gain, between `c1` and `c2` to band 1's, and so on. A
-//! shelf whose difference is exactly 0 dB is skipped (output = input, state
-//! zeroed — the exact state of a unity filter), so with no band compressing
-//! the output is the input bit for bit. A band that compresses adds the phase
-//! shift of one analog-style shelf pair, and only while it compresses — what
-//! FabFilter calls Dynamic Phase. The shelves are 4th order, 24 dB/oct like
-//! the detector's crossovers. A static LR4 sum would instead put a
+//! gains are applied as a staircase of low shelves, one per crossover, plus
+//! a broadband gain for the top band. With crossovers far apart each shelf
+//! would simply carry the difference between its two bands; closer than ~2
+//! octaves their tails overlap, so `GainSolver` solves for the shelf gains
+//! whose summed response lands every band's gain at its centre. When all
+//! bands want the same gain there is no shelf at all (output = input × gain,
+//! state zeroed — the exact state of a unity filter), so with no band
+//! compressing the output is the input bit for bit. A band that compresses
+//! adds the phase shift of its shelves, and only while it compresses — what
+//! FabFilter calls Dynamic Phase. The shelves are 8th order (48 dB/oct), so
+//! a narrow band can be cut deeply; a static LR4 sum would instead put a
 //! 360° allpass rotation at every crossover on every sample.
 //!
 //! The detector does use Linkwitz-Riley 4th order (24 dB/oct, sums flat):
@@ -122,6 +124,21 @@ pub fn band_key_db(scope: &superduper_synth_core::gui::LiveScope, lo: f32, hi: f
     (0..9).map(|i| scope.key_db_at((l + (h - l) * i as f32 / 8.0).exp())).fold(-120.0f32, f32::max)
 }
 
+/// Where band `b`'s gain is defined and measured: the log centre of an inner
+/// band, one octave beyond its crossover for the outer two (where the shelf
+/// staircase is flat). The gain solver aims the response at these points.
+pub fn band_ref_hz(bands: usize, xover_hz: &[f32; MAX_XOVERS], b: usize, sr: f32) -> f32 {
+    let n = bands.clamp(2, MAX_BANDS);
+    let f = if b == 0 {
+        xover_hz[0] * 0.5
+    } else if b + 1 >= n {
+        xover_hz[n - 2] * 2.0
+    } else {
+        (xover_hz[b - 1] * xover_hz[b]).sqrt()
+    };
+    f.min(sr * 0.49)
+}
+
 // ---------------------------------------------------------------------------
 // Detector crossover: LR4 tree
 // ---------------------------------------------------------------------------
@@ -153,34 +170,62 @@ impl Splitter {
     }
 
     /// Low band = LP(c1); the rest = HP(c1), split again at c2, … — the
-    /// classic LR4 tree. The sum is flat in magnitude.
+    /// classic LR4 tree. The sum is flat in magnitude. Every stage runs
+    /// whatever the band count, so a stage that comes back into use (Bands
+    /// 4→2→4 while playing) has the state of the signal, not a stale one.
     #[inline]
     fn split(&mut self, x: f32, n: usize, out: &mut [f32; MAX_BANDS]) {
-        let mut rest = x;
-        for i in 0..n - 1 {
-            out[i] = self.lp[i].run(rest);
-            rest = self.hp[i].run(rest);
+        let mut rest = [x; MAX_BANDS];
+        let mut low = [0.0f32; MAX_XOVERS];
+        for i in 0..MAX_XOVERS {
+            low[i] = self.lp[i].run(rest[i]);
+            rest[i + 1] = self.hp[i].run(rest[i]);
         }
-        out[n - 1] = rest;
+        out[..n - 1].copy_from_slice(&low[..n - 1]);
+        out[n - 1] = rest[n - 1];
     }
 }
 
 // ---------------------------------------------------------------------------
-// Audio path: 4th-order Butterworth low shelves in f64
+// Audio path: 8th-order Butterworth low shelves in f64
 // ---------------------------------------------------------------------------
 
-/// Pole damping of the two sections of a 4th-order Butterworth:
-/// sin((2m−1)·π/8), m = 1, 2.
-const ZETA: [f64; 2] = [0.382_683_432_365_089_8, 0.923_879_532_511_286_7];
+/// Biquad sections per shelf.
+const SECTIONS: usize = 4;
+/// Pole damping of the four sections of an 8th-order Butterworth:
+/// sin((2m−1)·π/16), m = 1..4.
+const ZETA: [f64; SECTIONS] = [0.195_090_322_016_128_25, 0.555_570_233_019_602_2, 0.831_469_612_302_545_2, 0.980_785_280_403_230_4];
+/// |H(jw)|² of the shelf is (A + w¹⁶)/(1/A + w¹⁶), A its linear DC gain.
+const SHELF_POW: i32 = 16;
+/// Largest gain the solver gives one shelf. Two adjacent bands may legitimately
+/// differ by GR + makeup + upward, so this is wide; a narrow band asking for
+/// more than its slope allows saturates here instead of running away.
+const SHELF_LIMIT_DB: f64 = 72.0;
+/// A solved shelf smaller than this is left out (unity, bit-exact).
+const SHELF_SNAP_DB: f64 = 0.005;
+/// Band gains closer than this to the last solved ones reuse that solution.
+const SOLVE_REUSE_DB: f64 = 1e-3;
+/// Applied-vs-requested differences below this are not reported to the meter.
+const METER_ERR_DB: f64 = 0.05;
+/// An inner band can be pushed away from its neighbours by at most about
+/// slope × width (48 dB/oct × octaves) at its centre, and only with shelves
+/// that grow without bound on the way there. Requests are held to this
+/// fraction of it, so the shelves stay moderate and the solve stays square.
+const REACH: f64 = 0.8;
+/// Crossfade on a topology change (band count, Solo).
+const SWITCH_MS: f32 = 5.0;
 
-/// A 4th-order (24 dB/oct, matching the LR4 detector) low shelf: Butterworth
-/// poles at radius G^(−1/8), zeros at G^(+1/8) around the crossover, so the
-/// DC gain is G, the top is unity and the dB midpoint sits on the crossover.
-/// A 2nd-order shelf leaked 0.3 dB two octaves out at 25 dB of GR.
+/// An 8th-order (48 dB/oct) low shelf: Butterworth poles at radius
+/// A^(−1/16), zeros at A^(+1/16) around the crossover, so the DC gain is A,
+/// the top is unity and the dB midpoint sits on the crossover. 48 dB/oct, not
+/// the detector's 24: a band ⅓ octave wide can only be cut by about
+/// slope × width at its centre (8 dB with 4th-order shelves, 16 dB here) —
+/// the shelves' tails eat the rest. A 2nd-order shelf leaked 0.3 dB two
+/// octaves out at 25 dB of GR.
 #[derive(Default, Clone, Copy)]
 struct ShelfCoef {
     /// Per section: b0, b1, b2, a1, a2 (normalised).
-    sec: [[f64; 5]; 2],
+    sec: [[f64; 5]; SECTIONS],
     /// Gain these coefficients were computed for; NaN = stale.
     gain_db: f64,
 }
@@ -188,7 +233,7 @@ struct ShelfCoef {
 impl ShelfCoef {
     /// `k` = 1 / tan(π·fc / sr), the bilinear transform prewarped at fc.
     fn set(&mut self, k: f64, gain_db: f64) {
-        let rz = 10f64.powf(gain_db / 160.0); // G^(1/8)
+        let rz = 10f64.powf(gain_db / (20.0 * SHELF_POW as f64)); // A^(1/16)
         let rp = 1.0 / rz;
         let k2 = k * k;
         for (m, z) in ZETA.iter().enumerate() {
@@ -210,7 +255,7 @@ impl ShelfCoef {
 
 #[derive(Default, Clone, Copy)]
 struct ShelfState {
-    z: [[f64; 2]; 2],
+    z: [[f64; 2]; SECTIONS],
 }
 
 impl ShelfState {
@@ -219,7 +264,7 @@ impl ShelfState {
     #[inline]
     fn run(&mut self, c: &ShelfCoef, active: bool, x: f64) -> f64 {
         if !active {
-            self.z = [[0.0; 2]; 2];
+            self.z = [[0.0; 2]; SECTIONS];
             return x;
         }
         let mut v = x;
@@ -231,6 +276,142 @@ impl ShelfState {
         }
         v
     }
+}
+
+// ---------------------------------------------------------------------------
+// Band gains → shelf gains
+// ---------------------------------------------------------------------------
+
+/// The shelves' tails overlap, so "shelf = difference of neighbouring bands"
+/// only gives each band its gain when crossovers are ~2 octaves apart (band 1
+/// asked −12 got −4.6 dB at ⅓ octave). This solves for the shelf gains and
+/// the broadband top gain whose summed dB response hits every band's gain at
+/// its reference point (`band_ref_hz`): Newton on the exact closed-form shelf
+/// response, warm-started from the previous sample, so it is one or two
+/// iterations while the gains move and none while they hold.
+#[derive(Clone, Copy)]
+struct GainSolver {
+    /// Band count the influence table was built for; 0 = stale.
+    nb: usize,
+    /// u[k][c] = w¹⁶, w = band k's reference over crossover c (prewarped).
+    u: [[f64; MAX_XOVERS]; MAX_BANDS],
+    /// How far inner band k may sit outside its neighbours (dB), see `REACH`.
+    reach: [f64; MAX_BANDS],
+    /// Unknowns: shelves 0..nb−1, then the top gain at index nb−1.
+    x: [f64; MAX_BANDS],
+    /// Band gains of the last solve, and the response it achieved.
+    target: [f64; MAX_BANDS],
+    applied: [f64; MAX_BANDS],
+    fresh: bool,
+}
+
+impl GainSolver {
+    fn new() -> Self {
+        Self { nb: 0, u: [[0.0; MAX_XOVERS]; MAX_BANDS], reach: [0.0; MAX_BANDS], x: [0.0; MAX_BANDS], target: [0.0; MAX_BANDS], applied: [0.0; MAX_BANDS], fresh: false }
+    }
+
+    fn refresh(&mut self, sr: f32, xover: &[f32; MAX_XOVERS], nb: usize) {
+        if nb != self.nb { self.x = [0.0; MAX_BANDS]; }
+        self.nb = nb;
+        let t = |f: f32| (core::f64::consts::PI * f as f64 / sr as f64).tan();
+        for k in 1..nb - 1 {
+            let oct = (t(xover[k]) / t(xover[k - 1])).log2();
+            self.reach[k] = REACH * 3.0 * SHELF_POW as f64 * oct;
+        }
+        for k in 0..nb {
+            let fk = t(band_ref_hz(nb, xover, k, sr));
+            for c in 0..nb - 1 {
+                self.u[k][c] = (fk / t(xover[c])).powi(SHELF_POW);
+            }
+        }
+        self.fresh = false;
+    }
+
+    /// Response at every reference point for the current `x`, and its
+    /// Jacobian (row k, column = unknown).
+    fn eval(&self, act: &mut [f64; MAX_BANDS], jac: &mut [[f64; MAX_BANDS]; MAX_BANDS]) {
+        let nb = self.nb;
+        let a: [f64; MAX_XOVERS] = std::array::from_fn(|c| if c + 1 < nb { 10f64.powf(self.x[c] / 20.0) } else { 1.0 });
+        for k in 0..nb {
+            let mut s = self.x[nb - 1];
+            for c in 0..nb - 1 {
+                let (ac, u) = (a[c], self.u[k][c]);
+                s += 10.0 * ((ac + u) / (1.0 / ac + u)).log10();
+                jac[k][c] = 0.5 * (ac / (ac + u) + 1.0 / (1.0 + u * ac));
+            }
+            jac[k][nb - 1] = 1.0;
+            act[k] = s;
+        }
+    }
+
+    /// Shelf gains (0 = shelf off) and top gain for these band gains.
+    fn solve(&mut self, band_db: &[f32; MAX_BANDS]) -> ([f64; MAX_XOVERS], f64) {
+        let nb = self.nb;
+        let mut t: [f64; MAX_BANDS] = std::array::from_fn(|b| if b < nb { band_db[b] as f64 } else { 0.0 });
+        for b in 1..nb - 1 {
+            let (lo, hi) = (t[b - 1].min(t[b + 1]), t[b - 1].max(t[b + 1]));
+            t[b] = t[b].clamp(lo - self.reach[b], hi + self.reach[b]);
+        }
+        if (1..nb).all(|b| t[b] == t[0]) {
+            // Flat: no shelf at all — the bit-exact idle path.
+            self.x = [0.0; MAX_BANDS];
+            self.x[nb - 1] = t[0];
+            self.target = t;
+            self.applied = t;
+            self.fresh = true;
+            return ([0.0; MAX_XOVERS], t[0]);
+        }
+        let near = (0..nb).all(|b| (t[b] - self.target[b]).abs() <= SOLVE_REUSE_DB);
+        if !(self.fresh && near) {
+            let mut act = [0.0; MAX_BANDS];
+            let mut jac = [[0.0; MAX_BANDS]; MAX_BANDS];
+            // Keep the best iterate: a step that made things worse is undone.
+            let (mut best_x, mut best_act, mut best_err) = (self.x, act, f64::INFINITY);
+            for it in 0..4 {
+                self.eval(&mut act, &mut jac);
+                let mut r: [f64; MAX_BANDS] = std::array::from_fn(|k| if k < nb { t[k] - act[k] } else { 0.0 });
+                let err = r[..nb].iter().fold(0.0f64, |m, e| m.max(e.abs()));
+                if err < best_err { (best_x, best_act, best_err) = (self.x, act, err); }
+                if it == 3 || err < SOLVE_REUSE_DB { break; }
+                if !lin_solve(&mut jac, &mut r, nb) { break; }
+                for (i, d) in r[..nb].iter().enumerate() {
+                    self.x[i] += d.clamp(-24.0, 24.0);
+                }
+                for v in self.x[..nb - 1].iter_mut() { *v = v.clamp(-SHELF_LIMIT_DB, SHELF_LIMIT_DB); }
+            }
+            self.x = best_x;
+            self.applied = best_act;
+            self.target = t;
+            self.fresh = true;
+        }
+        let shelf = std::array::from_fn(|c| {
+            let v = if c + 1 < nb { self.x[c] } else { 0.0 };
+            if v.abs() < SHELF_SNAP_DB { 0.0 } else { v }
+        });
+        (shelf, self.x[nb - 1])
+    }
+}
+
+/// Gaussian elimination with partial pivoting on the leading n×n block;
+/// the solution replaces `b`. False if singular.
+fn lin_solve(a: &mut [[f64; MAX_BANDS]; MAX_BANDS], b: &mut [f64; MAX_BANDS], n: usize) -> bool {
+    for col in 0..n {
+        let p = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs())).unwrap_or(col);
+        if a[p][col].abs() < 1e-12 { return false; }
+        a.swap(col, p);
+        b.swap(col, p);
+        for row in col + 1..n {
+            let f = a[row][col] / a[col][col];
+            for j in col..n { a[row][j] -= f * a[col][j]; }
+            b[row] -= f * b[col];
+        }
+    }
+    for col in (0..n).rev() {
+        let mut s = b[col];
+        for j in col + 1..n { s -= a[col][j] * b[j]; }
+        b[col] = s / a[col][col];
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +443,10 @@ fn tc_coef(ms: f32, sr: f32) -> f32 { (-1.0 / (ms.max(0.01) * 0.001 * sr)).exp()
 /// What one block did, per band — for meters, the bus and tests.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockReport {
-    /// Most extreme gain change of the block (≤ 0 compressing, > 0 upward).
+    /// Most extreme gain change of the block (≤ 0 compressing, > 0 upward):
+    /// what the audio path actually applied at the band's reference point,
+    /// makeup excluded — so a request the shelves cannot reach reads as what
+    /// it got, not as what was asked.
     pub gr_db: [f32; MAX_BANDS],
     /// Detector level at the end of the block (dBFS, after the key blend).
     pub detector_db: [f32; MAX_BANDS],
@@ -276,9 +460,21 @@ pub struct Engine {
     coef: [ShelfCoef; MAX_XOVERS],
     shelf_l: [ShelfState; MAX_XOVERS],
     shelf_r: [ShelfState; MAX_XOVERS],
+    solver: GainSolver,
+    /// Shelf + top gains applied on the last sample.
+    applied_shelf: [f64; MAX_XOVERS],
+    applied_top: f64,
+    /// Band-count change: glide from these gains to the solved ones.
+    fade_shelf: [f64; MAX_XOVERS],
+    fade_top: f64,
+    fade_left: u32,
+    nb: usize,
     env: [f32; MAX_BANDS],
     key_env: [f32; MAX_BANDS],
     makeup: [Glide; MAX_BANDS],
+    /// Solo crossfade: weight of the full (staircase) path, and of each band.
+    full_w: Glide,
+    solo_w: [Glide; MAX_BANDS],
     mix: Glide,
     output: Glide,
 }
@@ -286,6 +482,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(sr: f32, s: &Settings) -> Self {
         let s = s.sanitized(sr);
+        let any_solo = (0..s.bands).any(|b| s.band[b].solo);
         let mut e = Self {
             sr,
             split_l: Splitter::default(),
@@ -294,9 +491,18 @@ impl Engine {
             coef: [ShelfCoef { gain_db: f64::NAN, ..Default::default() }; MAX_XOVERS],
             shelf_l: Default::default(),
             shelf_r: Default::default(),
+            solver: GainSolver::new(),
+            applied_shelf: [0.0; MAX_XOVERS],
+            applied_top: 0.0,
+            fade_shelf: [0.0; MAX_XOVERS],
+            fade_top: 0.0,
+            fade_left: 0,
+            nb: s.bands,
             env: [0.0; MAX_BANDS],
             key_env: [0.0; MAX_BANDS],
             makeup: std::array::from_fn(|b| Glide { v: if s.band[b].bypass { 0.0 } else { s.band[b].makeup_db } }),
+            full_w: Glide { v: if any_solo { 0.0 } else { 1.0 } },
+            solo_w: std::array::from_fn(|b| Glide { v: if any_solo && s.band[b].solo { 1.0 } else { 0.0 } }),
             mix: Glide { v: s.mix },
             output: Glide { v: s.output_db },
         };
@@ -320,7 +526,22 @@ impl Engine {
             self.split_l.tune(self.sr, &x);
             self.split_r.tune(self.sr, &x);
             for c in self.coef.iter_mut() { c.gain_db = f64::NAN; }
+            self.solver.nb = 0;
         }
+    }
+
+    /// Band count changed while playing: bands coming back start from a
+    /// silent detector (GR 0), and the audio gains glide from what was
+    /// applied to the new layout instead of jumping (dropped shelves fade out).
+    fn change_bands(&mut self, nb: usize) {
+        for b in self.nb..nb {
+            self.env[b] = 0.0;
+            self.key_env[b] = 0.0;
+        }
+        self.fade_shelf = self.applied_shelf;
+        self.fade_top = self.applied_top;
+        self.fade_left = (SWITCH_MS * 0.001 * self.sr) as u32;
+        self.nb = nb;
     }
 
     /// Process one block. `key_db[b]` is the bus key's level over band `b`
@@ -338,6 +559,11 @@ impl Engine {
         self.retune(&s.xover_hz);
         let sr = self.sr;
         let nb = s.bands;
+        if nb != self.nb { self.change_bands(nb); }
+        if self.solver.nb != nb {
+            let x = self.tuned_xover;
+            self.solver.refresh(sr, &x, nb);
+        }
         let k: [f64; MAX_XOVERS] = std::array::from_fn(|i| {
             1.0 / (core::f64::consts::PI * self.tuned_xover[i] as f64 / sr as f64).tan()
         });
@@ -347,7 +573,10 @@ impl Engine {
             if key_db[b] <= KEY_SILENT_DB { 0.0 } else { 10f32.powf(key_db[b] * 0.05) }
         });
         let any_solo = (0..nb).any(|b| s.band[b].solo);
+        let solo_t: [f32; MAX_BANDS] = std::array::from_fn(|b| if any_solo && b < nb && s.band[b].solo { 1.0 } else { 0.0 });
         let glide = tc_coef(5.0, sr);
+        let switch = tc_coef(SWITCH_MS, sr);
+        let fade_len = ((SWITCH_MS * 0.001 * sr) as u32).max(1);
 
         let mut rep = BlockReport { gr_db: [0.0; MAX_BANDS], detector_db: [-120.0; MAX_BANDS] };
         let mut bl = [0.0f32; MAX_BANDS];
@@ -359,6 +588,8 @@ impl Engine {
             self.split_r.split(xr, nb, &mut br);
 
             let mut band_db = [0.0f32; MAX_BANDS];
+            let mut gr_db = [0.0f32; MAX_BANDS];
+            let mut mk_db = [0.0f32; MAX_BANDS];
             for b in 0..nb {
                 let bs = &s.band[b];
                 let peak = bl[b].abs().max(br[b].abs());
@@ -369,26 +600,45 @@ impl Engine {
                 let k = bs.key.clamp(0.0, 1.0);
                 let det = self.env[b] * (1.0 - k) + self.key_env[b] * k;
                 let det_db = 20.0 * det.max(1e-9).log10();
-                let gr = if bs.bypass { 0.0 } else {
+                gr_db[b] = if bs.bypass { 0.0 } else {
                     static_gain_db(det_db, bs.threshold_db, bs.ratio, bs.knee_db, bs.range_db)
                 };
-                let mk = self.makeup[b].step(if bs.bypass { 0.0 } else { bs.makeup_db }, glide);
-                band_db[b] = gr + mk;
-                if gr.abs() > rep.gr_db[b].abs() { rep.gr_db[b] = gr; }
+                mk_db[b] = self.makeup[b].step(if bs.bypass { 0.0 } else { bs.makeup_db }, glide);
+                band_db[b] = gr_db[b] + mk_db[b];
                 if i + 1 == n { rep.detector_db[b] = det_db; }
             }
 
-            let (wl, wr) = if any_solo {
-                let (mut sl, mut sr_) = (0.0f32, 0.0f32);
-                for b in (0..nb).filter(|&b| s.band[b].solo) {
-                    let g = db_to_lin(band_db[b]);
-                    sl += bl[b] * g;
-                    sr_ += br[b] * g;
+            // The staircase runs even while soloed (output discarded), so its
+            // shelves never resume from a frozen state.
+            let (mut shelf, mut top) = self.solver.solve(&band_db);
+            if self.fade_left > 0 {
+                let a = 1.0 - self.fade_left as f64 / fade_len as f64;
+                for c in 0..MAX_XOVERS { shelf[c] = self.fade_shelf[c] + (shelf[c] - self.fade_shelf[c]) * a; }
+                top = self.fade_top + (top - self.fade_top) * a;
+                self.fade_left -= 1;
+            }
+            self.applied_shelf = shelf;
+            self.applied_top = top;
+            let (stl, str_) = self.staircase(&shelf, top, &k, xl, xr);
+
+            // Solo: crossfade between the full path and the soloed bands.
+            let fw = self.full_w.step(if any_solo { 0.0 } else { 1.0 }, switch);
+            let (mut wl, mut wr) = if fw == 1.0 { (stl, str_) } else { (stl * fw, str_ * fw) };
+            for b in 0..MAX_BANDS {
+                let w = self.solo_w[b].step(solo_t[b], switch);
+                if w != 0.0 && b < nb {
+                    let g = db_to_lin(band_db[b]) * w;
+                    wl += bl[b] * g;
+                    wr += br[b] * g;
                 }
-                (sl, sr_)
-            } else {
-                self.staircase(&band_db, nb, &k, xl, xr)
-            };
+            }
+
+            // Meter: the gain the shelves gave the band, not the request.
+            for b in 0..nb {
+                let err = if any_solo || self.fade_left > 0 { 0.0 } else { self.solver.applied[b] - band_db[b] as f64 };
+                let g = if err.abs() < METER_ERR_DB { gr_db[b] } else { (self.solver.applied[b] - mk_db[b] as f64) as f32 };
+                if g.abs() > rep.gr_db[b].abs() { rep.gr_db[b] = g; }
+            }
 
             let mix = self.mix.step(s.mix.clamp(0.0, 1.0), glide);
             let og = db_to_lin(self.output.step(s.output_db, glide));
@@ -398,12 +648,13 @@ impl Engine {
         rep
     }
 
-    /// Band gains → shelves at each crossover + the top band as broadband.
+    /// Shelf gains at each crossover + the top band's gain as broadband.
+    /// A 0 dB shelf is skipped (unity, state zeroed).
     #[inline]
-    fn staircase(&mut self, band_db: &[f32; MAX_BANDS], nb: usize, k: &[f64; MAX_XOVERS], xl: f32, xr: f32) -> (f32, f32) {
+    fn staircase(&mut self, shelf: &[f64; MAX_XOVERS], top: f64, k: &[f64; MAX_XOVERS], xl: f32, xr: f32) -> (f32, f32) {
         let (mut yl, mut yr) = (xl as f64, xr as f64);
-        for c in 0..nb - 1 {
-            let d = (band_db[c] - band_db[c + 1]) as f64;
+        for c in 0..MAX_XOVERS {
+            let d = shelf[c];
             let active = d != 0.0;
             // NaN (stale) fails the `<=` and forces a recompute.
             if active && !((self.coef[c].gain_db - d).abs() <= 1e-4) {
@@ -412,16 +663,10 @@ impl Engine {
             yl = self.shelf_l[c].run(&self.coef[c], active, yl);
             yr = self.shelf_r[c].run(&self.coef[c], active, yr);
         }
-        // Unused shelves (fewer bands) idle at the unity state.
-        for c in nb.saturating_sub(1)..MAX_XOVERS {
-            self.shelf_l[c] = ShelfState::default();
-            self.shelf_r[c] = ShelfState::default();
-        }
-        let top = band_db[nb - 1];
         if top == 0.0 {
             (yl as f32, yr as f32)
         } else {
-            let g = 10f64.powf(top as f64 / 20.0);
+            let g = 10f64.powf(top / 20.0);
             ((yl * g) as f32, (yr * g) as f32)
         }
     }

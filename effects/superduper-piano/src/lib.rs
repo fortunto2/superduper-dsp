@@ -688,6 +688,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
                 request_path(&self.shared.inner, p);
             }
         }
+        self.track_watch.rescan_param_values();
         Ok(())
     }
 }

@@ -13,6 +13,7 @@
 pub mod bank;
 pub mod gui;
 pub mod presets;
+pub mod mail;
 pub mod voice;
 
 use atomic_float::AtomicF32;
@@ -252,10 +253,21 @@ pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
     shared.active_preset.store(preset_idx as u32, Ordering::Relaxed);
 }
 
-/// GUI helper: refresh the library scan, pick the i-th sample, decode
-/// it and swap the active_sample Arc. Returns Ok(name) or Err(reason).
-/// Called by the GUI when the user clicks a dropdown entry.
+/// GUI helper: pick the i-th sample, decode it, swap the active_sample Arc
+/// and point the `Sample` param at it. Called by the GUI when the user
+/// clicks a dropdown entry.
 pub fn pick_sample(shared: &SharedParamsInner, idx: usize) -> Result<String, String> {
+    let label = load_sample_index(shared, idx)?;
+    shared.params[P_SAMPLE].store(idx as f32, Ordering::Relaxed);
+    shared.dirty_params[P_SAMPLE].store(true, Ordering::Relaxed);
+    Ok(label)
+}
+
+/// Decode library entry `idx` and make it the active sample. The `Sample`
+/// param is left alone: when the host set it, writing a clamped index back
+/// made the value depend on which path (flush or process) delivered it —
+/// clap-validator param-set-events, flaky with the library size (2026-10-21).
+fn load_sample_index(shared: &SharedParamsInner, idx: usize) -> Result<String, String> {
     let lib = shared.library.lock();
     let entry = lib.get(idx)
         .cloned()
@@ -265,8 +277,6 @@ pub fn pick_sample(shared: &SharedParamsInner, idx: usize) -> Result<String, Str
     let label = format!("{} / {}", entry.pack, data.display_name);
     *shared.active_sample.lock() = Arc::new(data);
     shared.current_index.store(idx as i32, Ordering::Relaxed);
-    shared.params[P_SAMPLE].store(idx as f32, Ordering::Relaxed);
-    shared.dirty_params[P_SAMPLE].store(true, Ordering::Relaxed);
     Ok(label)
 }
 
@@ -293,7 +303,7 @@ pub fn maybe_load_pending_sample(shared: &SharedParamsInner) {
     if idx as i32 == shared.current_index.load(Ordering::Relaxed) {
         return;
     }
-    match pick_sample(shared, idx) {
+    match load_sample_index(shared, idx) {
         Ok(name) => slog!("headless sample load: idx {} -> {}", idx, name),
         Err(e) => slog!("headless sample load idx {} failed: {}", idx, e),
     }
@@ -376,13 +386,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// when the Sample param moved; here (off the RT thread) we decode + swap.
     fn on_main_thread(&mut self) {
         maybe_load_pending_sample(&self.shared.inner);
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -451,16 +454,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // forbidden here — we only request the callback (cheap, lock-free).
         let want = self.shared.params[P_SAMPLE].load(Ordering::Relaxed).round() as i32;
         if want >= 0 && want != self.shared.current_index.load(Ordering::Relaxed) {
-            self.host.shared().request_callback();
-        }
-        // Same wake for the Preset selector — recall is a main-thread concept.
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        )
-        .is_some()
-        {
             self.host.shared().request_callback();
         }
 
@@ -715,13 +708,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         // thread may never run its request_callback, so honour a Sample-param
         // change right here too, off the RT path.
         maybe_load_pending_sample(&self.shared.inner);
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -802,7 +788,8 @@ impl Plugin for SuperDuperSampler {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -846,7 +833,7 @@ impl DefaultPluginFactory for SuperDuperSampler {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             });
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Sampler", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Sampler", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(host: HostMainThreadHandle<'a>, shared: &'a PluginShared)
@@ -861,6 +848,15 @@ impl DefaultPluginFactory for SuperDuperSampler {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperSampler>);
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = presets::PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset(&self.shared.inner, i))
+    }
+}
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {

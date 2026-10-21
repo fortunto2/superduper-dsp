@@ -390,13 +390,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// when the Preset param moved; here (main thread) the allocating recall
     /// is legal.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -994,15 +987,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // Preset selector: if the host or producer-pal/MCP moved the Preset
         // param, wake the main thread to recall it — apply_preset allocates
         // mip tables, which is forbidden on the audio thread.
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
@@ -1240,14 +1224,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
-        // Preset selector recall (main thread → apply_preset's alloc is legal).
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -1335,6 +1311,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
             push_custom_frames(&self.shared, mips);
         }
         self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
+        self.track_watch.rescan_param_values();
         Ok(())
     }
 }
@@ -1420,7 +1397,8 @@ impl Plugin for SuperDuperWave {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -1486,6 +1464,15 @@ clack_export_entry!(SinglePluginEntry<SuperDuperWave>);
 #[allow(dead_code)]
 fn _meta() -> (&'static str, &'static str) {
     (build_num!(), build_date!())
+}
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset(&self.shared.inner, i))
+    }
 }
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {

@@ -15,6 +15,7 @@
 
 pub mod gui;
 pub mod presets;
+pub mod mail;
 
 use atomic_float::AtomicF32;
 use clack_common::events::spaces::CoreEventSpace;
@@ -202,13 +203,6 @@ pub struct PluginMainThread<'a> {
 
 impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -309,15 +303,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.gesture_end,
             events.output,
         );
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
 
         let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
         let params = StretchParams {
@@ -486,13 +471,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         apply_param_events(self.shared, ev);
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -613,7 +591,8 @@ impl Plugin for SuperDuperStretch {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -633,7 +612,7 @@ impl DefaultPluginFactory for SuperDuperStretch {
         init_logging();
         slog!("new_shared: Stretch — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Stretch", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Stretch", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
 
@@ -652,6 +631,15 @@ impl DefaultPluginFactory for SuperDuperStretch {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperStretch>);
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = presets::PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset_idx(&self.shared.inner, i))
+    }
+}
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {

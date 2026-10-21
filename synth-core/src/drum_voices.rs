@@ -72,7 +72,10 @@ impl Noise {
 pub struct OnePoleBp { z1: f32, z2: f32, b0: f32, b1: f32, b2: f32, a1: f32, a2: f32 }
 impl OnePoleBp {
     pub fn set(&mut self, sr: f32, freq: f32, q: f32) {
-        let w0 = TAU * freq.max(20.0) / sr;
+        // Below Nyquist, whatever the host's rate: an 8 kHz hat band-pass at a
+        // 1234 Hz rate put the pole outside the unit circle and the output hit
+        // -inf within 180 samples (clap-validator, 2026-10-21).
+        let w0 = TAU * freq.clamp(20.0, sr * 0.49) / sr;
         let alpha = w0.sin() / (2.0 * q.max(0.1));
         let cos_w0 = w0.cos();
         let b0 = alpha;

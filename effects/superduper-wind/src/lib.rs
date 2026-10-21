@@ -20,6 +20,7 @@ pub mod gui;
 pub mod howl;
 pub mod noise;
 pub mod presets;
+pub mod mail;
 pub mod voice;
 
 pub use howl::HowlEngine;
@@ -69,31 +70,31 @@ use superduper_dsp_sdk::slog;
 pub const PARAMS: &[ParamDef] = &[
     // 0 = Instrument (note-driven poly synth), 1 = Overlay (audio-in breath layer).
     ParamDef { id: 0,  name: b"Mode",       min: 0.0,    max: 1.0,     default: 0.0,    unit: ""   },
-    ParamDef { id: 1,  name: b"Breath",     min: 0.0,    max: 1.0,     default: 0.5,    unit: ""   },
-    ParamDef { id: 2,  name: b"Jitter",     min: 0.0,    max: 1.0,     default: 0.15,   unit: ""   },
-    ParamDef { id: 3,  name: b"Shimmer",    min: 0.0,    max: 1.0,     default: 0.15,   unit: ""   },
-    ParamDef { id: 4,  name: b"Tone",       min: 0.0,    max: 1.0,     default: 0.4,    unit: ""   },
-    ParamDef { id: 5,  name: b"Formant",    min: -12.0,  max: 12.0,    default: 0.0,    unit: "st" },
-    ParamDef { id: 6,  name: b"Attack",     min: 1.0,    max: 3000.0,  default: 90.0,   unit: "ms" },
-    ParamDef { id: 7,  name: b"Release",    min: 1.0,    max: 4000.0,  default: 350.0,  unit: "ms" },
-    ParamDef { id: 8,  name: b"Chiff",      min: 0.0,    max: 1.0,     default: 0.25,   unit: ""   },
+    ParamDef { id: 1,  name: b"Breath",     min: 0.0,    max: 1.0,     default: 0.75,    unit: ""   },
+    ParamDef { id: 2,  name: b"Jitter",     min: 0.0,    max: 1.0,     default: 0.28,   unit: ""   },
+    ParamDef { id: 3,  name: b"Shimmer",    min: 0.0,    max: 1.0,     default: 0.22,   unit: ""   },
+    ParamDef { id: 4,  name: b"Tone",       min: 0.0,    max: 1.0,     default: 0.15,    unit: ""   },
+    ParamDef { id: 5,  name: b"Formant",    min: -12.0,  max: 12.0,    default: -4.0,    unit: "st" },
+    ParamDef { id: 6,  name: b"Attack",     min: 1.0,    max: 3000.0,  default: 180.0,   unit: "ms" },
+    ParamDef { id: 7,  name: b"Release",    min: 1.0,    max: 4000.0,  default: 500.0,  unit: "ms" },
+    ParamDef { id: 8,  name: b"Chiff",      min: 0.0,    max: 1.0,     default: 0.35,   unit: ""   },
     // 0 = pink/dark/wind-like, 1 = white/airy.
-    ParamDef { id: 9,  name: b"Color",      min: 0.0,    max: 1.0,     default: 0.4,    unit: ""   },
+    ParamDef { id: 9,  name: b"Color",      min: 0.0,    max: 1.0,     default: 0.2,    unit: ""   },
     // Repurposed from the old static "Cutoff" lowpass — Howl is the
     // Farnell howling-wind engine's intensity: 0 = broad/gentle bandpasses
     // barely swept (mostly the old gentle breath character), 1 = tight
     // high-Q resonant bands sweeping widely (dominant howling wind). Also
     // fades the additive tone down as it rises — see `voice.rs`.
-    ParamDef { id: 10, name: b"Howl",       min: 0.0,    max: 1.0,     default: 0.2,    unit: ""   },
+    ParamDef { id: 10, name: b"Howl",       min: 0.0,    max: 1.0,     default: 0.15,    unit: ""   },
     ParamDef { id: 11, name: b"Mix",        min: 0.0,    max: 1.0,     default: 0.5,    unit: ""   },
-    ParamDef { id: 12, name: b"Output",     min: -24.0,  max: 24.0,    default: 0.0,    unit: "dB" },
+    ParamDef { id: 12, name: b"Output",     min: -24.0,  max: 24.0,    default: -2.0,    unit: "dB" },
     ParamDef { id: 13, name: b"Bend Range", min: 0.0,    max: 24.0,    default: 2.0,    unit: "ST" },
     // NEW — gust surges: rate (mapped 0.05-0.5 Hz) AND depth in one knob.
     // Drives a single shared envelope (`gust_gen` in the audio processor)
     // that swells the whole noise "bed" amplitude uniformly across every
     // voice (Instrument) or the wind-bed + input-ducking filter (Overlay) —
     // a real gust doesn't hit polyphonic notes independently.
-    ParamDef { id: 14, name: b"Gust",       min: 0.0,    max: 1.0,     default: 0.3,    unit: ""   },
+    ParamDef { id: 14, name: b"Gust",       min: 0.0,    max: 1.0,     default: 0.2,    unit: ""   },
     // NEW — Aeolian-tone (vortex-shedding) whistle blend: 0 = pure
     // broadband howl, 1 = strong tonal whistle riding on top, gliding in
     // pitch+amplitude with Gust (Strouhal relation, see `howl.rs`). Gated
@@ -103,7 +104,6 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 15, name: b"Whistle",    min: 0.0,    max: 1.0,     default: 0.0,    unit: ""   },
     // Preset selector — stepped 0..N-1, always LAST (see CLAUDE.md's
     // cross-cutting "Preset-selector param" section: recall plumbing via
-    // sdk::clap_helpers::preset_recall_target + apply_preset on the main
     // thread). PRESET_COUNT is a plain const (NOT `PRESETS.len()`) to dodge
     // the const-eval cycle (E0391) noted there.
     ParamDef { id: 16, name: b"Preset",     min: 0.0,    max: (presets::PRESET_COUNT - 1) as f64, default: presets::DEFAULT_PRESET as f64, unit: "" },
@@ -229,7 +229,7 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 /// host/automation lane sees the switch — lesson 21d), and reflects the
 /// selection back into both the `Preset` CLAP param and `active_preset`.
 /// Only ever called from the main thread (on_main_thread / params::flush) —
-/// see `sdk::clap_helpers::preset_recall_target` for the RT-safety contract.
+/// Recall `idx`: writes the params, marks them dirty, records it active.
 pub fn apply_preset_idx(shared: &SharedParamsInner, idx: usize) {
     let Some(preset) = PRESETS.get(idx) else { return };
     for (i, v) in preset.values.iter().enumerate() {
@@ -262,8 +262,6 @@ pub fn write_param(shared: &SharedParamsInner, idx: usize, value: f32) {
 // ---------------------------------------------------------------------------
 
 pub struct PluginMainThread<'a> {
-    /// To wake the main thread for a Preset recall requested from flush().
-    host_shared: clack_plugin::host::HostSharedHandle<'a>,
     track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     gui_handle: Option<baseview::WindowHandle>,
@@ -274,13 +272,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// Host main-thread callback — the audio thread calls request_callback()
     /// when the Preset param moved; the (allocating) recall runs here.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -774,15 +765,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.gesture_end,
             events.output,
         );
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
 
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, events.input);
         self.handle_note_events(events.input);
@@ -1053,15 +1035,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         // process() does, instead of recalling here. A recall inside flush()
         // made the values a host reads back depend on which path set them
         // (clap-validator state-reproducibility-flush, 2026-10-21).
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host_shared.request_callback();
-        }
     }
 }
 
@@ -1183,7 +1156,8 @@ impl Plugin for SuperDuperWind {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -1207,7 +1181,7 @@ impl DefaultPluginFactory for SuperDuperWind {
         init_logging();
         slog!("new_shared: Wind — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Wind", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Wind", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
 
@@ -1215,10 +1189,8 @@ impl DefaultPluginFactory for SuperDuperWind {
         host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        let host_shared = host.shared();
         let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
-            host_shared,
             track_watch,
             shared,
             gui_handle: None,
@@ -1232,6 +1204,15 @@ clack_export_entry!(SinglePluginEntry<SuperDuperWind>);
 #[allow(dead_code)]
 fn _meta() -> (&'static str, &'static str) {
     (build_num!(), build_date!())
+}
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset_idx(&self.shared.inner, i))
+    }
 }
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {

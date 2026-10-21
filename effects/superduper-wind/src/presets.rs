@@ -24,7 +24,10 @@ pub const MODE_OVERLAY: f32 = 1.0;
 /// index. Append new presets at the end.
 pub static PRESETS: &[Preset] = &[
     // Straight off the PARAMS defaults — a neutral landing pad + reset target.
-    Preset::from_overrides("Init", &[]),
+    // The table defaults are the Kurai landing sound (DEFAULT_PRESET), as CLAP
+    // wants `default_value` to be what a fresh instance reads; Init keeps the
+    // neutral numbers it always had, spelled out.
+    Preset::from_overrides("Init", &[(P_BREATH, 0.5), (P_JITTER, 0.15), (P_SHIMMER, 0.15), (P_TONE, 0.4), (P_FORMANT, 0.0), (P_ATTACK, 90.0), (P_RELEASE, 350.0), (P_CHIFF, 0.25), (P_COLOR, 0.4), (P_HOWL, 0.2), (P_GUST, 0.3), (P_OUTPUT, 0.0)]),
 
     // Kurai (Low Wind) — dark Bashkir kurai / low nay character: heavy
     // breath, low formants (Formant shifted well below the 500/1100/2000 Hz

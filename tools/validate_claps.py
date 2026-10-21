@@ -19,8 +19,11 @@ it first (`./scripts/build_<name>_bundle.sh`). Exit 1 on any failure or on
 UNCHECKED when a plugin was explicitly requested.
 
 Needs `clap-validator` on PATH (`cargo install --git
-https://github.com/free-audio/clap-validator --tag 0.3.2` on rustc 1.93; the
-latest tag wants 1.95).
+https://github.com/free-audio/clap-validator --locked`, 0.4.1 on rustc 1.99;
+`--tag 0.3.2` builds on 1.93). Both JSON shapes are read: 0.3 keyed tests by
+plugin id, 0.4 lists `results`. A validated bundle with no test entries is
+UNKNOWN, never a pass — 0.4.1 printed "0 failing" through the 0.3 reader
+until a known-bad plugin was run by hand (2026-10-21).
 """
 import argparse
 import json
@@ -82,11 +85,33 @@ def staged_crates():
 
 def validate(bundles):
     cmd = ["clap-validator", "validate", "--json", "--hide-output"] + [str(b) for b in bundles]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    # Factory state, not what the user last drew: Wave, Kubyz and NAM boot on
+    # the last user preset from ~/.superduper-dsp unless told otherwise, which
+    # read as "default Preset is 0 but the instance says 4" (2026-10-21). A
+    # plugin under test starts from its tables, like its own quality tests.
+    env = dict(os.environ, SUPERDUPER_WAVE_FACTORY="1", SUPERDUPER_KUBYZ_FACTORY="1", SUPERDUPER_NAM_FACTORY="1")
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env)
     try:
         return json.loads(p.stdout), p.stderr
     except json.JSONDecodeError:
         sys.exit(f"clap-validator produced no JSON (exit {p.returncode}):\n{p.stderr[-800:]}")
+
+
+def results(report):
+    """Every test the validator ran, as (bundle stem, scope, test name, status),
+    from either JSON shape. scope is "plugin" or "library"."""
+    out = []
+    if "results" in report:  # 0.4.x
+        for e in report["results"]:
+            ((kind, t),) = e["test"].items()
+            scope = "plugin" if kind == "plugin-instance" else "library"
+            out.append((Path(t["path"]).stem, scope, t["test"], e["status"]))
+        return out
+    for pid, tests in report.get("plugin-tests", {}).items():  # 0.3.x
+        out += [(pid, "plugin", t["name"], t["status"]) for t in tests]
+    for path, tests in report.get("plugin-library-tests", {}).items():
+        out += [(Path(path).stem, "library", t["name"], t["status"]) for t in tests]
+    return out
 
 
 def main():
@@ -123,31 +148,39 @@ def main():
     for crate, why in unchecked:
         print(f"UNCHECKED  {crate:26s} {why}")
     fails = 0
+    unknown = []
     if bundles:
         report, err = validate(bundles)
         if a.json:
             Path(a.json).write_text(json.dumps(report, indent=1))
-        for pid, tests in report.get("plugin-tests", {}).items():
-            name = pid.split(".")[-1]
-            bad = [t for t in tests if t["status"]["code"] not in ("success", "skipped")]
-            hard = [t for t in bad if (t["status"]["code"] != "warning" or t["name"] in WARN_AS_FAIL) and (name, t["name"]) not in KNOWN]
+        by_bundle = {}
+        for stem, scope, test, status in results(report):
+            by_bundle.setdefault(stem, []).append((scope, test, status))
+        for b in bundles:
+            stem = b.stem
+            name = stem.removeprefix("SuperDuper").lower()
+            tests = by_bundle.get(stem) or by_bundle.get(f"co.superduperai.{name}") or []
+            if not tests:
+                unknown.append(stem)
+                print(f"UNKNOWN    {name:26s} the validator reported no test for this bundle")
+                continue
+            bad = [t for t in tests if t[2]["code"] not in ("success", "skipped")]
+            hard = [t for t in bad if t[0] == "plugin" and (t[2]["code"] != "warning" or t[1] in WARN_AS_FAIL) and (name, t[1]) not in KNOWN]
             fails += bool(hard)
             if not bad:
                 print(f"ok         {name:26s} {len(tests)} tests")
             for t in bad:
-                if (name, t["name"]) in KNOWN:
-                    print(f"{'known':10s} {name:26s} {t['name']}: {KNOWN[(name, t['name'])]}")
+                if (name, t[1]) in KNOWN:
+                    print(f"{'known':10s} {name:26s} {t[1]}: {KNOWN[(name, t[1])]}")
                     continue
                 tag = "FAIL" if t in hard else "warn"
-                print(f"{tag:10s} {name:26s} {t['name']}: {str(t['status'].get('details', ''))[:150]}")
-        for path, tests in report.get("plugin-library-tests", {}).items():
-            for t in tests:
-                if t["status"]["code"] not in ("success", "skipped"):
-                    print(f"warn       {Path(path).stem:26s} {t['name']}: {t['status'].get('details', '')}")
+                print(f"{tag:10s} {name:26s} {t[1]}: {str(t[2].get('details', '') or '')[:150]}")
         if "CLAP_PLUGIN_ERROR" in err:
             n = err.count("CLAP_PLUGIN_ERROR")
             print(f"note       {n} plugin-side errors on stderr (state/params) — details with --json")
-    print(f"\n{len(bundles)} validated, {fails} failing, {len(unchecked)} unchecked")
+    print(f"\n{len(bundles) - len(unknown)} validated, {fails} failing, {len(unchecked)} unchecked, {len(unknown)} unknown")
+    if unknown:
+        sys.exit(2)
     sys.exit(1 if fails or (unchecked and (a.only or a.changed)) else 0)
 
 

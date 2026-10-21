@@ -10,6 +10,7 @@ name = "superduper_formant"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
 clack-plugin = "0.1"
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "note-ports", "state", "gui", "track-info", "clack-plugin", "raw-window-handle_05"] }
 clack-common = "0.1"

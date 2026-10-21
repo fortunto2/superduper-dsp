@@ -23,7 +23,12 @@ fn floats(v: &Value) -> Option<Vec<f32>> {
 pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> Result<Value, String> {
     let load = |a: &[atomic_float::AtomicF32]| a.iter().map(|x| x.load(Ordering::Relaxed)).collect::<Vec<f32>>();
     match (doc, op) {
-        ("", "list") | ("harmonics", "list") => Ok(json!([{
+        ("preset", op) => {
+            let all = crate::presets();
+            let names: Vec<&str> = all.iter().map(|p| p.name).collect();
+            superduper_synth_core::bus_mail::preset_request(op, &value, &names, shared.active_preset.load(Ordering::Relaxed), |i| crate::apply_preset_idx(shared, i))
+        }
+        ("", "list") | ("harmonics", "list") => Ok(json!([superduper_synth_core::bus_mail::preset_list_entry(), {
             "doc": "harmonics",
             "get": format!("harmonics[{N_HARMONICS}] amplitudes (0..{MAX_AMP}, harmonic 1 first), formant_count, formants[{{f Hz, bw Hz, gain linear}}] (one per live band), formant_bw[count], formant_gain[count]"),
             "set": format!("any of {{harmonics: [up to {N_HARMONICS} amplitudes, 0..{MAX_AMP}], formants: [{MIN_FORMANTS}..{MAX_FORMANTS} × {{f, bw?, gain?}}] (sets the band count), formant_bw: [count], formant_gain: [count]}}; omitted fields stay"),

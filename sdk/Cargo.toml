@@ -12,6 +12,7 @@ crate-type = ["rlib"]
 superduper-dsp-sdk-macros = { path = "../sdk-macros" }
 clack-plugin = "0.1"
 clack-common = "0.1"
+clap-sys = "0.5"
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "state", "clack-plugin"] }
 atomic_float = "1"
 parking_lot = "0.12"

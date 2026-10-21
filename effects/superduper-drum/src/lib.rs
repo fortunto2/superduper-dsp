@@ -26,6 +26,7 @@
 pub mod gui;
 pub mod pads;
 pub mod presets;
+pub mod mail;
 // Drum voice DSP lives in synth-core (so iOS/live2play reuses it). Re-export
 // under the old `voices` path so every reference keeps working.
 pub use superduper_synth_core::drum_voices as voices;
@@ -298,13 +299,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// Host main-thread callback — the audio thread calls request_callback()
     /// when the Preset param moved; here (main thread) the recall is legal.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -385,18 +379,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.params, &self.shared.dirty_params, events.output);
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
             &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
-        // Preset selector: if the host or producer-pal/MCP moved the Preset
-        // param, wake the main thread to recall it — apply_preset is a
-        // main-thread concept (and allocates in other plugins).
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
 
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
@@ -843,14 +825,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
-        // Preset selector recall (main thread — apply_preset is legal here).
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -903,6 +877,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
         for (i, p) in state.pad_samples.into_iter().enumerate().take(pads::PADS) {
             if let Some(p) = p { *self.shared.pads.requested_path[i].lock() = Some(p); }
         }
+        self.track_watch.rescan_param_values();
         Ok(())
     }
 }
@@ -981,7 +956,8 @@ impl Plugin for SuperDuperDrum {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -999,7 +975,7 @@ impl DefaultPluginFactory for SuperDuperDrum {
         slog!("new_shared: Drum — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
         pads::spawn_loader(&shared.inner);
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Drum", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Drum", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
 
@@ -1030,6 +1006,15 @@ pub fn voice_name(i: usize) -> &'static str {
 
 pub fn voice_short(i: usize) -> &'static str {
     std::str::from_utf8(VOICE_NAMES[i]).unwrap_or("?")
+}
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = presets::PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset(&self.shared.inner, i))
+    }
 }
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {

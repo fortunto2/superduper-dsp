@@ -295,15 +295,28 @@ fn reverse_and_pitched_grains_do_not_splice_across_the_write_head() {
 
 /// Same preset-recall regression as the other plugins (see stretch's copy).
 #[test]
-fn preset_recall_leaves_the_preset_param_consistent() {
-    use superduper_dsp_sdk::clap_helpers::preset_recall_target;
-    use superduper_granular::{apply_preset_idx, PluginShared, P_PRESET};
+fn preset_recall_names_the_preset_and_the_mailbox_door_recalls_it() {
+    use superduper_granular::{apply_preset_idx, mail, PluginShared, P_PRESET};
+    use std::sync::atomic::Ordering;
 
     let shared = PluginShared::new();
     apply_preset_idx(&shared.inner, 1);
-    let stored = shared.params[P_PRESET].load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(stored.round() as usize, 1);
-    assert!(preset_recall_target(stored, &shared.active_preset,
-    superduper_granular::presets::PRESETS.len(),
-).is_none());
+    let stored = shared.params[P_PRESET].load(Ordering::Relaxed);
+    assert_eq!(stored.round() as usize, 1, "P_PRESET must name the recalled preset");
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 1);
+
+    // The Preset param is a label: moving it recalls nothing.
+    shared.params[P_PRESET].store(0.0, Ordering::Relaxed);
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 1, "a param move must not recall");
+
+    // The `preset` document is the agent's door; it names and recalls.
+    let got = mail::handle(&shared.inner, "preset", "set", serde_json::json!({"index": 0})).expect("set");
+    assert_eq!(got["index"], 0);
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 0);
+    let name = superduper_granular::presets::PRESETS[1].name;
+    let got = mail::handle(&shared.inner, "preset", "set", serde_json::json!({"name": name})).expect("set by name");
+    assert_eq!(got["index"], 1);
+    assert_eq!(shared.params[P_PRESET].load(Ordering::Relaxed).round() as usize, 1);
+    let g = mail::handle(&shared.inner, "preset", "get", serde_json::json!({})).expect("get");
+    assert_eq!(g["name"], name);
 }

@@ -276,18 +276,28 @@ fn unfreezing_stays_inside_what_was_captured() {
 /// own `Preset` slot (table default = 0) and left recall detection thinking the
 /// host wanted preset 0 — so every GUI pick instantly reverted to Default.
 #[test]
-fn preset_recall_leaves_the_preset_param_consistent() {
-    use superduper_dsp_sdk::clap_helpers::preset_recall_target;
-    use superduper_stretch::{apply_preset_idx, PluginShared, P_PRESET};
+fn preset_recall_names_the_preset_and_the_mailbox_door_recalls_it() {
+    use superduper_stretch::{apply_preset_idx, mail, PluginShared, P_PRESET};
+    use std::sync::atomic::Ordering;
 
     let shared = PluginShared::new();
     apply_preset_idx(&shared.inner, 2);
-    let stored = shared.params[P_PRESET].load(std::sync::atomic::Ordering::Relaxed);
+    let stored = shared.params[P_PRESET].load(Ordering::Relaxed);
     assert_eq!(stored.round() as usize, 2, "P_PRESET must name the recalled preset");
-    assert!(
-        preset_recall_target(stored, &shared.active_preset,
-    superduper_stretch::presets::PRESETS.len(),
-).is_none(),
-        "recall must be quiet after applying — otherwise the next block reverts the pick"
-    );
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 2);
+
+    // The Preset param is a label: moving it recalls nothing.
+    shared.params[P_PRESET].store(0.0, Ordering::Relaxed);
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 2, "a param move must not recall");
+
+    // The `preset` document is the agent's door; it names and recalls.
+    let got = mail::handle(&shared.inner, "preset", "set", serde_json::json!({"index": 0})).expect("set");
+    assert_eq!(got["index"], 0);
+    assert_eq!(shared.active_preset.load(Ordering::Relaxed), 0);
+    let name = superduper_stretch::presets::PRESETS[2].name;
+    let got = mail::handle(&shared.inner, "preset", "set", serde_json::json!({"name": name})).expect("set by name");
+    assert_eq!(got["index"], 2);
+    assert_eq!(shared.params[P_PRESET].load(Ordering::Relaxed).round() as usize, 2);
+    let g = mail::handle(&shared.inner, "preset", "get", serde_json::json!({})).expect("get");
+    assert_eq!(g["name"], name);
 }

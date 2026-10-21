@@ -5,6 +5,7 @@
 
 use crate::{osc, push_custom_frames, SharedParamsInner, FRAMES_MAX};
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 
 /// Harmonics reported and accepted per frame.
 pub const HARMONICS: usize = 32;
@@ -70,7 +71,11 @@ fn floats(v: &Value) -> Option<Vec<f32>> {
 
 pub fn handle(shared: &SharedParamsInner, doc: &str, op: &str, value: Value) -> Result<Value, String> {
     match (doc, op) {
-        ("", "list") | ("wavetable", "list") => Ok(json!([{
+        ("preset", op) => {
+            let names: Vec<&str> = crate::PRESETS.iter().map(|p| p.name).collect();
+            superduper_synth_core::bus_mail::preset_request(op, &value, &names, shared.active_preset.load(Ordering::Relaxed), |i| crate::apply_preset(shared, i))
+        }
+        ("", "list") | ("wavetable", "list") => Ok(json!([superduper_synth_core::bus_mail::preset_list_entry(), {
             "doc": "wavetable",
             "get": format!("frames[]: harmonics[1..={HARMONICS}] amplitude (peak-normalised table) and phase, plus a {PREVIEW}-point preview; WT Pos morphs between frames"),
             "set": format!("{{harmonics: [[a1, a2, ...], ...], phases?: [[...], ...]}} (sines by default) or {{frames: [[samples of one cycle, any length], ...]}}; 1..={FRAMES_MAX} frames, each peak-normalised"),

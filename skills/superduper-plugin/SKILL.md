@@ -88,10 +88,13 @@ DAW UI. A plugin without these is invisible to it:
 - [ ] Parameter text: one `fn display_text<W: core::fmt::Write>(&mut self, id, v, w)` in
   `impl PluginMainThread<'_>`, `value_to_text` calls it, and `text_to_value` ends in
   `ParamDef::text_to_value_by_display(PARAMS, id, t, |v, s| self.display_text(id, v, s))` — the
-  entry accepts exactly what the display shows, with no second names table. A param that
-  recalls other params (a Preset selector) cannot pass the validator's state test; make the
-  selector a mailbox doc. `make validate` (clap-validator, also the pre-commit via `make hooks`)
-  must print `0 failing` with the new bundle in `dist/`.
+  entry accepts exactly what the display shows, with no second names table. A param never
+  recalls other params: a Preset selector is a label, and recall goes through `apply_preset`
+  from three doors — the GUI list, the `preset` mailbox doc (`bus_mail::preset_request`), and
+  `clap.preset-load/2` (`impl sdk::preset_load::PluginPresetLoadImpl`, registered next to
+  PluginTrackInfo; `load_named(kind, key, &names, apply)` is the whole body). `make validate`
+  (clap-validator 0.4, also the pre-commit via `make hooks`) must print `0 failing` with the
+  new bundle in `dist/`.
 - [ ] State must be a pure function of what the plugin was told: nothing a background loader
   fills in later (Piano saved `null` for its instrument in the window between the loader
   taking the request and finishing it), nothing derived only once `process()` has run (Morph's

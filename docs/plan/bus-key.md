@@ -66,13 +66,25 @@ the real side-chain input stays for that.
         through the display; wider ranges try the number in the text and both ends, "random #731"),
         so the entry accepts exactly what the display shows. Drum 'Key': "Auto (…)" is checked
         before the key-name parser. 28 plugins converted; the 6 the DSP agent owns follow
-      - [ ] Pad, Wind: a *parameter* ("Preset") that recalls every other parameter makes
-        `flush()` and `process()` report different values: the validator runs `on_main_thread()`
-        right after flush and not after process, so no plugin-side ordering passes it (tried
-        2026-10-21: flush now requests the callback like process does — one recall path, same
-        verdict). Listed as `known` in tools/validate_claps.py. The fix is the selector as a
-        mailbox doc (`preset`), the param a label; Wave/Drum/Kubyz/Sampler share the pattern
-        and pass only because their random draw lands on the active preset
+      - [x] Preset selector (9 synths): the param is a label now; recall = GUI list, the
+        `preset` mailbox doc (`bus_mail::preset_request`) or `clap.preset-load/2`
+        (`sdk::preset_load`, what sdsp-chain uses). `preset_recall_target` is gone. Under
+        clap-validator 0.4 this was 5 tests × 3 plugins (param-set-events, no-cookies, three
+        state-reproducibility); under 0.3.2 only Pad/Wind showed it
+      - [x] clap-validator 0.4.1 (rustc 1.99): new JSON shape read; "a validated bundle with no
+        test entries is UNKNOWN" (the 0.3 reader printed 0 failing over 34 real failures);
+        every plugin's `load()` ends in `track_watch.rescan_param_values()` (CLAP: values
+        changed under the host ⇒ `params.rescan(VALUES)`; 34/34 failed state tests without it);
+        factory state for the run (`SUPERDUPER_{WAVE,KUBYZ,NAM}_FACTORY=1`: Wave/Kubyz boot on
+        the user's last preset, which read as a wrong default); Wind/Kubyz table defaults =
+        their init preset; RBJ ω₀ clamped below Nyquist (NaN at a 1234 Hz rate in Kubyz, Wind,
+        Vocal); Morph saves the model the audio thread would use
+      - [ ] Drum `-inf` at a 1234.57 Hz sample rate (process-varying-sample-rates, sample 179):
+        not reproduced by tests/odd_sample_rate.rs (every key, velocities down to 0, six rates);
+        the validator's note generator also sends note-offs, chokes and sample offsets −4..64 —
+        instrument the hit path next
+      - [ ] Looper 21× slower on denormal input (warning): the FTZ guard is in place, so it is
+        data-dependent work, not denormals — profile with the validator's input
       - [x] Morph: the saved `model` was the store as is, so an instance that had processed
         (factory table loaded for its Target) saved differently from one that had not; the
         state now saves the model the audio thread would use for the current Target

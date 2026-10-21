@@ -483,7 +483,9 @@ impl PluginStateImpl for PluginMainThread<'_> {
         self.shared.load_state_json(&s).map_err(|e| {
             slog!("state load failed: {e}");
             PluginError::Message("state JSON error")
-        })
+        })?;
+        self.track_watch.rescan_param_values();
+        Ok(())
     }
 }
 

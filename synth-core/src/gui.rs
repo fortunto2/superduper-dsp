@@ -357,6 +357,18 @@ impl<'a> TrackInfoWatch<'a> {
         Self { host: std::cell::RefCell::new(host), scope }
     }
 
+    /// Main thread, at the end of a state `load()`: CLAP wants
+    /// `host.params.rescan(VALUES)` once a load has changed parameter values,
+    /// and clap-validator 0.4 fails every state test without it (34 of 34
+    /// plugins, 2026-10-21). The host handle lives here, so this is the one
+    /// place every plugin can call.
+    pub fn rescan_param_values(&self) {
+        let mut host = self.host.borrow_mut();
+        if let Some(p) = host.shared().get_extension::<clack_extensions::params::HostParams>() {
+            p.rescan(&mut host, clack_extensions::params::ParamRescanFlags::VALUES);
+        }
+    }
+
     /// Main thread, from `PluginTrackInfoImpl::changed`.
     pub fn refresh(&self) {
         if let Ok(mut host) = self.host.try_borrow_mut() { bus_track_from_host(&mut host, self.scope); }

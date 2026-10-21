@@ -12,7 +12,7 @@ use clack_plugin::events::event_types::{
 use clack_plugin::events::io::OutputEvents;
 use clack_plugin::prelude::{ChannelPair, InputEvents};
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as SyncOrdering};
+use std::sync::atomic::{AtomicBool, Ordering as SyncOrdering};
 use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
@@ -58,10 +58,9 @@ impl ParamDef {
     ///
     /// Without `IS_STEPPED` the host treats them as continuous. Draw an
     /// automation ramp from Preset 3 to Preset 9 and the host interpolates
-    /// through 4, 5, 6, 7, 8 — every intermediate value trips
-    /// `preset_recall_target` and runs a full preset recall (in Wave, a whole
-    /// mip-wavetable rebuild). Generic host UIs and MCP/producer-pal agents
-    /// also render an enum as a smooth 0..N knob.
+    /// through 4, 5, 6, 7, 8 — a host reads every intermediate value as a
+    /// real selection. Generic host UIs and MCP/producer-pal agents also
+    /// render an enum as a smooth 0..N knob.
     pub fn write_info_stepped(
         table: &'static [ParamDef],
         param_index: u32,
@@ -565,53 +564,50 @@ pub fn output_slice<'b>(c: ChannelPair<'b, f32>) -> Option<&'b mut [f32]> {
 }
 
 // ---------------------------------------------------------------------------
-// Preset selector — a host/agent-controllable stepped param that recalls a
-// whole preset (wavetable, voice timbre, drum kit, …) without opening the GUI.
+// Preset selector — a stepped param that *names* the active preset.
 //
-// Why a helper: every synth duplicates the same recall plumbing, and the RT
-// rule is easy to get wrong. The actual recall (`apply_preset`) is plugin-
-// specific and ALLOCATES, so it must run on the main thread. Wire it like the
-// Wave reference:
-//   1. PARAMS: append `ParamDef { name: b"Preset", min: 0, max: N-1, .. }`.
-//   2. Shared: keep an `active_preset: AtomicU32` (the last-applied index).
-//   3. audio `process()`: if `preset_recall_target(params[P_PRESET], active)`
-//      is Some, call `host.shared().request_callback()` — DON'T apply here.
-//   4. `on_main_thread()` AND main-thread params `flush()`: if it's Some(idx),
-//      run `apply_preset(idx)` (which must store `active_preset = idx`).
-//   5. `apply_preset` marks every changed param dirty (see lesson 21d) so the
-//      host's LOM/automation — and an agent reading params — sees the recall.
-//   6. `value_to_text`/`text_to_value` for the Preset param map index<->name
+// It no longer recalls anything: a parameter that rewrote the other
+// parameters failed CLAP's parameter independence (clap-validator 0.4,
+// 2026-10-21 — the values read back after flush() and after process()
+// differed whenever the recall ran on one path and not the other). Wire it
+// like this:
+//   1. PARAMS: append `ParamDef { name: b"Preset", min: 0, max: N-1, .. }`,
+//      default = the preset a fresh instance starts on.
+//   2. Shared: `active_preset: AtomicU32`, the last-applied index.
+//   3. `apply_preset(shared, idx)`: write the values, mark every changed param
+//      dirty (lesson 21d), store Preset = idx and active_preset = idx. It may
+//      allocate; it runs from the GUI thread or the bus mailbox thread, never
+//      from process().
+//   4. Recall is an explicit action only: the GUI's preset list calls
+//      `apply_preset`; agents use the `preset` mailbox document
+//      (`synth_core::bus_mail::preset_request`, wired through `mail::handle`).
+//      A host automating the Preset param changes the label and nothing else.
+//   5. `value_to_text`/`text_to_value` for the Preset param map index<->name
 //      via `preset_value_to_text` / `preset_text_to_value`.
 // ---------------------------------------------------------------------------
 
-/// Returns the preset index to recall if the Preset param has moved away from
-/// the last-applied index, else `None`. Cheap (one atomic load + compare) and
-/// allocation-free, so it's safe to call from the audio thread. The caller
-/// decides what to do: the audio thread asks the host for a main-thread
-/// callback; the main thread runs the (allocating) `apply_preset`.
-///
-/// `preset_count` bounds the index. Without it an out-of-range value — a
-/// project saved by a build with more presets, or an agent writing Preset = 20
-/// on a 7-kit Drum — made `apply_preset` early-return without updating
-/// `active`, so the condition never cleared and the audio thread called
-/// `request_callback()` on every single block, waking the main thread a few
-/// hundred times a second for the life of the instance.
-#[inline]
-pub fn preset_recall_target(
-    preset_param_value: f32,
-    active: &AtomicU32,
-    preset_count: usize,
-) -> Option<usize> {
-    if preset_count == 0 {
-        return None;
+/// Which preset `key` names: a number is an index, otherwise a name —
+/// case-insensitive, exact first, then a unique substring. Shared by the
+/// `preset` mailbox document, `clap.preset-load` and `text_to_value`.
+pub fn preset_index(names: &[&str], key: &str) -> Result<usize, String> {
+    let k = key.trim();
+    if let Ok(i) = k.parse::<usize>() {
+        return if i < names.len() { Ok(i) } else { Err(format!("index {i}: {} presets (0..={})", names.len(), names.len().saturating_sub(1))) };
     }
-    let want = (preset_param_value.round().max(0.0) as usize).min(preset_count - 1);
-    if want as u32 != active.load(Ordering::Relaxed) {
-        Some(want)
-    } else {
-        None
+    let w = k.to_lowercase();
+    let exact: Vec<usize> = names.iter().enumerate().filter(|(_, n)| n.to_lowercase() == w).map(|(i, _)| i).collect();
+    let hits = if exact.is_empty() { names.iter().enumerate().filter(|(_, n)| n.to_lowercase().contains(&w)).map(|(i, _)| i).collect() } else { exact };
+    match hits.as_slice() {
+        [i] => Ok(*i),
+        [] => Err(format!("no preset named {k:?}; names: {names:?}")),
+        many => Err(format!("{k:?} matches {} presets: {:?}", many.len(), many.iter().map(|i| names[*i]).collect::<Vec<_>>())),
     }
 }
+
+/// There is no `preset_recall_target` any more: a Preset parameter that
+/// recalled the other parameters failed CLAP's parameter independence
+/// (clap-validator 0.4, 2026-10-21). The selector is a label; recall is the
+/// GUI's list or the `preset` mailbox document (`synth_core::bus_mail`).
 
 /// `value_to_text` body for a Preset selector param: write the preset name for
 /// the rounded index. `name_of(i)` returns the i-th preset's name. Returns

@@ -8,6 +8,7 @@
 
 use proptest::prelude::*;
 use superduper_synth_core::bus_key::{duck_gain, key_factor, span_level_db};
+use superduper_synth_core::drum_voices::OnePoleBp;
 use superduper_synth_core::dsp_blocks::{inflate, tanh_drive, tape_clip, tube_clip, Biquad};
 use superduper_synth_core::mixmap::{sum_deficit_db, MaskingTracker, TrackSpectrum, BANDS};
 
@@ -51,8 +52,7 @@ proptest! {
     /// its whole parameter range, 512 samples of ±1 input stay finite and
     /// under +60 dB (a resonance may ring, it may not diverge).
     #[test]
-    fn biquads_stay_finite(shape in 0u8..7, hz in 10.0f32..24_000.0, q in 0.05f32..30.0, db in -30.0f32..30.0, seed in any::<u64>()) {
-        let sr = 48_000.0;
+    fn biquads_stay_finite(shape in 0u8..7, hz in 10.0f32..24_000.0, q in 0.05f32..30.0, db in -30.0f32..30.0, seed in any::<u64>(), sr in 1000.0f32..192_000.0) {
         let mut b = Biquad::default();
         match shape {
             0 => b.set_peaking(sr, hz, q, db),
@@ -73,6 +73,21 @@ proptest! {
             peak = peak.max(y.abs());
         }
         prop_assert!(peak < 1000.0, "shape {shape} hz {hz} q {q} db {db}: peak {peak} (+{:.0} dB)", 20.0 * peak.log10());
+    }
+
+    /// The drum voices' own band-pass stays finite at any host rate: an
+    /// 8 kHz hat band at a 1234 Hz rate went to -inf (clap-validator).
+    #[test]
+    fn drum_bandpass_stays_finite(sr in 1000.0f32..192_000.0, hz in 20.0f32..20_000.0, q in 0.05f32..30.0, seed in any::<u64>()) {
+        let mut f = OnePoleBp::default();
+        f.set(sr, hz, q);
+        let mut s = seed | 1;
+        for _ in 0..512 {
+            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            let x = (s as f32 / u64::MAX as f32) * 2.0 - 1.0;
+            let y = f.process(x);
+            prop_assert!(y.is_finite() && y.abs() < 1000.0, "sr {sr} hz {hz} q {q}: {y}");
+        }
     }
 
     /// The bus key maths is total: any level in, a finite factor in 0..=1

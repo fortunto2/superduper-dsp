@@ -17,6 +17,7 @@
 
 pub mod gui;
 pub mod presets;
+pub mod mail;
 
 use atomic_float::AtomicF32;
 use clack_common::events::Match;
@@ -283,8 +284,6 @@ impl Default for Voice {
 // ---------------------------------------------------------------------------
 
 pub struct PluginMainThread<'a> {
-    /// To wake the main thread for a Preset recall requested from flush().
-    host_shared: clack_plugin::host::HostSharedHandle<'a>,
     track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     gui_handle: Option<baseview::WindowHandle>,
@@ -295,13 +294,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// when the Preset param moved off the last-applied index; here (main
     /// thread) the (allocation-allowed) recall is legal.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        ) {
-            apply_preset(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -788,19 +780,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.gesture_end,
             events.output,
         );
-        // Preset selector: if the host or producer-pal/MCP moved the Preset
-        // param, wake the main thread to recall it — apply_preset is a
-        // main-thread operation (mirrors the Wave reference, where the recall
-        // allocates mip tables). The audio thread only requests the callback.
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         // Walk the output port. Pad is a generator — we ignore any input
@@ -1004,15 +983,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         // process() does, instead of recalling here. A recall inside flush()
         // made the values a host reads back depend on which path set them
         // (clap-validator state-reproducibility-flush, 2026-10-21).
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host_shared.request_callback();
-        }
     }
 }
 
@@ -1132,7 +1102,8 @@ impl Plugin for SuperDuperPad {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -1155,17 +1126,15 @@ impl DefaultPluginFactory for SuperDuperPad {
             build_date!()
         );
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Pad", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Pad", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(
         host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        let host_shared = host.shared();
         let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
-            host_shared,
             track_watch,
             shared,
             gui_handle: None,
@@ -1175,6 +1144,15 @@ impl DefaultPluginFactory for SuperDuperPad {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperPad>);
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = crate::presets::PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset(&self.shared.inner, i))
+    }
+}
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {

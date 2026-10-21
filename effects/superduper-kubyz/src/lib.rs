@@ -67,7 +67,7 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 0, name: b"F1",        min: 80.0,   max: 1500.0, default: 705.0,  unit: "Hz" },
     ParamDef { id: 1, name: b"F2",        min: 200.0,  max: 3500.0, default: 1301.0, unit: "Hz" },
     ParamDef { id: 2, name: b"F3",        min: 600.0,  max: 6000.0, default: 2165.0, unit: "Hz" },
-    ParamDef { id: 3, name: b"VoxMix",    min: 0.0,    max: 1.0,    default: 0.6,    unit: ""   },
+    ParamDef { id: 3, name: b"VoxMix",    min: 0.0,    max: 1.0,    default: 1.0,    unit: ""   },
     ParamDef { id: 4, name: b"Vel Shift", min: 0.0,    max: 0.5,    default: 0.15,   unit: ""   },
     ParamDef { id: 5, name: b"Bright",    min: 0.0,    max: 2.0,    default: 1.0,    unit: ""   },
     // Tongue Pitch — shifts the fundamental in semitones away from the
@@ -76,10 +76,10 @@ pub const PARAMS: &[ParamDef] = &[
     // the "physical" pitch of the instrument you want to model.
     // Range = ±36 ST (3 octaves either way) is generous and covers
     // every Bashkir-to-Yakut variant.
-    ParamDef { id: 6, name: b"Attack",    min: 0.001,  max: 2.0,    default: 0.039,  unit: "s"  },
-    ParamDef { id: 7, name: b"Decay",     min: 0.01,   max: 4.0,    default: 0.21,   unit: "s"  },
-    ParamDef { id: 8, name: b"Sustain",   min: 0.0,    max: 1.0,    default: 0.13,   unit: ""   },
-    ParamDef { id: 9, name: b"Release",   min: 0.01,   max: 4.0,    default: 0.15,   unit: "s"  },
+    ParamDef { id: 6, name: b"Attack",    min: 0.001,  max: 2.0,    default: 0.003,  unit: "s"  },
+    ParamDef { id: 7, name: b"Decay",     min: 0.01,   max: 4.0,    default: 1.2,   unit: "s"  },
+    ParamDef { id: 8, name: b"Sustain",   min: 0.0,    max: 1.0,    default: 0.0,   unit: ""   },
+    ParamDef { id: 9, name: b"Release",   min: 0.01,   max: 4.0,    default: 0.3,   unit: "s"  },
     ParamDef { id: 10, name: b"Output",   min: -36.0,  max: 6.0,    default: -8.0,   unit: "dB" },
     ParamDef { id: 11, name: b"Tongue ST",min: -36.0,  max: 36.0,   default: 0.0,    unit: "ST" },
     // ---- Mouth trajectory (formant motion) ----
@@ -225,6 +225,9 @@ impl PluginShared {
         // Bashkir as the default landing patch — it's the most representative
         // jaw-harp tone in the library and the one the user reaches for first.
         let init = &presets()[1];
+        // PARAMS defaults equal this preset (CLAP: default_value = what a fresh
+        // instance reads; clap-validator checks it) — the stores below keep the
+        // two in step if the preset changes.
         let params = std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32));
         // Pre-load the preset's formant / envelope so the loaded plugin
         // already sounds like Bashkir without the user having to pick it.
@@ -325,7 +328,6 @@ pub fn apply_preset_idx(shared: &SharedParamsInner, idx: usize) {
     let Some(preset) = all.get(idx) else { return };
     apply_preset(shared, preset);
     // Reflect the recalled index into the selector param so host/MCP read the
-    // active preset, and record the switch so preset_recall_target stops
     // re-firing. apply_preset already marked every dirty flag (incl. P_PRESET).
     if let Some(atom) = shared.params.get(P_PRESET) {
         atom.store(idx as f32, Ordering::Relaxed);
@@ -359,13 +361,6 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
     /// when the Preset param moved; here (main thread) the allocating /
     /// Mutex-locking recall is legal.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESET_COUNT,
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -904,18 +899,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
         superduper_dsp_sdk::clap_helpers::emit_gesture_events(
             &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
-        // Preset selector: if the host or producer-pal/MCP moved the Preset
-        // param, wake the main thread to recall it — apply_preset locks the
-        // formant Mutexes (and the SDK rule keeps recall off the audio thread).
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESET_COUNT,
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
 
         for mut port_pair in &mut audio {
@@ -1077,14 +1060,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
     }
     fn flush(&mut self, ev: &InputEvents, _out: &mut OutputEvents) {
         superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, ev);
-        // Preset selector recall (main thread → apply_preset's lock/alloc is legal).
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            PRESET_COUNT,
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -1178,6 +1153,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
         self.shared.midi_learn.replace(&state.midi_learn);
         self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
         formants::restore_free(&self.shared.inner, state.formant_count, &state.formant_free);
+        self.track_watch.rescan_param_values();
         Ok(())
     }
 }
@@ -1250,7 +1226,8 @@ impl Plugin for SuperDuperKubyz {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -1271,7 +1248,10 @@ impl DefaultPluginFactory for SuperDuperKubyz {
         let shared = PluginShared::new();
         // Try the auto-saved "last edited" snapshot — overridden by
         // PluginStateImpl::load if the host provides project state.
-        if let Some(preset) = user_extra::repo().load_last(PARAMS.len()) {
+        // `SUPERDUPER_KUBYZ_FACTORY=1` skips the last user preset so tests and
+        // the CLAP validator see the factory Bashkir state (same switch as Wave).
+        let factory_only = std::env::var_os("SUPERDUPER_KUBYZ_FACTORY").is_some();
+        if let Some(preset) = (!factory_only).then(|| user_extra::repo().load_last(PARAMS.len())).flatten() {
             for (i, v) in preset.params.iter().enumerate() {
                 if let Some(slot) = shared.params.get(i) {
                     slot.store(*v, Ordering::Relaxed);
@@ -1310,6 +1290,15 @@ clack_export_entry!(SinglePluginEntry<SuperDuperKubyz>);
 #[allow(dead_code)]
 fn _meta() -> (&'static str, &'static str) {
     (build_num!(), build_date!())
+}
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = presets().iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset_idx(&self.shared.inner, i))
+    }
 }
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {

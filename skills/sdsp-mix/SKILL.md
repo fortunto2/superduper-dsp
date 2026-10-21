@@ -144,6 +144,7 @@ exact names; everything below is off by default):
 | more density/loudness without peaks (mastering) | Saturator `Type`=Inflate (3), `Curve` −50..50, `Drive` = input, `Mix` = effect |
 | an 808/synth's harmonics fight a part | Wave `plugin_set(…, "Wave", "wavetable", {harmonics: [[…]]})` — design the harmonics; read first with `plugin_get` |
 | Kubyz timbre / mouth | `plugin_set(…, "Kubyz", "harmonics", {harmonics, formants: [{f, bw, gain}]})` (1–6 formants) |
+| recall a factory preset on a synth (Wave, Pad, Wind, Drum, Kubyz, Sampler, Formant, Granular, Stretch) | `plugin_set(track, "Wave", "preset", {"name": "808 Sub"})` or `{"index": 4}`; `plugin_get(track, "Wave", "preset")` lists the names. Setting the `Preset` *param* only changes the label — it recalls nothing |
 | a thin vocal, needs a double | Double: `Voices` 1–4, `Timing` (ms of drift), `Pitch Var` (cents), `Spread`, `Mode` Natural / Tuned (doubles snapped to `Key`/`Scale` at `Retune`) / Tuned Lead; `Dry` 0 prints only the doubles; `Key Open` lets a bus key swell them; latency 2744 |
 | morph one sound into another, performance kept | Morph: `Morph` 0..1, `Source` Sidechain (the target on the side-chain input) / Captured / Model (Kubyz), `Mode` Harmonic / Envelope, `Vowels` (keep the voice's envelope), `Breath`; doc `target`: `plugin_set(track, "Morph", "target", plugin_get(track, "Kubyz", "harmonics"))` copies a running Kubyz, `{"capture": true}` freezes the side-chain; latency 2048 |
 

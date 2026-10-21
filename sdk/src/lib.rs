@@ -47,6 +47,7 @@ pub mod build_meta;
 pub mod bus; // shared-memory bus: every instance publishes level + spectrum (+ key); anyone reads
 pub mod clap_helpers;
 pub mod denormals;
+pub mod preset_load;
 pub mod log;
 
 /// Stamp out the standard `Preset` struct + `from_overrides` const
@@ -160,6 +161,8 @@ macro_rules! simple_state_impl {
                 self.shared
                     .active_preset
                     .store(preset, ::std::sync::atomic::Ordering::Relaxed);
+                // The values changed under the host: tell it (CLAP state contract).
+                self.track_watch.rescan_param_values();
                 Ok(())
             }
         }

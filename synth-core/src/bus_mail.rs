@@ -131,3 +131,75 @@ mod tests {
         assert!(call(inst, "x", "get", Value::Null, Duration::from_millis(100)).is_err(), "nobody listening = an error, not a hang");
     }
 }
+
+// ---------------------------------------------------------------------------
+// The `preset` document of every preset synth.
+//
+// A Preset *parameter* that recalled the other parameters could not pass
+// CLAP's parameter independence (clap-validator 0.4: the values read back
+// after flush() and after process() differ whenever the recall ran on one
+// path and not the other). So the parameter is a label — it reads the active
+// index, a host may automate it and nothing happens — and recall is an
+// explicit action: the GUI's preset list, or this document from an agent:
+// `plugin_set(track, "Pad", "preset", {"name": "Warm"})`.
+// ---------------------------------------------------------------------------
+
+/// The `list` entry for the `preset` document.
+pub fn preset_list_entry() -> serde_json::Value {
+    serde_json::json!({
+        "doc": "preset",
+        "get": "index, name, names[] (every factory preset)",
+        "set": "{index} or {name} (case-insensitive; a unique substring will do) — recalls every parameter of that preset",
+    })
+}
+
+/// Answer `get` / `set` on the `preset` document. `apply` runs the plugin's
+/// own recall for a valid index (it writes the params, marks them dirty and
+/// records the index as active).
+pub fn preset_request(
+    op: &str,
+    value: &serde_json::Value,
+    names: &[&str],
+    active: u32,
+    apply: impl FnOnce(usize),
+) -> Result<serde_json::Value, String> {
+    match op {
+        "get" => {
+            let i = (active as usize).min(names.len().saturating_sub(1));
+            Ok(serde_json::json!({ "index": i, "name": names.get(i).copied().unwrap_or(""), "names": names }))
+        }
+        "set" => {
+            let key = if let Some(i) = value.get("index").and_then(|v| v.as_u64()) {
+                i.to_string()
+            } else if let Some(want) = value.get("name").and_then(|v| v.as_str()) {
+                want.to_string()
+            } else {
+                return Err("set needs {index} or {name}".into());
+            };
+            let idx = superduper_dsp_sdk::clap_helpers::preset_index(names, &key)?;
+            apply(idx);
+            Ok(serde_json::json!({ "index": idx, "name": names[idx] }))
+        }
+        _ => Err(format!("preset: no op {op:?} (get, set)")),
+    }
+}
+
+#[cfg(test)]
+mod preset_doc_tests {
+    use super::*;
+
+    #[test]
+    fn preset_set_by_name_index_and_errors() {
+        let names = ["Init", "Warm Pad", "Warm Lead"];
+        let mut got = None;
+        let r = preset_request("set", &serde_json::json!({"name": "warm pad"}), &names, 0, |i| got = Some(i)).unwrap();
+        assert_eq!((got, r["index"].as_u64()), (Some(1), Some(1)));
+        let e = preset_request("set", &serde_json::json!({"name": "warm"}), &names, 0, |_| panic!("ambiguous must not apply")).unwrap_err();
+        assert!(e.contains("matches 2"), "{e}");
+        let e = preset_request("set", &serde_json::json!({"index": 3}), &names, 0, |_| panic!()).unwrap_err();
+        assert!(e.contains("index 3"), "{e}");
+        let g = preset_request("get", &serde_json::json!({}), &names, 2, |_| panic!()).unwrap();
+        assert_eq!(g["name"], "Warm Lead");
+        assert_eq!(g["names"].as_array().unwrap().len(), 3);
+    }
+}

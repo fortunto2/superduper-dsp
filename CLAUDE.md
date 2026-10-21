@@ -472,17 +472,19 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
 
-- **Preset selector param** (synths: Wave/Drum/Kubyz/Pad/Sampler) — a stepped
-  `"Preset"` CLAP param appended last in `PARAMS` lets a host/agent
-  (producer-pal/MCP, automation) recall a whole preset — wavetable, voice
-  timbre, drum kit — without the GUI. Shared plumbing in
-  `sdk::clap_helpers`: `preset_recall_target()` (alloc-free change detect),
-  `preset_value_to_text` / `preset_text_to_value` (index↔name). RT rule: the
-  audio `process()` only calls `host.request_callback()`; the actual
-  (allocating) `apply_preset(idx)` runs on the **main thread** in
-  `on_main_thread()` + the main-thread `flush`. `apply_preset` marks every
-  param dirty (lesson 21d) so the host/LOM reflects the recall. Indices:
-  Wave 37, Pad 14, Drum 27, Kubyz 19, Sampler 21. **Gotcha:** if a plugin's presets
+- **Preset selector param** (Wave/Drum/Kubyz/Pad/Wind/Sampler/Formant/
+  Granular/Stretch) — a stepped `"Preset"` param appended last in `PARAMS`
+  that *names* the active preset and recalls nothing: a parameter that
+  rewrote the other parameters failed CLAP's parameter independence
+  (clap-validator 0.4, 2026-10-21 — flush() and process() read back
+  differently whenever the recall ran on one path only). Recall is explicit,
+  three doors: the GUI's list, the `preset` mailbox document for agents
+  (`plugin_set(track, "Pad", "preset", {"name": "Warm"})`,
+  `synth_core::bus_mail::preset_request`), and `clap.preset-load/2` for hosts
+  (`sdk::preset_load`, what sdsp-chain's `preset = …` uses). All three call
+  the plugin's `apply_preset`, which marks every param dirty (lesson 21d) so
+  the host/LOM reflects it. `preset_value_to_text` / `preset_text_to_value`
+  map index↔name. Indices: Wave 37, Pad 14, Drum 27, Kubyz 19, Sampler 21. **Gotcha:** if a plugin's presets
   const-build from `PARAMS.len()`, referencing `PRESETS.len()` in the const
   `PARAMS` table is a const-eval cycle (E0391) — break it with a separate
   `const PRESET_COUNT` + a `const _: () = assert!(...)` sync guard.
@@ -626,8 +628,8 @@ the live bus. Parameter text: one `display_text<W>` per plugin and
 - **`tools/sdsp-chain`** — headless renderer for plugin chains, and the
   intended engine under a future GUI app. Statically links **25 effects + 7
   instruments**; instruments are PLAYABLE from the TOML (`instrument = "kubyz"`
-  + `notes = [[start_s, dur_s, midi, vel], …]`, `preset = <index>` recalled via
-  a main-thread setup pass — details in the `sdsp-chain` skill).
+  + `notes = [[start_s, dur_s, midi, vel], …]`, `preset = <index>` recalled
+  through `clap.preset-load/2` before activate — details in the `sdsp-chain` skill).
   Beyond a serial chain it now does: **multi-track mixing** (`[[track]]` with
   its own input/chain/gain, summed, then `[[master]]` stages), **per-stage
   sidechains** (`sidechain = "voice.wav"`, which is what Formant's Follow mode

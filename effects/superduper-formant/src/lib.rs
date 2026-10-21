@@ -14,6 +14,7 @@
 
 pub mod gui;
 pub mod presets;
+pub mod mail;
 
 // The DSP itself lives in synth-core so the mobile build can use it; re-exported
 // here under the path every other plugin uses for its engine.
@@ -212,7 +213,7 @@ pub fn apply_preset(shared: &SharedParamsInner, preset: &presets::Preset) {
     }
 }
 
-/// Recall preset `idx` and record it as active so `preset_recall_target` stops
+/// Recall preset `idx` and record it as active (the GUI list and the `preset` doc call this;
 /// re-firing. Main thread only.
 pub fn apply_preset_idx(shared: &SharedParamsInner, idx: usize) {
     let Some(preset) = presets::PRESETS.get(idx) else { return };
@@ -237,13 +238,6 @@ pub struct PluginMainThread<'a> {
 impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMainThread<'a> {
     /// Preset recall runs here: the audio thread only requested the callback.
     fn on_main_thread(&mut self) {
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -360,17 +354,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             &self.shared.gesture_end,
             events.output,
         );
-        // Preset moved (GUI combo, host automation, or MCP)? The recall
-        // allocates, so it has to happen on the main thread.
-        if superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        )
-        .is_some()
-        {
-            self.host.shared().request_callback();
-        }
 
         let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
         let synced = load(P_SYNC) >= 0.5;
@@ -613,13 +596,6 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         apply_param_events(self.shared, ev);
         // Mirror the audio-thread recall path: a host can move Preset while
         // transport is stopped, and then only flush runs.
-        if let Some(idx) = superduper_dsp_sdk::clap_helpers::preset_recall_target(
-            self.shared.params[P_PRESET].load(Ordering::Relaxed),
-            &self.shared.active_preset,
-            presets::PRESETS.len(),
-        ) {
-            apply_preset_idx(&self.shared.inner, idx);
-        }
     }
 }
 
@@ -740,7 +716,8 @@ impl Plugin for SuperDuperFormant {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
-            .register::<clack_extensions::track_info::PluginTrackInfo>();
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
+            .register::<superduper_dsp_sdk::preset_load::PluginPresetLoad>();
     }
 }
 
@@ -760,7 +737,7 @@ impl DefaultPluginFactory for SuperDuperFormant {
         init_logging();
         slog!("new_shared: Formant — build {} ({})", build_num!(), build_date!());
         let shared = PluginShared::new();
-        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Formant", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), None);
+        superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper Formant", &shared.inner, |s| &s.scope, Some(superduper_synth_core::gui::ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle));
         Ok(shared)
     }
 
@@ -779,6 +756,15 @@ impl DefaultPluginFactory for SuperDuperFormant {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperFormant>);
+
+/// `clap.preset-load/2`: a host recalls a factory preset by index or name
+/// (sdsp-chain's `preset = …`). The Preset param itself is only a label.
+impl superduper_dsp_sdk::preset_load::PluginPresetLoadImpl for PluginMainThread<'_> {
+    fn from_location(&mut self, kind: u32, _location: Option<&CStr>, key: Option<&CStr>) -> bool {
+        let names = presets::PRESETS.iter().map(|p| p.name).collect::<Vec<_>>();
+        superduper_dsp_sdk::preset_load::load_named(kind, key, &names, |i| apply_preset_idx(&self.shared.inner, i))
+    }
+}
 
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {

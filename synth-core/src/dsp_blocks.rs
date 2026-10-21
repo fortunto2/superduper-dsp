@@ -461,6 +461,16 @@ pub struct Biquad {
     z1: f32, z2: f32,
 }
 
+/// RBJ's ω₀ with the frequency held below Nyquist: at a 1234 Hz sample rate
+/// a 2 kHz formant or a 6 kHz de-esser band put the pole outside the unit
+/// circle and the output went NaN within 200 samples (clap-validator
+/// process-varying-sample-rates, 4 plugins, 2026-10-21).
+#[inline]
+fn rbj_w0(sr: f32, freq_hz: f32) -> f32 {
+    let f = if freq_hz.is_finite() { freq_hz.clamp(1.0, sr * 0.49) } else { sr * 0.1 };
+    core::f32::consts::TAU * f / sr
+}
+
 impl Biquad {
     /// Process one sample. Coefficients must be set up first via one of the
     /// `set_*` methods.
@@ -498,7 +508,7 @@ impl Biquad {
     /// one octave, 4-6 = narrow surgical cut.
     pub fn set_peaking(&mut self, sr: f32, freq_hz: f32, q: f32, gain_db: f32) {
         let a = 10f32.powf(gain_db / 40.0);
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q.max(0.05));
@@ -516,7 +526,7 @@ impl Biquad {
     /// monotonic shelf. Most plugins use S=1 and just expose the gain.
     pub fn set_low_shelf(&mut self, sr: f32, freq_hz: f32, slope: f32, gain_db: f32) {
         let a = 10f32.powf(gain_db / 40.0);
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / 2.0
@@ -535,7 +545,7 @@ impl Biquad {
     /// High-shelf — mirror of low shelf.
     pub fn set_high_shelf(&mut self, sr: f32, freq_hz: f32, slope: f32, gain_db: f32) {
         let a = 10f32.powf(gain_db / 40.0);
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / 2.0
@@ -554,7 +564,7 @@ impl Biquad {
     /// High-pass — biquad 2nd order, RBJ form. `q` typically 0.707 for
     /// Butterworth (max-flat amplitude).
     pub fn set_hpf(&mut self, sr: f32, freq_hz: f32, q: f32) {
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q.max(0.05));
@@ -575,7 +585,7 @@ impl Biquad {
     /// the centre frequency, everything else is attenuated. Compare to
     /// `set_peaking` which just adds a hump on top of a passthrough.
     pub fn set_bandpass(&mut self, sr: f32, freq_hz: f32, q: f32) {
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q.max(0.05));
@@ -591,7 +601,7 @@ impl Biquad {
 
     /// Low-pass mirror of `set_hpf`.
     pub fn set_lpf(&mut self, sr: f32, freq_hz: f32, q: f32) {
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q.max(0.05));
@@ -609,7 +619,7 @@ impl Biquad {
     /// `q` = sharpness (10..50 for surgical hum removal; 30 ≈ 2 Hz
     /// wide at 50 Hz which leaves the rest of the band untouched).
     pub fn set_notch(&mut self, sr: f32, freq_hz: f32, q: f32) {
-        let w0 = core::f32::consts::TAU * freq_hz / sr;
+        let w0 = rbj_w0(sr, freq_hz);
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q.max(0.5));

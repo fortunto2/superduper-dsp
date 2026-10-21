@@ -68,6 +68,21 @@ use clack_common::utils::{ClapId, Cookie};
 use clack_extensions::log::{HostLog, HostLogImpl, LogSeverity};
 use clack_host::events::io::{EventBuffer, InputEvents, OutputEvents};
 use clack_host::prelude::*;
+use clack_host::extensions::prelude::*;
+
+/// Host side of `clap.preset-load/2`: recall the plugin's own preset `key`
+/// (index or name). False when the plugin has no such preset or extension.
+fn load_plugin_preset(
+    plugin: &mut PluginMainThreadHandle,
+    ext: &superduper_dsp_sdk::preset_load::PluginPresetLoad,
+    key: &std::ffi::CStr,
+) -> bool {
+    match plugin.use_extension(&ext.0).from_location {
+        // SAFETY: the plugin handle is live and `key` outlives the call.
+        Some(f) => unsafe { f(plugin.as_raw(), superduper_dsp_sdk::preset_load::LOCATION_PLUGIN, std::ptr::null(), key.as_ptr()) },
+        None => false,
+    }
+}
 use clack_host::process::audio_buffers::{
     AudioPortBuffer, AudioPortBufferType, AudioPorts, InputChannel,
 };
@@ -448,6 +463,19 @@ macro_rules! impl_instrument {
             )
             .expect("instantiate");
 
+            // The factory preset, through `clap.preset-load/2` (the Preset
+            // param is a label; a param event recalls nothing). Before
+            // activate(), so the first block already plays the preset.
+            if let Some((_pid, pval)) = preset {
+                let key = std::ffi::CString::new((pval.round().max(0.0) as usize).to_string()).unwrap();
+                let mut handle = plugin.plugin_handle();
+                let loaded = handle
+                    .get_extension::<superduper_dsp_sdk::preset_load::PluginPresetLoad>()
+                    .map(|ext| load_plugin_preset(&mut handle, &ext, &key))
+                    .unwrap_or(false);
+                assert!(loaded, "{}: preset {} did not load (no clap.preset-load or unknown index)", $bundle_id, pval);
+            }
+
             let block = BLOCK as usize;
             let n_blocks = (frames + block - 1) / block;
             let padded = n_blocks * block;
@@ -464,11 +492,10 @@ macro_rules! impl_instrument {
                 )
                 .expect("activate");
 
-            // Setup pass: preset recall and sample loading are main-thread
-            // operations by design — the audio thread only detects the param
-            // move and requests a callback (sdk preset_recall_target /
-            // pending-sample). One block carries every param plus the Preset
-            // event, then the main-thread callback applies them. The render
+            // Setup pass: sample loading is a main-thread operation by
+            // design — the audio thread only detects the param move and
+            // requests a callback (pending-sample). One block carries every
+            // param, then the main-thread callback applies them. The render
             // pass re-sends the user params so they override whatever the
             // preset loaded.
             {
@@ -486,15 +513,6 @@ macro_rules! impl_instrument {
                                 ClapId::new(*id),
                                 Pckn::new(0u16, 0u16, 0u16, 0u32),
                                 *v,
-                                Cookie::empty(),
-                            ));
-                        }
-                        if let Some((pid, pval)) = preset {
-                            evs.push(&ParamValueEvent::new(
-                                0,
-                                ClapId::new(pid),
-                                Pckn::new(0u16, 0u16, 0u16, 0u32),
-                                pval,
                                 Cookie::empty(),
                             ));
                         }

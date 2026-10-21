@@ -9,8 +9,9 @@
 //! that held (exponential window), so a clash that happens on every chorus
 //! hit rises and one stray transient does not.
 //!
-//! Masters and other unnamed buses are left out: they carry every track, so
-//! they would "clash" with all of them.
+//! Masters, group buses and returns are left out (`TrackSpectrum::bus`, from
+//! the host's track kind): they carry other tracks, so they would "clash"
+//! with all of them.
 
 use std::collections::HashMap;
 
@@ -20,27 +21,24 @@ const _: () = assert!(BANDS == superduper_dsp_sdk::bus::BANDS);
 pub const LOUD_DB: f32 = -50.0;
 pub const CLOSE_DB: f32 = 6.0;
 
-/// Master and unnamed buses: excluded from masking.
-pub fn is_bus_name(name: &str) -> bool {
-    let n = name.trim().to_lowercase();
-    n.is_empty() || n == "master" || n == "мастер"
-}
-
 /// One track's current spectrum (the loudest instance on that track).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSpectrum {
     pub name: String,
+    /// Carries other tracks (master, bus, return): drawn, never masked.
+    pub bus: bool,
     pub rms_db: f32,
     pub bands_db: [f32; BANDS],
 }
 
-/// Collapse bus rows `(track, rms, bands)` to one per track: the loudest
-/// instance, which is usually the track's output stage (the bus has no
-/// plugin order).
-pub fn loudest_per_track<'a>(rows: impl IntoIterator<Item = (&'a str, f32, &'a [f32; BANDS])>) -> Vec<TrackSpectrum> {
+/// Collapse bus rows `(track, is_bus, rms, bands)` to one per track: the
+/// loudest instance, which is usually the track's output stage (the bus has
+/// no plugin order).
+pub fn loudest_per_track<'a>(rows: impl IntoIterator<Item = (&'a str, bool, f32, &'a [f32; BANDS])>) -> Vec<TrackSpectrum> {
     let mut by: HashMap<&str, TrackSpectrum> = HashMap::new();
-    for (name, rms, bands) in rows {
-        let e = by.entry(name).or_insert_with(|| TrackSpectrum { name: name.to_string(), rms_db: f32::NEG_INFINITY, bands_db: *bands });
+    for (name, bus, rms, bands) in rows {
+        let e = by.entry(name).or_insert_with(|| TrackSpectrum { name: name.to_string(), bus, rms_db: f32::NEG_INFINITY, bands_db: *bands });
+        e.bus |= bus;
         if rms > e.rms_db { e.rms_db = rms; e.bands_db = *bands; }
     }
     let mut v: Vec<TrackSpectrum> = by.into_values().collect();
@@ -83,7 +81,7 @@ impl MaskingTracker {
     }
 
     pub fn update(&mut self, tracks: &[TrackSpectrum]) {
-        let real: Vec<&TrackSpectrum> = tracks.iter().filter(|t| !is_bus_name(&t.name)).collect();
+        let real: Vec<&TrackSpectrum> = tracks.iter().filter(|t| !t.bus).collect();
         self.frames += 1;
         // Running mean is the same recurrence with weight 1/n.
         let a = self.alpha.unwrap_or(1.0 / self.frames as f32);
@@ -91,13 +89,11 @@ impl MaskingTracker {
         for v in self.pairs.values_mut() { for x in v.iter_mut() { *x *= 1.0 - a; } }
         for (i, x) in real.iter().enumerate() {
             for y in &real[i + 1..] {
-                let key = if x.name <= y.name { (x.name.clone(), y.name.clone()) } else { (y.name.clone(), x.name.clone()) };
-                let slot = self.pairs.entry(key).or_insert([0.0; BANDS]);
-                for b in 0..BANDS {
-                    let (p, q) = (x.bands_db[b], y.bands_db[b]);
+                let slot = self.pairs.entry(pair_key(&x.name, &y.name)).or_insert([0.0; BANDS]);
+                for ((s, &p), &q) in slot.iter_mut().zip(&x.bands_db).zip(&y.bands_db) {
                     let clash = p > LOUD_DB && q > LOUD_DB && (p - q).abs() < CLOSE_DB;
                     // The decay above already took (1 − a); add the new sample.
-                    if clash { slot[b] += a; }
+                    if clash { *s += a; }
                 }
             }
         }
@@ -128,9 +124,13 @@ impl MaskingTracker {
 
     /// Per-band share for one pair (for drawing), if tracked.
     pub fn pair(&self, a: &str, b: &str) -> Option<[f32; BANDS]> {
-        let key = if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
-        self.pairs.get(&key).copied()
+        self.pairs.get(&pair_key(a, b)).copied()
     }
+}
+
+/// A pair is unordered: always stored name-sorted.
+fn pair_key(a: &str, b: &str) -> (String, String) {
+    if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
 }
 
 #[cfg(test)]
@@ -140,7 +140,7 @@ mod tests {
     fn t(name: &str, loud: &[(usize, f32)]) -> TrackSpectrum {
         let mut b = [-120.0; BANDS];
         for &(i, v) in loud { b[i] = v; }
-        TrackSpectrum { name: name.into(), rms_db: -20.0, bands_db: b }
+        TrackSpectrum { name: name.into(), bus: name == "Master", rms_db: -20.0, bands_db: b }
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
     fn loudest_instance_stands_for_the_track() {
         let a = [-30.0; BANDS];
         let b = [-10.0; BANDS];
-        let v = loudest_per_track([("Vox", -30.0, &a), ("Vox", -10.0, &b), ("Kick", -12.0, &a)]);
+        let v = loudest_per_track([("Vox", false, -30.0, &a), ("Vox", false, -10.0, &b), ("Kick", false, -12.0, &a)]);
         assert_eq!(v.len(), 2);
         assert_eq!(v.iter().find(|t| t.name == "Vox").map(|t| t.bands_db[0]), Some(-10.0));
     }

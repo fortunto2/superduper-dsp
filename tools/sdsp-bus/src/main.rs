@@ -13,7 +13,7 @@ mod serve;
 
 use superduper_dsp_sdk::bus::{band_edges, Reader, BANDS};
 
-const KEYS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+use superduper_synth_core::melody::NOTE_NAMES as KEYS;
 
 fn strip(bands: &[f32; BANDS]) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -47,7 +47,7 @@ fn main() {
         if json {
             let rows: Vec<_> = all.iter().map(|s| serde_json::json!({
                 "track": s.track, "plugin": s.plugin, "rms_db": s.rms_db, "peak_db": s.peak_db,
-                "key": s.key.map(|k| KEYS[k as usize]), "key_confidence": s.key_confidence,
+                "key": s.key.map(|k| KEYS[k as usize]), "key_confidence": s.key_confidence, "bus": s.is_bus(),
                 "bands_db": s.bands_db.to_vec(), "band_edges_hz": band_edges().to_vec(),
                 "age_ms": s.age_ms, "pid": s.pid,
             })).collect();

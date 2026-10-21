@@ -13,11 +13,18 @@ use rmcp::{
     ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use superduper_dsp_sdk::bus::{band_edges, Reader};
+use superduper_dsp_sdk::bus::{band_edges, Reader, Snapshot, BANDS};
 use superduper_synth_core::drumlib::{parse_key_name, song_key_path};
-use superduper_synth_core::mixmap::{is_bus_name, loudest_per_track, MaskingTracker};
+use superduper_synth_core::melody::NOTE_NAMES;
+use superduper_synth_core::mixmap::{loudest_per_track, MaskingTracker, TrackSpectrum};
 
-const KEYS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+fn tracks(rows: &[Snapshot]) -> Vec<TrackSpectrum> {
+    loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)))
+}
+
+fn key_out(p: &std::path::Path, key: Option<String>) -> rmcp::Json<KeyOut> {
+    rmcp::Json(KeyOut { key, file: p.display().to_string() })
+}
 
 fn reader() -> Result<Reader, McpError> {
     Reader::open().ok_or_else(|| McpError::internal_error(format!("cannot open {}", superduper_dsp_sdk::bus::bus_path().display()), None))
@@ -27,6 +34,8 @@ fn reader() -> Result<Reader, McpError> {
 pub struct Instance {
     /// Host track name; "Master" for the master; empty if the host gave none.
     pub track: String,
+    /// Master, group bus or return: carries other tracks, never masked.
+    pub bus: bool,
     pub plugin: String,
     pub rms_db: f32,
     pub peak_db: f32,
@@ -98,38 +107,36 @@ impl BusServer {
         tracks.sort();
         tracks.dedup();
         let instances = rows.into_iter().map(|r| Instance {
-            track: r.track, plugin: r.plugin, rms_db: r.rms_db, peak_db: r.peak_db, key: r.key.map(|k| KEYS[k as usize].to_string()),
+            bus: r.is_bus(), track: r.track, plugin: r.plugin, rms_db: r.rms_db, peak_db: r.peak_db, key: r.key.map(|k| NOTE_NAMES[k as usize].to_string()),
         }).collect();
         Ok(rmcp::Json(BusList { instances, tracks }))
     }
 
     #[rmcp::tool(description = "Current 32-band spectrum of one track (its loudest SuperDuper instance).")]
     async fn track_spectrum(&self, Parameters(TrackInput { track }): Parameters<TrackInput>) -> Result<rmcp::Json<TrackSpectrumOut>, McpError> {
-        let rows = reader()?.read_all();
-        let all = loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.rms_db, &s.bands_db)));
+        let all = tracks(&reader()?.read_all());
         let q = track.to_lowercase();
         let t = all.iter().find(|t| t.name.to_lowercase() == q).or_else(|| all.iter().find(|t| t.name.to_lowercase().contains(&q)))
             .ok_or_else(|| McpError::invalid_params(format!("no track matching '{track}' on the bus"), None))?;
         Ok(rmcp::Json(TrackSpectrumOut { track: t.name.clone(), rms_db: t.rms_db, band_edges_hz: band_edges().to_vec(), bands_db: t.bands_db.to_vec() }))
     }
 
-    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first. Masters/unnamed buses excluded. Use it to decide EQ cuts.")]
+    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first. Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
     async fn mix_masking(&self, Parameters(MaskingInput { seconds }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let r = reader()?;
         let frames = (secs * 10.0) as usize;
         let mut tracker = MaskingTracker::mean();
-        let mut sums: std::collections::HashMap<String, [f64; 32]> = Default::default();
-        let mut names = Vec::new();
+        let mut sums: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
+        let mut last = Vec::new();
         for _ in 0..frames {
-            let rows = r.read_all();
-            let tracks = loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.rms_db, &s.bands_db)));
+            let tracks = tracks(&r.read_all());
             for t in &tracks {
-                let s = sums.entry(t.name.clone()).or_insert([0.0; 32]);
+                let s = sums.entry(t.name.clone()).or_insert([0.0; BANDS]);
                 for (i, v) in t.bands_db.iter().enumerate() { s[i] += 10f64.powf(*v as f64 / 10.0); }
             }
             tracker.update(&tracks);
-            names = tracks.iter().map(|t| t.name.clone()).filter(|n| !is_bus_name(n)).collect();
+            last = tracks;
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let edges = band_edges();
@@ -139,6 +146,7 @@ impl BusServer {
             let (louder, by) = if la >= lb { (c.a.clone(), la - lb) } else { (c.b.clone(), lb - la) };
             ClashOut { low_hz: edges[c.band], high_hz: edges[c.band + 1], share: c.share, louder, by_db: by, a: c.a, b: c.b }
         }).collect();
+        let names = last.into_iter().filter(|t| !t.bus).map(|t| t.name).collect();
         Ok(rmcp::Json(MaskingOut { seconds: secs, tracks: names, clashes }))
     }
 
@@ -146,7 +154,7 @@ impl BusServer {
     async fn get_song_key(&self) -> Result<rmcp::Json<KeyOut>, McpError> {
         let p = song_key_path();
         let key = std::fs::read_to_string(&p).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        Ok(rmcp::Json(KeyOut { key, file: p.display().to_string() }))
+        Ok(key_out(&p, key))
     }
 
     #[rmcp::tool(description = "Set the song key every SuperDuper plugin can follow (Drum Key=Auto retunes kick/808/toms to it). Accepts 'A', 'F#m', 'Bb major'; empty clears it.")]
@@ -155,14 +163,14 @@ impl BusServer {
         let k = key.trim();
         if k.is_empty() {
             let _ = std::fs::remove_file(&p);
-            return Ok(rmcp::Json(KeyOut { key: None, file: p.display().to_string() }));
+            return Ok(key_out(&p, None));
         }
         if parse_key_name(k).is_none() {
             return Err(McpError::invalid_params(format!("'{k}' is not a key — try 'A', 'F#m', 'Bb major'"), None));
         }
         if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
         std::fs::write(&p, format!("{k}\n")).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        Ok(rmcp::Json(KeyOut { key: Some(k.to_string()), file: p.display().to_string() }))
+        Ok(key_out(&p, Some(k.to_string())))
     }
 }
 

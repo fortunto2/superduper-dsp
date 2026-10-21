@@ -39,10 +39,18 @@ const O_RMS: usize = 28; // f32 dB
 const O_PEAK: usize = 32; // f32 dB
 const O_KEY: usize = 36; // i32 pitch class, −1 none
 const O_KEY_CONF: usize = 40; // f32
+const O_FLAGS: usize = 44; // u32 TRACK_* bits; 0 from writers that predate them
 const O_PLUGIN: usize = 48; // [u8; 32]
 const O_TRACK: usize = 80; // [u8; 64]
 const O_BANDS: usize = 144; // [f32; BANDS] dB
 const _: () = assert!(O_BANDS + BANDS * 4 <= SLOT_BYTES);
+
+/// What kind of track the host says an instance sits on (CLAP track-info).
+/// A master, group bus or return carries other tracks, so it is never one
+/// side of a masking pair.
+pub const TRACK_MASTER: u32 = 1;
+pub const TRACK_BUS: u32 = 2;
+pub const TRACK_RETURN: u32 = 4;
 
 pub fn bus_path() -> PathBuf {
     std::env::var_os("SUPERDUPER_BUS").map(PathBuf::from).unwrap_or_else(|| {
@@ -119,6 +127,8 @@ pub struct Snapshot {
     pub pid: u32,
     pub plugin: String,
     pub track: String,
+    /// `TRACK_*` bits.
+    pub track_flags: u32,
     pub sample_rate: f32,
     pub rms_db: f32,
     pub peak_db: f32,
@@ -126,6 +136,12 @@ pub struct Snapshot {
     pub key: Option<u8>,
     pub key_confidence: f32,
     pub age_ms: u64,
+}
+
+impl Snapshot {
+    /// Carries other tracks: flagged by the host, or unnamed (what hosts give
+    /// a master, and all older writers publish for one).
+    pub fn is_bus(&self) -> bool { self.track_flags != 0 || self.track.is_empty() }
 }
 
 /// One instance's slot. Dropping it frees the slot.
@@ -155,6 +171,7 @@ impl Publisher {
                 p.write(|m, b| {
                     put_str(m, b + O_PLUGIN, 32, plugin);
                     put_str(m, b + O_TRACK, 64, "");
+                    atomic_u32(m, b + O_FLAGS).store(0, Ordering::Relaxed);
                     atomic_u32(m, b + O_KEY).store(u32::MAX, Ordering::Relaxed);
                 });
                 return Some(p);
@@ -178,8 +195,11 @@ impl Publisher {
         atomic_u64(&self.map, b + O_HEARTBEAT).store(now_ms(), Ordering::Release);
     }
 
-    pub fn set_track(&self, track: &str) {
-        self.write(|m, b| put_str(m, b + O_TRACK, 64, track));
+    pub fn set_track(&self, track: &str, flags: u32) {
+        self.write(|m, b| {
+            put_str(m, b + O_TRACK, 64, track);
+            atomic_u32(m, b + O_FLAGS).store(flags, Ordering::Relaxed);
+        });
     }
 
     pub fn publish(&self, sample_rate: f32, rms_db: f32, peak_db: f32, bands_db: &[f32; BANDS]) {
@@ -234,6 +254,7 @@ impl Reader {
                     pid: atomic_u32(m, b + O_PID).load(Ordering::Relaxed),
                     plugin: get_str(m, b + O_PLUGIN, 32),
                     track: get_str(m, b + O_TRACK, 64),
+                    track_flags: atomic_u32(m, b + O_FLAGS).load(Ordering::Relaxed),
                     sample_rate: get_f32(m, b + O_SR),
                     rms_db: get_f32(m, b + O_RMS),
                     peak_db: get_f32(m, b + O_PEAK),
@@ -267,7 +288,7 @@ mod tests {
             let a = Publisher::open("SuperDuper Compressor").expect("open");
             let b = Publisher::open("SuperDuper Piano").expect("open");
             assert_ne!(a.slot(), b.slot());
-            a.set_track("Vocal");
+            a.set_track("Vocal", 0);
             let mut bands = [-90.0f32; BANDS];
             bands[10] = -12.5;
             a.publish(48_000.0, -18.0, -3.0, &bands);
@@ -278,6 +299,11 @@ mod tests {
             assert_eq!((va.plugin.as_str(), va.track.as_str()), ("SuperDuper Compressor", "Vocal"));
             assert_eq!((va.rms_db, va.peak_db, va.bands_db[10]), (-18.0, -3.0, -12.5));
             assert_eq!(all.iter().find(|s| s.instance == b.instance()).and_then(|s| s.key), Some(9));
+            assert!(!va.is_bus(), "a named ordinary track is a track");
+            assert!(all.iter().find(|s| s.instance == b.instance()).is_some_and(|s| s.is_bus()), "unnamed reads as a bus (old writers' master)");
+            b.set_track("Drums", TRACK_BUS);
+            let vb = r.read_all().into_iter().find(|s| s.instance == b.instance()).expect("b");
+            assert_eq!((vb.track.as_str(), vb.track_flags, vb.is_bus()), ("Drums", TRACK_BUS, true), "the host's kind, not the name, makes a bus");
             let freed = a.slot();
             drop(a);
             assert!(r.read_all().iter().all(|s| s.slot != freed), "dropped publisher's slot is gone");

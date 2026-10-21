@@ -267,9 +267,10 @@ pub struct LiveScope {
     pub buf: Box<[AtomicF32]>,
     pub head: std::sync::atomic::AtomicUsize,
     /// For the bus publisher: the rate the pushed samples are at (plugins
-    /// set it in activate; 48 kHz until they do) and the host's track name.
+    /// set it in activate; 48 kHz until they do) and the host's track name
+    /// with its `bus::TRACK_*` kind.
     pub sample_rate: AtomicF32,
-    pub track: parking_lot::Mutex<String>,
+    pub track: parking_lot::Mutex<(String, u32)>,
 }
 
 impl LiveScope {
@@ -279,7 +280,7 @@ impl LiveScope {
             buf: buf.into_boxed_slice(),
             head: std::sync::atomic::AtomicUsize::new(0),
             sample_rate: AtomicF32::new(48_000.0),
-            track: parking_lot::Mutex::new(String::new()),
+            track: parking_lot::Mutex::new((String::new(), 0)),
         }
     }
 
@@ -323,11 +324,16 @@ pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'
     let Some(ext) = host.get_extension::<HostTrackInfo>() else { return };
     let mut buf = TrackInfoBuffer::new();
     if let Some(info) = ext.get(host, &mut buf) {
-        use clack_extensions::track_info::TrackInfoFlags;
+        use clack_extensions::track_info::TrackInfoFlags as F;
+        use superduper_dsp_sdk::bus::{TRACK_BUS, TRACK_MASTER, TRACK_RETURN};
+        let f = info.flags();
+        let kind = [(F::IS_FOR_MASTER, TRACK_MASTER), (F::IS_FOR_BUS, TRACK_BUS), (F::IS_FOR_RETURN_TRACK, TRACK_RETURN)]
+            .iter().filter(|(h, _)| f.contains(*h)).fold(0, |k, (_, b)| k | b);
         let mut name = info.name().map(|n| String::from_utf8_lossy(n).trim_end_matches('\0').trim().to_string()).unwrap_or_default();
-        // REAPER gives the master no name; the flag says what it is.
-        if name.is_empty() && info.flags().contains(TrackInfoFlags::IS_FOR_MASTER) { name = "Master".into(); }
-        *scope.track.lock() = name;
+        // REAPER gives the master no name; label it for people, the kind bits
+        // are what tools go by.
+        if name.is_empty() && kind & TRACK_MASTER != 0 { name = "Master".into(); }
+        *scope.track.lock() = (name, kind);
     }
 }
 
@@ -377,12 +383,12 @@ pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, share
     let weak = std::sync::Arc::downgrade(shared);
     let _ = std::thread::Builder::new().name("sdsp-bus".into()).spawn(move || {
         let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
-        let mut track = String::new();
+        let mut track = (String::new(), 0);
         loop {
             let Some(inner) = weak.upgrade() else { break };
             let sc = scope(&inner);
             let t = sc.track.lock().clone();
-            if t != track { publisher.set_track(&t); track = t; }
+            if t != track { publisher.set_track(&t.0, t.1); track = t; }
             let (rms, peak, bands) = scope_spectrum(sc, 4096);
             publisher.publish(sc.sample_rate.load(Ordering::Relaxed), rms, peak, &bands);
             drop(inner);

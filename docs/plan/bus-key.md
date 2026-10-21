@@ -42,4 +42,16 @@ the real side-chain input stays for that.
 
 - [ ] StftProcessor reports N−hop but delays N (measured by impulse and by Morph): Pitch (Track mode) and Vocoder (Spectral) tell the host 512 samples (10.7 ms) too little; fix = separate ring offset from reported latency + re-align their dry paths, re-record snapshots
 
+- [ ] NEW SuperDuper Space (spatial panner, asked 2026-10-21): an object position (x, y, z) per track →
+      VBAP/DBAP gains to N speakers (stereo, 5.1, 7.1.4, custom layouts as REAPER's ReaSurroundPan
+      exposes them) + distance cues (level, air LPF, early reflection) + optional ambisonic encode,
+      binaural (HRTF) monitor for headphones; CLAP multichannel ports; MCP-first so the agent
+      places tracks on the map and the bus map shows the room. Not a Dolby Atmos encoder (an
+      Apple Spatial Audio delivery needs an ADM BWF master from Dolby's renderer / Fiedler Composer)
+
+- [ ] bypassed plugin = silence on the bus: every plugin's bypass path copies dry and returns before
+      `scope.push`, so a bypassed Morph read −120 and `prefer: Morph` lost the 808 (measured 2026-10-21).
+      Fix in the plugins: push the dry signal on bypass (31 process() paths); until then serve.rs
+      falls back to the loudest instance when the preferred one is silent
+
 ## Done

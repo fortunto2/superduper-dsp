@@ -26,7 +26,24 @@ type Prefer = std::collections::HashMap<String, String>;
 /// after it is quieter than it). `prefer` names the instance that is last in
 /// the chain, which the agent reads from the DAW.
 fn tracks(rows: &[Snapshot], prefer: &Prefer) -> Vec<TrackSpectrum> {
-    let keep = |s: &&Snapshot| prefer.get(&s.track).is_none_or(|p| s.plugin.to_lowercase().contains(&p.to_lowercase()));
+    // Track names in `prefer` match like everywhere else (case-insensitive,
+    // substring); a preferred plugin that is not on the track falls back to
+    // the loudest instance instead of silently dropping the track.
+    let pref_for = |track: &str| {
+        let t = track.to_lowercase();
+        prefer.iter().find(|(k, _)| k.to_lowercase() == t).or_else(|| prefer.iter().find(|(k, _)| t.contains(&k.to_lowercase()))).map(|(_, p)| p.to_lowercase())
+    };
+    // A bypassed plugin publishes nothing (its bypass path skips the scope),
+    // so a preferred instance reading as bus silence is not the track's
+    // output either: fall back to the loudest instance then.
+    let silent = |s: &Snapshot| s.rms_db <= -119.0;
+    let keep = |s: &&Snapshot| match pref_for(&s.track) {
+        Some(p) => {
+            let usable = |o: &Snapshot| o.track == s.track && o.plugin.to_lowercase().contains(&p) && !silent(o);
+            s.plugin.to_lowercase().contains(&p) && !silent(s) || !rows.iter().any(usable)
+        }
+        None => true,
+    };
     loudest_per_track(rows.iter().filter(keep).map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)))
 }
 
@@ -199,8 +216,12 @@ pub struct DocInput {
 fn find_instance(track: &str, plugin: &str) -> Result<u64, McpError> {
     let rows = reader()?.read_all();
     let (t, p) = (track.to_lowercase(), plugin.to_lowercase());
-    let on_track = |s: &&Snapshot| s.track.to_lowercase() == t || s.track.to_lowercase().contains(&t);
-    let hits: Vec<&Snapshot> = rows.iter().filter(on_track).filter(|s| s.plugin.to_lowercase().contains(&p)).collect();
+    // An exact track name wins over substring matches ("Vox" must be
+    // nameable next to "Vox Delay"), then the same for the plugin name.
+    let exact: Vec<&Snapshot> = rows.iter().filter(|s| s.track.to_lowercase() == t).collect();
+    let on_track: Vec<&Snapshot> = if exact.is_empty() { rows.iter().filter(|s| s.track.to_lowercase().contains(&t)).collect() } else { exact };
+    let plugin_exact: Vec<&Snapshot> = on_track.iter().copied().filter(|s| s.plugin.to_lowercase() == p || s.plugin.to_lowercase() == format!("superduper {p}")).collect();
+    let hits: Vec<&Snapshot> = if plugin_exact.is_empty() { on_track.into_iter().filter(|s| s.plugin.to_lowercase().contains(&p)).collect() } else { plugin_exact };
     match hits.as_slice() {
         [one] => Ok(one.instance),
         [] => Err(McpError::invalid_params(format!("no '{plugin}' on a track matching '{track}'"), None)),

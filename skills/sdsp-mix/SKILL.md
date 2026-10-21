@@ -84,6 +84,24 @@ listened time, and says which track is louder in the band and by how much),
 `get_song_key` / `set_song_key`. Use `mix_masking` instead of the picture when
 only the numbers are needed.
 
+**Agent loop — measure, change, compare, keep or undo.** The bus server
+measures, REAPER MCP changes; neither does the other's job:
+1. play one section on loop (the chorus); `mix_masking(seconds=10, label="before")`;
+2. check what is actually sounding: `track_fx_get_enabled` on the track — the
+   loudest *enabled* instance is the track, and an EQ placed before the
+   instrument that really plays does nothing (measured 2026-10-21: the
+   "Гитара" track was Piano at FX 7, its EQ at FX 6);
+3. one change through REAPER MCP (`track_fx_set_param` on an EQ *after* the
+   sounding instrument, or `dsl_track_volume`);
+4. `mix_masking(seconds=10, label="cut-300-gtr")` on the same section, then
+   `mix_compare(before="before", after="cut-300-gtr")`;
+5. the clash dropped and the track did not lose its level → keep; otherwise
+   `dsl_undo`. Runs live in `~/.superduper-dsp/mix-log.jsonl`.
+
+A plugin that is bypassed publishes silence (since 2026-10-21); before that a
+disabled plugin kept its last spectrum on the bus and produced clashes that
+did not exist — distrust any older measurement.
+
 For the person at the DAW: **SuperDuper Spectrum → `[ ] mix`** draws every
 track's curve on one graph, shades the worst clash band and lists the top four
 pairs over the last ~8 s. Put it on the master; clicking a track brings its

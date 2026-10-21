@@ -384,12 +384,23 @@ pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, share
     let _ = std::thread::Builder::new().name("sdsp-bus".into()).spawn(move || {
         let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
         let mut track = (String::new(), 0);
+        let mut last_head = usize::MAX;
         loop {
             let Some(inner) = weak.upgrade() else { break };
             let sc = scope(&inner);
             let t = sc.track.lock().clone();
             if t != track { publisher.set_track(&t.0, t.1); track = t; }
-            let (rms, peak, bands) = scope_spectrum(sc, 4096);
+            // A bypassed or stopped plugin is not called, so its scope keeps
+            // the last audio it heard; publishing that froze a disabled Drum
+            // on the bus as its track's loudest instance. No new samples since
+            // the last publish = silence.
+            let head = sc.head.load(Ordering::Relaxed);
+            let (rms, peak, bands) = if head == last_head {
+                (-120.0, -120.0, [-120.0; superduper_dsp_sdk::bus::BANDS])
+            } else {
+                scope_spectrum(sc, 4096)
+            };
+            last_head = head;
             publisher.publish(sc.sample_rate.load(Ordering::Relaxed), rms, peak, &bands);
             drop(inner);
             std::thread::sleep(std::time::Duration::from_millis(50));

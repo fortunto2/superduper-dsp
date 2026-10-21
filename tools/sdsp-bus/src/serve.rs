@@ -66,9 +66,12 @@ pub struct TrackSpectrumOut {
 pub struct MaskingInput {
     /// How long to listen while the song plays (default 6, max 60).
     pub seconds: Option<f32>,
+    /// Keep this measurement under a name ("before", "cut-300-gtr") for
+    /// mix_compare. Play the same section for every labelled run.
+    pub label: Option<String>,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
 pub struct ClashOut {
     pub a: String,
     pub b: String,
@@ -81,8 +84,58 @@ pub struct ClashOut {
     pub by_db: f32,
 }
 
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TrackLevel { pub track: String, pub rms_db: f32 }
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MaskingOut {
+    pub label: Option<String>,
+    pub seconds: f32,
+    pub tracks: Vec<String>,
+    pub clashes: Vec<ClashOut>,
+    /// Each track's average level over the run (power mean).
+    pub levels: Vec<TrackLevel>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CompareInput {
+    /// Label of the earlier mix_masking run.
+    pub before: String,
+    /// Label of the later one.
+    pub after: String,
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
-pub struct MaskingOut { pub seconds: f32, pub tracks: Vec<String>, pub clashes: Vec<ClashOut> }
+pub struct ClashDelta {
+    pub a: String,
+    pub b: String,
+    pub low_hz: f32,
+    pub high_hz: f32,
+    /// Share of time clashing in each run; 0 = not in that run's list.
+    pub before: f32,
+    pub after: f32,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct LevelDelta { pub track: String, pub before_db: Option<f32>, pub after_db: Option<f32> }
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct CompareOut { pub clashes: Vec<ClashDelta>, pub levels: Vec<LevelDelta> }
+
+/// Labelled mix_masking runs, one JSON per line; the latest run of a label wins.
+fn mix_log_path() -> std::path::PathBuf {
+    song_key_path().with_file_name("mix-log.jsonl")
+}
+
+fn load_run(label: &str) -> Result<MaskingOut, McpError> {
+    let text = std::fs::read_to_string(mix_log_path()).unwrap_or_default();
+    let runs: Vec<MaskingOut> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let labels: Vec<&str> = runs.iter().filter_map(|r| r.label.as_deref()).collect();
+    let msg = format!("no run labelled '{label}'; have: {}", labels.join(", "));
+    runs.iter().rposition(|r| r.label.as_deref() == Some(label))
+        .map(|i| runs.into_iter().nth(i).expect("index from rposition"))
+        .ok_or_else(|| McpError::invalid_params(msg, None))
+}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct KeyInput {
@@ -122,16 +175,18 @@ impl BusServer {
     }
 
     #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first. Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
-    async fn mix_masking(&self, Parameters(MaskingInput { seconds }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
+    async fn mix_masking(&self, Parameters(MaskingInput { seconds, label }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let r = reader()?;
         let frames = (secs * 10.0) as usize;
         let mut tracker = MaskingTracker::mean();
         let mut sums: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
+        let mut power: std::collections::HashMap<String, f64> = Default::default();
         let mut last = Vec::new();
         for _ in 0..frames {
             let tracks = tracks(&r.read_all());
             for t in &tracks {
+                *power.entry(t.name.clone()).or_default() += 10f64.powf(t.rms_db as f64 / 10.0);
                 let s = sums.entry(t.name.clone()).or_insert([0.0; BANDS]);
                 for (i, v) in t.bands_db.iter().enumerate() { s[i] += 10f64.powf(*v as f64 / 10.0); }
             }
@@ -147,7 +202,39 @@ impl BusServer {
             ClashOut { low_hz: edges[c.band], high_hz: edges[c.band + 1], share: c.share, louder, by_db: by, a: c.a, b: c.b }
         }).collect();
         let names = last.into_iter().filter(|t| !t.bus).map(|t| t.name).collect();
-        Ok(rmcp::Json(MaskingOut { seconds: secs, tracks: names, clashes }))
+        let mut levels: Vec<TrackLevel> = power.into_iter()
+            .map(|(track, p)| TrackLevel { track, rms_db: (10.0 * (p / frames as f64 + 1e-12).log10()) as f32 })
+            .collect();
+        levels.sort_by(|a, b| a.track.cmp(&b.track));
+        let out = MaskingOut { label, seconds: secs, tracks: names, clashes, levels };
+        if out.label.is_some() {
+            use std::io::Write;
+            let line = serde_json::to_string(&out).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            std::fs::OpenOptions::new().create(true).append(true).open(mix_log_path())
+                .and_then(|mut f| writeln!(f, "{line}"))
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        }
+        Ok(rmcp::Json(out))
+    }
+
+    #[rmcp::tool(description = "Compare two labelled mix_masking runs (same section of the song): each clash's share before and after, and each track's level. Use after a change to see whether it helped; undo it in the DAW if it did not.")]
+    async fn mix_compare(&self, Parameters(CompareInput { before, after }): Parameters<CompareInput>) -> Result<rmcp::Json<CompareOut>, McpError> {
+        let (b, a) = (load_run(&before)?, load_run(&after)?);
+        let mut clashes: Vec<ClashDelta> = Vec::new();
+        for (c, is_after) in b.clashes.iter().map(|c| (c, false)).chain(a.clashes.iter().map(|c| (c, true))) {
+            let i = clashes.iter().position(|d| d.a == c.a && d.b == c.b && d.low_hz == c.low_hz).unwrap_or_else(|| {
+                clashes.push(ClashDelta { a: c.a.clone(), b: c.b.clone(), low_hz: c.low_hz, high_hz: c.high_hz, before: 0.0, after: 0.0 });
+                clashes.len() - 1
+            });
+            if is_after { clashes[i].after = c.share } else { clashes[i].before = c.share }
+        }
+        clashes.sort_by(|x, y| (y.before - y.after).abs().total_cmp(&(x.before - x.after).abs()));
+        let mut names: Vec<&str> = b.levels.iter().chain(&a.levels).map(|l| l.track.as_str()).collect();
+        names.sort();
+        names.dedup();
+        let find = |run: &MaskingOut, n: &str| run.levels.iter().find(|l| l.track == n).map(|l| l.rms_db);
+        let levels = names.into_iter().map(|n| LevelDelta { track: n.to_string(), before_db: find(&b, n), after_db: find(&a, n) }).collect();
+        Ok(rmcp::Json(CompareOut { clashes, levels }))
     }
 
     #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).")]
@@ -183,7 +270,7 @@ impl ServerHandler for BusServer {
         rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
             .with_server_info(info)
-            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays), get/set_song_key.")
+            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
     }
 }
 

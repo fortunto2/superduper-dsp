@@ -2,3 +2,4 @@
 //! controls (`controls`) that the binary and `tests/controls.rs` share.
 pub mod controls;
 pub mod serve;
+pub mod setup;

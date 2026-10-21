@@ -6,6 +6,7 @@
 #   dist/macos/*.clap        — CLAP bundles
 #   dist/vst3/*.vst3          — VST3 wrapper bundles
 #   dist/au/*.component       — AUv2 wrapper bundles
+#   dist/agent/{bin,skills}   — optional: sdsp-bus, sdsp-chain, skills
 # Output:
 #   dist/SuperDuperDSP-<version>-macos-arm64.pkg
 #
@@ -16,6 +17,8 @@ set -euo pipefail
 V="${1:?usage: build_pkg.sh <version>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+# Inputs and output live in $D (default dist/; build_mac_release.sh points it at its own folder).
+D="${SDSP_PKG_DIST:-dist}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -53,15 +56,44 @@ build_component() {
 }
 
 HAVE_CLAP=0; HAVE_VST3=0; HAVE_AU=0
-build_component co.superduperai.pkg.clap dist/macos "*.clap" \
+build_component co.superduperai.pkg.clap $D/macos "*.clap" \
     "/Library/Audio/Plug-Ins/CLAP" clap.pkg \
     "/Library/Audio/Plug-Ins/CLAP" && HAVE_CLAP=1
-build_component co.superduperai.pkg.vst3 dist/vst3 "*.vst3" \
+build_component co.superduperai.pkg.vst3 $D/vst3 "*.vst3" \
     "/Library/Audio/Plug-Ins/VST3" vst3.pkg \
     "/Library/Audio/Plug-Ins/VST3" && HAVE_VST3=1
-build_component co.superduperai.pkg.au dist/au "*.component" \
+build_component co.superduperai.pkg.au $D/au "*.component" \
     "/Library/Audio/Plug-Ins/Components" au.pkg \
     "/Library/Audio/Plug-Ins/Components" && HAVE_AU=1
+
+# --- agent tools: sdsp-bus (MCP gateway) + sdsp-chain + skills -----------
+# dist/agent/{bin,skills} → /Library/Application Support/SuperDuperDSP; the
+# postinstall runs `sdsp-bus setup` as the logged-in user, which registers the
+# MCP server only in agent apps that user already has (and links the skills).
+HAVE_AGENT=0
+AGENT_HOME="/Library/Application Support/SuperDuperDSP"
+if [[ -x $D/agent/bin/sdsp-bus ]]; then
+    rootd="$WORK/root-agent"; mkdir -p "$rootd$AGENT_HOME"
+    ditto --noextattr --norsrc $D/agent "$rootd$AGENT_HOME"
+    scriptd="$WORK/scripts-agent"; mkdir -p "$scriptd"
+    cat > "$scriptd/postinstall" <<'EOF2'
+#!/bin/bash
+A="/Library/Application Support/SuperDuperDSP"
+xattr -dr com.apple.quarantine "$A" 2>/dev/null || true
+mkdir -p /usr/local/bin
+ln -sf "$A/bin/sdsp-bus" /usr/local/bin/sdsp-bus
+ln -sf "$A/bin/sdsp-chain" /usr/local/bin/sdsp-chain
+U="$(stat -f%Su /dev/console)"
+if [[ -n "$U" && "$U" != root && "$U" != loginwindow ]]; then
+    sudo -u "$U" -H "$A/bin/sdsp-bus" setup > "/tmp/superduper-agent-setup.log" 2>&1 || true
+fi
+exit 0
+EOF2
+    chmod +x "$scriptd/postinstall"
+    COPYFILE_DISABLE=1 pkgbuild --root "$rootd" --scripts "$scriptd" \
+        --identifier co.superduperai.pkg.agent --version "$V" \
+        --install-location "/" "$PKGS/agent.pkg" && HAVE_AGENT=1
+fi
 
 # --- distribution: chooser UI -------------------------------------------
 DIST="$WORK/distribution.xml"
@@ -75,6 +107,7 @@ DIST="$WORK/distribution.xml"
     [[ $HAVE_CLAP == 1 ]] && echo '    <line choice="clap"/>'
     [[ $HAVE_VST3 == 1 ]] && echo '    <line choice="vst3"/>'
     [[ $HAVE_AU   == 1 ]] && echo '    <line choice="au"/>'
+    [[ $HAVE_AGENT == 1 ]] && echo '    <line choice="agent"/>'
     echo '  </choices-outline>'
     # CLAP required (wrappers depend on it); pre-selected + not unselectable.
     [[ $HAVE_CLAP == 1 ]] && cat <<XML
@@ -92,13 +125,20 @@ XML
     <pkg-ref id="co.superduperai.pkg.au"/>
   </choice>
 XML
+    [[ $HAVE_AGENT == 1 ]] && cat <<XML
+  <choice id="agent" title="Agent tools (MCP for Claude, Cursor, Codex)" start_selected="true"
+          description="sdsp-bus and sdsp-chain command-line tools, mixing skills, and the superduper-bus MCP server registered in the agent apps you already have. Lets an AI assistant hear and set every SuperDuper plugin. Undo: sdsp-bus setup --uninstall">
+    <pkg-ref id="co.superduperai.pkg.agent"/>
+  </choice>
+XML
+    [[ $HAVE_AGENT == 1 ]] && echo "  <pkg-ref id=\"co.superduperai.pkg.agent\" version=\"$V\">agent.pkg</pkg-ref>"
     [[ $HAVE_CLAP == 1 ]] && echo "  <pkg-ref id=\"co.superduperai.pkg.clap\" version=\"$V\">clap.pkg</pkg-ref>"
     [[ $HAVE_VST3 == 1 ]] && echo "  <pkg-ref id=\"co.superduperai.pkg.vst3\" version=\"$V\">vst3.pkg</pkg-ref>"
     [[ $HAVE_AU   == 1 ]] && echo "  <pkg-ref id=\"co.superduperai.pkg.au\" version=\"$V\">au.pkg</pkg-ref>"
     echo '</installer-gui-script>'
 } > "$DIST"
 
-mkdir -p dist
+mkdir -p "$D"
 productbuild --distribution "$DIST" --package-path "$PKGS" \
-    "dist/SuperDuperDSP-${V}-macos-arm64.pkg"
-echo "==> dist/SuperDuperDSP-${V}-macos-arm64.pkg"
+    "$D/SuperDuperDSP-${V}-macos-arm64.pkg"
+echo "==> $D/SuperDuperDSP-${V}-macos-arm64.pkg"

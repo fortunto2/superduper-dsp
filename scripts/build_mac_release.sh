@@ -40,4 +40,16 @@ for a in build-wrappers/SuperDuper*.component; do n=$(basename "$a" .component);
 (cd "$OUT/vst3" && zip -qry "../superduper-dsp-${V}-macos-arm64-vst3.zip" SuperDuper*.vst3)
 (cd "$OUT/au" && zip -qry "../superduper-dsp-${V}-macos-arm64-au.zip" SuperDuper*.component)
 (cd "$OUT" && shasum -a 256 *vst3*.zip *au*.zip >> SHA256SUMS-macos.txt)
+# Agent tools for the installer: the bus gateway, the chain renderer and the skills
+# a user (not a plugin developer) needs. Each tool built ALONE — a workspace build
+# unifies features and once hid a synth-core that only compiled with `gui` on.
+cargo build --release -p sdsp-bus 2>&1 | tail -1
+cargo build --release -p sdsp-chain 2>&1 | tail -1
+mkdir -p "$OUT/agent/bin" "$OUT/agent/skills"
+cp "$T/release/sdsp-bus" "$T/release/sdsp-chain" "$OUT/agent/bin/"
+for b in "$OUT"/agent/bin/*; do codesign --force --sign - "$b" 2>/dev/null || true; done
+for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto skills/$s "$OUT/agent/skills/$s"; done
+SDSP_PKG_DIST="$OUT" bash installer/macos/build_pkg.sh "$V" | tail -1
+cp "$OUT/SuperDuperDSP-${V}-macos-arm64.pkg" "$OUT/SuperDuperDSP-macos-arm64.pkg"   # stable name for releases/latest/download
+(cd "$OUT" && shasum -a 256 *.pkg >> SHA256SUMS-macos.txt)
 ls "$OUT"/*.zip | wc -l

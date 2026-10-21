@@ -9,11 +9,14 @@
 //!                         clashes, see mix_masking/mix_phase find them and
 //!                         nothing else; exit 1 on any miss. Run before trusting
 //!                         a zero from the live bus.
+//!     sdsp-bus setup      register `serve --stdio` as the `superduper-bus` MCP
+//!                         server in Claude Code / Desktop, Cursor, Windsurf,
+//!                         Codex and link the skills (`--uninstall`, `--dry-run`)
 //!
 //! Each row is one plugin instance: its track, level, peak, a 32-band
 //! spectrum as a bar strip (20 Hz on the left, 20 kHz on the right) and the
 //! key it detected, if it detects one.
-use sdsp_bus::{controls, serve};
+use sdsp_bus::{controls, serve, setup};
 
 use superduper_dsp_sdk::bus::{band_edges, Reader, BANDS};
 
@@ -31,6 +34,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("controls") {
         std::process::exit(controls::main());
+    }
+    if args.get(1).map(String::as_str) == Some("setup") {
+        std::process::exit(setup::main(&args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("serve") {
         let res = if args.iter().any(|a| a == "--stdio") {

@@ -84,10 +84,11 @@ the real side-chain input stays for that.
         the user's last preset, which read as a wrong default); Wind/Kubyz table defaults =
         their init preset; RBJ ω₀ clamped below Nyquist (NaN at a 1234 Hz rate in Kubyz, Wind,
         Vocal); Morph saves the model the audio thread would use
-      - [ ] Drum `-inf` at a 1234.57 Hz sample rate (process-varying-sample-rates, sample 179):
-        not reproduced by tests/odd_sample_rate.rs (every key, velocities down to 0, six rates);
-        the validator's note generator also sends note-offs, chokes and sample offsets −4..64 —
-        instrument the hit path next
+      - [x] Drum `-inf` at a 1234.57 Hz sample rate (process-varying-sample-rates, sample 179):
+        not reproduced by tests/odd_sample_rate.rs (every key, velocities down to 0, six rates).
+        2026-10-21: 0 failures in 300 runs of that test against dist/ built after the Nyquist
+        clamps and the begin_events FTZ guard — closed as fixed by those, root cause unconfirmed;
+        reopen with the validator's seed if it shows up again
       - [x] Looper 8–65× "slower on denormals" (warning), 2026-10-21: the plugin is fine —
         effects/superduper-looper/tests/denormals.rs times it on subnormal input idle and while
         recording / overdubbing through MIDI CCs: 1.0×, and inside process() during the validator's

@@ -323,9 +323,11 @@ pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'
     let Some(ext) = host.get_extension::<HostTrackInfo>() else { return };
     let mut buf = TrackInfoBuffer::new();
     if let Some(info) = ext.get(host, &mut buf) {
-        if let Some(name) = info.name() {
-            *scope.track.lock() = String::from_utf8_lossy(name).trim_end_matches('\0').to_string();
-        }
+        use clack_extensions::track_info::TrackInfoFlags;
+        let mut name = info.name().map(|n| String::from_utf8_lossy(n).trim_end_matches('\0').trim().to_string()).unwrap_or_default();
+        // REAPER gives the master no name; the flag says what it is.
+        if name.is_empty() && info.flags().contains(TrackInfoFlags::IS_FOR_MASTER) { name = "Master".into(); }
+        *scope.track.lock() = name;
     }
 }
 

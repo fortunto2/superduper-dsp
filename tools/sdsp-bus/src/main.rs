@@ -3,10 +3,13 @@
 //!     sdsp-bus            one table
 //!     sdsp-bus --watch    refresh twice a second
 //!     sdsp-bus --json     machine-readable (agents)
+//!     sdsp-bus serve      MCP server on 127.0.0.1:7892/mcp (`--port N`)
 //!
 //! Each row is one plugin instance: its track, level, peak, a 32-band
 //! spectrum as a bar strip (20 Hz on the left, 20 kHz on the right) and the
 //! key it detected, if it detects one.
+mod serve;
+
 use superduper_dsp_sdk::bus::{band_edges, Reader, BANDS};
 
 const KEYS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -21,6 +24,11 @@ fn strip(bands: &[f32; BANDS]) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("serve") {
+        let port = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).unwrap_or(7892);
+        if let Err(e) = serve::run(port) { eprintln!("serve: {e}"); std::process::exit(1); }
+        return;
+    }
     let watch = args.iter().any(|a| a == "--watch");
     let json = args.iter().any(|a| a == "--json");
     let Some(r) = Reader::open() else {

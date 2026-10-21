@@ -75,11 +75,17 @@ Then **look at the PNG** (Read it). Three panels:
 - re-run `mixmap.py`: the pair's share should drop well below 50 %. One change
   at a time, as everywhere here.
 
-When `sdsp-bus serve` is running, the same data is on MCP (`superduper-dsp` in
-`.mcp.json`, port 7891): `bus_list`, `track_spectrum`, `mix_masking`
-(also says which track is louder in the band and by how much),
+When `sdsp-bus serve` is running, the same data is on MCP (`superduper-bus` in
+`.mcp.json`, port 7892; 7891 is each plugin's own server): `bus_list`,
+`track_spectrum`, `mix_masking` (listens N seconds, share = clashing time /
+listened time, and says which track is louder in the band and by how much),
 `get_song_key` / `set_song_key`. Use `mix_masking` instead of the picture when
 only the numbers are needed.
+
+For the person at the DAW: **SuperDuper Spectrum → `[ ] mix`** draws every
+track's curve on one graph, shades the worst clash band and lists the top four
+pairs over the last ~8 s. Put it on the master; clicking a track brings its
+curve forward.
 
 **Limits:** one curve per track = its loudest SuperDuper instance (the bus has
 no plugin order); bands are ~1/3 octave (32 over 20 Hz–20 kHz) from an 85 ms

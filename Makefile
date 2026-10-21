@@ -70,6 +70,15 @@ hooks:
 validator-install:
 	@./scripts/install_clap_validator.sh
 
+# The bus gateway and the chain renderer as the skills and .mcp.json run them:
+# built ALONE (feature unification in a workspace build hides a synth-core
+# that only compiles with `gui` on — it did, 2026-10-21), the gateway then
+# cargo-installed because .mcp.json starts ~/.cargo/bin/sdsp-bus.
+tools:
+	@cargo build --release -p sdsp-bus
+	@cargo build --release -p sdsp-chain
+	@cargo install --path tools/sdsp-bus --force
+
 test:
 	@cargo test --release --workspace
 

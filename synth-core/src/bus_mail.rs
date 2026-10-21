@@ -145,6 +145,10 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// The `list` entry for the `preset` document.
+///
+/// Plugin side (the `gui` feature, which is what links the sdk): the bus
+/// tools build this crate without it and must not pull the sdk in.
+#[cfg(feature = "gui")]
 pub fn preset_list_entry() -> serde_json::Value {
     serde_json::json!({
         "doc": "preset",
@@ -155,7 +159,8 @@ pub fn preset_list_entry() -> serde_json::Value {
 
 /// Answer `get` / `set` on the `preset` document. `apply` runs the plugin's
 /// own recall for a valid index (it writes the params, marks them dirty and
-/// records the index as active).
+/// records the index as active). Plugin side, like `preset_list_entry`.
+#[cfg(feature = "gui")]
 pub fn preset_request(
     op: &str,
     value: &serde_json::Value,
@@ -184,7 +189,7 @@ pub fn preset_request(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gui"))]
 mod preset_doc_tests {
     use super::*;
 

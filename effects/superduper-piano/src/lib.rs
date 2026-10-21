@@ -118,6 +118,12 @@ pub struct SharedParamsInner {
     /// A specific file to load next (GUI pick, project state). Wins over the
     /// Instrument param.
     pub requested_path: Mutex<Option<PathBuf>>,
+    /// What a project should recall: the last path asked for, whether or not
+    /// the loader has finished with it. `save()` read `requested_path`, which
+    /// the loader `take()`s, then `info.path`, which it fills only once
+    /// loaded — in between, a save wrote `null` (clap-validator
+    /// state-buffered-streams, 1 run in 3, 2026-10-21).
+    pub state_path: Mutex<Option<PathBuf>>,
     pub info: Mutex<InstrumentInfo>,
     pub status: Mutex<String>,
     pub progress: LoadProgress,
@@ -161,6 +167,7 @@ impl PluginShared {
                 library: Mutex::new(Vec::new()),
                 current_index: AtomicI32::new(-1),
                 requested_path: Mutex::new(None),
+                state_path: Mutex::new(None),
                 info: Mutex::new(InstrumentInfo::default()),
                 status: Mutex::new(String::new()),
                 progress: LoadProgress::default(),
@@ -218,8 +225,14 @@ pub fn pick_instrument(shared: &SharedParamsInner, idx: usize) {
     if let Some(p) = path {
         shared.params[P_INSTRUMENT].store(idx as f32, Ordering::Relaxed);
         shared.dirty_params[P_INSTRUMENT].store(true, Ordering::Relaxed);
-        *shared.requested_path.lock() = Some(p);
+        request_path(shared, p);
     }
+}
+
+/// Ask the loader for `p` and remember it for the project state.
+pub fn request_path(shared: &SharedParamsInner, p: PathBuf) {
+    *shared.state_path.lock() = Some(p.clone());
+    *shared.requested_path.lock() = Some(p);
 }
 
 /// The pack a fresh instance starts on: Salamander when present.
@@ -363,7 +376,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if shared.pending.lock().is_none() {
             if let Some(p) = shared.info.lock().path.clone() {
                 shared.info.lock().path = None;
-                *shared.requested_path.lock() = Some(p);
+                request_path(shared, p);
             }
         }
         slog!("activate sr={}", sr);
@@ -652,7 +665,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
             version: STATE_VERSION,
             params: self.shared.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
             bypass: self.shared.bypass.load(Ordering::Relaxed),
-            instrument_path: self.shared.requested_path.lock().clone()
+            instrument_path: self.shared.state_path.lock().clone()
                 .or_else(|| self.shared.info.lock().path.clone()),
         };
         serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON error"))
@@ -666,13 +679,14 @@ impl PluginStateImpl for PluginMainThread<'_> {
         }
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
         if let Some(p) = state.instrument_path {
-            *self.shared.requested_path.lock() = Some(p);
+            request_path(&self.shared.inner, p);
         } else {
             // No path saved: let the index decide.
             self.shared.current_index.store(-2, Ordering::Relaxed);
             let idx = self.shared.params[P_INSTRUMENT].load(Ordering::Relaxed).round() as usize;
-            let path = self.shared.library.lock().get(idx).map(|e| e.path.clone());
-            *self.shared.requested_path.lock() = path;
+            if let Some(p) = self.shared.library.lock().get(idx).map(|e| e.path.clone()) {
+                request_path(&self.shared.inner, p);
+            }
         }
         Ok(())
     }

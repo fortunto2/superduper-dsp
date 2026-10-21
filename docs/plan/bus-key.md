@@ -76,7 +76,12 @@ the real side-chain input stays for that.
       - [x] Morph: the saved `model` was the store as is, so an instance that had processed
         (factory table loaded for its Target) saved differently from one that had not; the
         state now saves the model the audio thread would use for the current Target
-      - scan-time warnings 0.3–2 s (Vocoder 2 s, Wind 0.8 s): find what runs at entry init
+      - [x] scan-time warnings 0.3–2 s: measured 2026-10-21 as load noise, not plugin work — the
+        warned plugin changes every full run (Vocoder, Wind, Chorus, Piano…), and the same
+        bundles validated three at a time while the machine is idle scan clean every time
+      - [x] Piano state-buffered-streams, 1 run in 3: `save()` read `requested_path` (taken by the
+        loader) then `info.path` (filled once loaded) — `null` in between. `state_path` now
+        holds the last request untouched by the loader; 5/5 clean
 - [x] effect::stereo_block (events, dirty/gesture, bypass that feeds the scope) — EQ migrated;
       the other 30 plugins one batch at a time, each batch with its quality snapshots unchanged
 - [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,

@@ -6,7 +6,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
 use crate::{
-    N_BANDS, PARAMS, P_AMOUNT, P_ATTACK, P_HI, P_LO, P_MIX, P_MODE, P_OUTPUT, P_Q, P_RELEASE,
+    N_BANDS, PARAMS, P_AMOUNT, P_ATTACK, P_HI, P_KEY_DEPTH, P_KEY_RANGE, P_LO, P_MIX, P_MODE, P_OUTPUT, P_Q, P_RELEASE,
     P_SENS, SharedParams,
 };
 
@@ -170,6 +170,11 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             core_gui::section(ui, "Spectral Range", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LO], &PARAMS[P_LO], &state.shared.dirty_params[P_LO], g(), P_LO);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_HI], &PARAMS[P_HI], &state.shared.dirty_params[P_HI], g(), P_HI);
+            });
+            core_gui::section(ui, "Key (duck under another track)", |ui| {
+                superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_DEPTH], &PARAMS[P_KEY_DEPTH], &state.shared.dirty_params[P_KEY_DEPTH], g(), P_KEY_DEPTH);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_RANGE], &PARAMS[P_KEY_RANGE], &state.shared.dirty_params[P_KEY_RANGE], g(), P_KEY_RANGE);
             });
             core_gui::section(ui, "Dynamics", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ATTACK], &PARAMS[P_ATTACK], &state.shared.dirty_params[P_ATTACK], g(), P_ATTACK);

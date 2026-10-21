@@ -84,6 +84,13 @@ pub const PARAMS: &[ParamDef] = &[
     // Mode — 0 = soft (gentle, wide cuts), 1 = sharp (narrower, default),
     // 2 = hard (aggressive, fast attack, heavy ratio).
     ParamDef { id: 9, name: b"Mode",     min: 0.0,    max: 2.0,     default: 1.0,    unit: ""   },
+    // Bus key (Trackspacer): with a key track picked, each band is cut by up
+    // to Key Depth as the key gets loud in that band. 0 = off, so every
+    // preset and project from before sounds the same.
+    ParamDef { id: 10, name: b"Key Depth", min: 0.0,   max: 24.0,    default: 0.0,    unit: "dB" },
+    // How far above −50 dB (the bus's "loud" line) the key must be in a
+    // band for the full depth: small = ducks on any trace of the key.
+    ParamDef { id: 11, name: b"Key Range", min: 6.0,   max: 40.0,    default: 24.0,   unit: "dB" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -102,6 +109,15 @@ pub const P_RELEASE: usize = 6;
 pub const P_MIX: usize = 7;
 pub const P_OUTPUT: usize = 8;
 pub const P_MODE: usize = 9;
+pub const P_KEY_DEPTH: usize = 10;
+pub const P_KEY_RANGE: usize = 11;
+/// The key's level that starts the duck: the bus's "loud" line.
+const KEY_FLOOR_DB: f32 = -50.0;
+
+/// Per-band cut from the bus key: 0 below the floor, −depth at floor + range.
+pub fn key_cut_db(key_db: f32, depth: f32, range: f32) -> f32 {
+    -depth * ((key_db - KEY_FLOOR_DB) / range.max(1.0)).clamp(0.0, 1.0)
+}
 
 // ---------------------------------------------------------------------------
 // Shared params (Arc pattern shared with the GUI thread)
@@ -336,6 +352,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let coef_att = one_pole_coef(attack_ms, sr);
         let coef_rel = one_pole_coef(release_ms, sr);
 
+        // Bus key, once per block: atomics only (the publisher thread fills
+        // them ~20×/s, so finer resolution would buy nothing).
+        let key_depth = self.shared.params[P_KEY_DEPTH].load(Ordering::Relaxed);
+        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
+        let key_cut: [f32; N_BANDS] = if key_depth > 0.0 {
+            std::array::from_fn(|b| key_cut_db(self.shared.scope.key_db_at(self.band_centres[b]), key_depth, key_range))
+        } else {
+            [0.0; N_BANDS]
+        };
+
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
                 continue;
@@ -362,6 +388,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 ratio,
                 coef_att,
                 coef_rel,
+                &key_cut,
             );
         }
 
@@ -388,6 +415,7 @@ fn process_block(
     ratio: f32,
     coef_att: f32,
     coef_rel: f32,
+    key_cut: &[f32; N_BANDS],
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     let Some((read_l, write_l)) = split_io(ch_l) else { return };
@@ -462,11 +490,14 @@ fn process_block(
         // 3) Per-band excess → cut. Smoothed through att/rel.
         for b in 0..N_BANDS {
             let excess = env_db[b] - baseline_db[b] - sens;
-            let target_cut = if excess > 0.0 {
+            let resonance_cut = if excess > 0.0 {
                 -(excess * ratio * (amount / 12.0)).min(amount)
             } else {
                 0.0
             };
+            // The key's duck adds to the resonance cut, through the same
+            // attack/release.
+            let target_cut = (resonance_cut + key_cut[b]).max(-48.0);
             // Faster attack on growing cuts, slower release on recovery.
             let coef = if target_cut < cut_db[b] {
                 coef_att
@@ -716,5 +747,18 @@ clack_export_entry!(SinglePluginEntry<SuperDuperSoothe>);
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {
         self.track_watch.refresh();
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::key_cut_db;
+
+    #[test]
+    fn key_duck_scales_between_floor_and_range() {
+        assert_eq!(key_cut_db(-80.0, 12.0, 24.0), 0.0, "a quiet key does nothing");
+        assert_eq!(key_cut_db(-50.0, 12.0, 24.0), 0.0);
+        assert!((key_cut_db(-38.0, 12.0, 24.0) + 6.0).abs() < 1e-5, "halfway up the range: half the depth");
+        assert_eq!(key_cut_db(-10.0, 12.0, 24.0), -12.0, "full depth, never more");
     }
 }

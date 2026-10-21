@@ -385,3 +385,41 @@ impl MixView {
         expand
     }
 }
+
+/// Pick the bus key: which track this plugin reacts to. Lists the tracks on
+/// the bus (loudest first, this plugin's own track left out); "none" clears.
+pub fn key_picker(ui: &mut egui::Ui, scope: &crate::gui::LiveScope) {
+    let own = scope.track.lock().0.clone();
+    let current = scope.key_track.lock().clone();
+    let reader = ui.ctx().data_mut(|d| {
+        d.get_temp_mut_or_insert_with(egui::Id::new("sdsp_key_reader"), || Arc::new(parking_lot::Mutex::new(Reader::open()))).clone()
+    });
+    let mut pick: Option<String> = None;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("key:").color(GREEN).monospace());
+        egui::ComboBox::from_id_salt("sdsp_key_track")
+            .selected_text(if current.is_empty() { "none" } else { current.as_str() })
+            .width(220.0)
+            .height(360.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_empty(), "none").clicked() { pick = Some(String::new()); }
+                let mut guard = reader.lock();
+                if guard.is_none() { *guard = Reader::open(); }
+                let rows = guard.as_ref().map(|r| r.read_all()).unwrap_or_default();
+                let tracks = mixmap::loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)));
+                let mut tracks: Vec<&TrackSpectrum> = tracks.iter().filter(|t| !t.bus && t.name != own).collect();
+                tracks.sort_by(|a, b| b.rms_db.total_cmp(&a.rms_db));
+                for t in tracks {
+                    let col = if t.rms_db > mixmap::LOUD_DB { GREEN } else { GREEN_DIM };
+                    let text = egui::RichText::new(format!("{}  {:.0} dB", t.name, t.rms_db)).color(col);
+                    if ui.selectable_label(current == t.name, text).clicked() { pick = Some(t.name.clone()); }
+                }
+            });
+        // Live key level, so a silent key is visible as one.
+        let k = scope.key_bands.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).fold(-120.0f32, f32::max);
+        if !current.is_empty() {
+            ui.label(egui::RichText::new(format!("{k:.0} dB")).color(if k > mixmap::LOUD_DB { GREEN } else { GREEN_DIM }).monospace().small());
+        }
+    });
+    if let Some(p) = pick { *scope.key_track.lock() = p; }
+}

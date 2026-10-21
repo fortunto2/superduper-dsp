@@ -8,10 +8,10 @@ cost. Latency ~50–100 ms (publish period + analysis window): for slow ducking
 the real side-chain input stays for that.
 
 ## Tasks
-- [ ] synth-core: `LiveScope.key_track` + `key_bands[32]`, filled by the
+- [x] synth-core: `LiveScope.key_track` + `key_bands[32]`, filled by the
       publisher thread (own instance excluded); generic mailbox doc `key`
       (get/set track) for every plugin; `key_picker` GUI widget; state helper
-- [ ] Soothe: keyed spectral ducking (Trackspacer) — per band cut grows with
+- [x] Soothe: keyed spectral ducking (Trackspacer) — per band cut grows with
       the key's level in that band; params Key Depth / Key Range; mix with the
       resonance mode
 - [ ] Compressor: detector from the key track in a band (lo/hi Hz)

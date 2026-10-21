@@ -10,9 +10,11 @@
 //! as a closure over `(l_in, l_out, Option<(r_in, r_out)>)`.
 //!
 //! ```ignore
-//! fn process(&mut self, _: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
-//!     let p = self.settings();            // one snapshot of the atomics per block
-//!     effect::stereo_block(self.shared, &mut audio, &mut events, |l_in, l_out, r| {
+//! fn process(&mut self, _: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
+//!     let shared = self.shared;
+//!     effect::begin_events(&**shared, &mut events);   // params in, dirty/gesture out
+//!     let p = self.settings();                        // one snapshot of the atomics per block
+//!     effect::run_ports(&**shared, &mut audio, |l_in, l_out, r| {
 //!         self.dsp.run(&p, l_in, l_out, r);
 //!     })
 //! }
@@ -53,21 +55,39 @@ macro_rules! impl_shared_host {
     };
 }
 
-/// One block of a stereo (or mono) effect. Returns `Continue`.
-///
+/// One block of a stereo (or mono) effect: [`begin_events`] then
+/// [`run_ports`]. For a plugin whose DSP reads the parameters itself (EQ).
+pub fn stereo_block<S, F>(shared: &S, audio: &mut Audio, events: &mut Events, dsp: F) -> Result<ProcessStatus, PluginError>
+where
+    S: SharedHost,
+    F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
+{
+    begin_events(shared, events);
+    run_ports(shared, audio, dsp)
+}
+
+/// The event half: parameter events in, dirty / gesture events out. Call it
+/// **before** snapshotting parameters for the block, or the block runs on
+/// last block's values (one block of automation lag; chorus/filter/midside
+/// had it for an hour on 2026-10-21). Returns a `Guard`-free marker only to
+/// keep the call explicit.
+pub fn begin_events<S: SharedHost>(shared: &S, events: &mut Events) {
+    apply_param_events(shared.params(), events.input);
+    emit_dirty_param_events(shared.params(), shared.dirty_params(), events.output);
+    emit_gesture_events(shared.gesture_begin(), shared.gesture_end(), events.output);
+}
+
+/// The audio half, every port pair. Denormals flushed for the block.
 /// Bypassed: input copied to output, DSP not called (state freezes, as every
 /// plugin here always did), the dry signal fed to the scope. Otherwise the
 /// closure runs once per port and the scope gets the output. Mono ports hand
 /// the closure `None` for the right channel.
-pub fn stereo_block<S, F>(shared: &S, audio: &mut Audio, events: &mut Events, mut dsp: F) -> Result<ProcessStatus, PluginError>
+pub fn run_ports<S, F>(shared: &S, audio: &mut Audio, mut dsp: F) -> Result<ProcessStatus, PluginError>
 where
     S: SharedHost,
     F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
     let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-    apply_param_events(shared.params(), events.input);
-    emit_dirty_param_events(shared.params(), shared.dirty_params(), events.output);
-    emit_gesture_events(shared.gesture_begin(), shared.gesture_end(), events.output);
     let bypassed = shared.bypass().load(std::sync::atomic::Ordering::Relaxed);
     let scope = shared.scope();
 

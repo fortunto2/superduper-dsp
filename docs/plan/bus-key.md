@@ -96,6 +96,16 @@ the real side-chain input stays for that.
         holds the last request untouched by the loader; 5/5 clean
 - [x] effect::stereo_block (events, dirty/gesture, bypass that feeds the scope) — EQ migrated;
       the other 30 plugins one batch at a time, each batch with its quality snapshots unchanged
+      - [x] split into `begin_events` + `run_ports` (2026-10-21): a plugin that snapshots its
+        params before the audio half ran a block behind on automation with the one-call form
+      - [x] batch 1: Chorus, Harmonic, MidSide, Filter, Limiter (snapshots unchanged, validator
+        clean; MidSide's denormal warning gone)
+      - [ ] side-chain plugins (Delay, Reverb, Supermass, Compressor, Multiband, Soothe, Morph,
+        Double, Vocoder): `run_main_port` variant — capture the key port first, then port 0 only;
+        their `stereo_process` take `ChannelPair`s and push the scope themselves, so each needs
+        its signature turned into slices first
+      - [ ] the rest (Saturator per-channel loop, LinEQ `begin_block` prelude + host callback,
+        Vocal, Pitch, Tune, Stretch, Granular, Formant, Ambient, Looper, NAM, Spectrum, synths)
 - [x] proptest invariants (synth-core/tests/invariants.rs) — found: NaN key froze key_factor,
       RBJ shelf with slope > 1 gives NaN coefficients; both guarded
 - [x] bus meter controls (`sdsp-bus controls`, tools/sdsp-bus/src/controls.rs, 15 known-answer

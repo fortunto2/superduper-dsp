@@ -45,3 +45,14 @@ proptest = "1"
 sdsp-test-kit = { path = "../tools/sdsp-test-kit" }
 # Only for `examples/kubyz_f2.rs` — writing a WAV of the rendered instrument.
 hound = "3.5"
+
+# These two decode samples, which lives behind `sfz-load`; without the
+# feature they must not be built, or `cargo test -p superduper-synth-core`
+# fails before running a single test (2026-10-21).
+[[example]]
+name = "sfz_render"
+required-features = ["sfz-load"]
+
+[[example]]
+name = "drum_classify"
+required-features = ["sfz-load"]

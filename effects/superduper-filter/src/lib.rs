@@ -168,6 +168,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -309,30 +310,24 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         // Catch host BPM updates for Sync mode.
         for batch in events.input.batch() {
             for ev in batch.events() {
                 if let Some(CoreEventSpace::Transport(t)) = ev.as_core_event() {
-                    self.shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
+                    shared.host_bpm.store(t.tempo as f32, Ordering::Relaxed);
                 }
             }
         }
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let mode = filter_mode_from_param(load(P_TYPE));
         let drv_type = load(P_DRV_TYPE).round() as u32;
         let lfo_shp = load(P_LFO_SHP).round() as u32;
@@ -340,7 +335,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let lfo_div = load(P_LFO_DIV).round() as u32;
         let env_atk_ms = load(P_ENV_ATK);
         let env_rel_ms = load(P_ENV_REL);
-        let bpm = self.shared.host_bpm.load(Ordering::Relaxed);
+        let bpm = shared.host_bpm.load(Ordering::Relaxed);
 
         let cutoff_t = load(P_CUTOFF);
         let reso_t = load(P_RESO);
@@ -351,24 +346,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let mix_t = load(P_MIX);
         let output_t = load(P_OUTPUT);
         let key_mod = load(P_KEY_MOD);
-        self.key.update(&self.shared.scope, key_mod, load(P_KEY_RANGE), sr);
+        self.key.update(&shared.scope, key_mod, load(P_KEY_RANGE), sr);
         self.key_mod_st = 12.0 * key_mod;
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((r_read, r_write)) = r { r_write.copy_from_slice(r_read); }
-                continue;
-            }
-
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             let n = l_write.len();
             // r_write might be present or absent (mono)
             match r {
@@ -410,7 +391,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let out_r = (dry_r * (1.0 - mix) + wet_r * mix) * out_lin;
                         l_write[i] = out_l;
                         r_write[i] = out_r;
-                        self.shared.scope.push((out_l + out_r) * 0.5);
                     }
                 }
                 None => {
@@ -438,11 +418,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let wet = self.filter_l.process(pre, mode, cutoff_hz, reso, sr);
                         let out = (dry * (1.0 - mix) + wet * mix) * out_lin;
                         l_write[i] = out;
-                        self.shared.scope.push(out);
                     }
                 }
-            }
-        }
+            }        })?;
         Ok(ProcessStatus::Continue)
     }
 }

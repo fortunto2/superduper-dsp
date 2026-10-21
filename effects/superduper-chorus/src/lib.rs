@@ -133,6 +133,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -218,48 +219,23 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
-
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
         let sr = self.sample_rate;
 
-        let rate_t = self.shared.params[P_RATE].load(Ordering::Relaxed);
-        let depth_t = self.shared.params[P_DEPTH].load(Ordering::Relaxed);
-        let time_t = self.shared.params[P_TIME].load(Ordering::Relaxed);
-        let spread_t = self.shared.params[P_SPREAD].load(Ordering::Relaxed);
-        let width_t = self.shared.params[P_WIDTH].load(Ordering::Relaxed);
-        let fb_t = self.shared.params[P_FEEDBACK].load(Ordering::Relaxed);
-        let mix_t = self.shared.params[P_MIX].load(Ordering::Relaxed);
+        let rate_t = shared.params[P_RATE].load(Ordering::Relaxed);
+        let depth_t = shared.params[P_DEPTH].load(Ordering::Relaxed);
+        let time_t = shared.params[P_TIME].load(Ordering::Relaxed);
+        let spread_t = shared.params[P_SPREAD].load(Ordering::Relaxed);
+        let width_t = shared.params[P_WIDTH].load(Ordering::Relaxed);
+        let fb_t = shared.params[P_FEEDBACK].load(Ordering::Relaxed);
+        let mix_t = shared.params[P_MIX].load(Ordering::Relaxed);
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-                continue;
-            }
-
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             match r {
                 Some((r_read, r_write)) => {
                     stereo_process(self, l_read, l_write, r_read, r_write, sr,
@@ -273,9 +249,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         rate_t, depth_t, time_t, fb_t, mix_t);
                 }
             }
-        }
-
-        Ok(ProcessStatus::Continue)
+        })
     }
 }
 
@@ -352,7 +326,6 @@ fn stereo_process(
         let out_r = dry_r * (1.0 - mix) + final_wet_r * mix;
         l_write[i] = out_l;
         r_write[i] = out_r;
-        p.shared.scope.push((out_l + out_r) * 0.5);
     }
 }
 
@@ -383,7 +356,6 @@ fn mono_process(
         p.fb_l = wet;
         let out = dry * (1.0 - mix) + wet * mix;
         l_write[i] = out;
-        p.shared.scope.push(out);
     }
 }
 

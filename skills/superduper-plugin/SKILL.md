@@ -69,7 +69,12 @@ DAW UI. A plugin without these is invisible to it:
 - [ ] `new_shared`: `superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper <Name>", &shared.inner, |s| &s.scope, Some(ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle) /* or None */)`
   — publishes level + 32-band spectrum, exposes every parameter (`plugin_params` /
   `plugin_set_params`), the bus key (`key` doc), and the plugin's own docs.
-- [ ] `shared.scope.push(...)` in `process()` (mono of the output) so the bus has a spectrum.
+- [ ] `process()` = `effect::begin_events(&**shared, &mut events)` (params in, dirty/gesture
+  out — before the block's parameter snapshot), then `effect::run_ports(&**shared, &mut audio,
+  |l_in, l_out, r| …)` (denormals, bypass that still feeds the bus scope, the port walk, the
+  scope fed from the output). `impl_shared_host!(SharedParamsInner)` next to the Deref. No own
+  `scope.push`, no own bypass branch. A side-chain plugin captures its key port first
+  (`sc.capture(&mut audio, 1)`) — the main-port-only variant is on the plan.
 - [ ] `new_main_thread`: `let track_watch = TrackInfoWatch::new(host, &shared.scope);` stored on
   the main thread, `.register::<clack_extensions::track_info::PluginTrackInfo>()`, and
   `impl PluginTrackInfoImpl for PluginMainThread<'_> { fn changed(&self) { self.track_watch.refresh(); } }`

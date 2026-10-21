@@ -130,6 +130,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -192,21 +193,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let mode = load(P_MODE).round() as u32;
         let width_t = load(P_WIDTH);
         let mid_db_t = load(P_MID);
@@ -232,22 +227,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             self.side_hp_freq = mono_below_t;
         }
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let Some(ch_r) = iter.next() else { continue };
-
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let Some((r_read, r_write)) = split_io(ch_r) else { continue };
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                r_write.copy_from_slice(r_read);
-                continue;
-            }
-
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
+            // Mid/side needs both channels; a mono port passes through.
+            let Some((r_read, r_write)) = r else { l_write.copy_from_slice(l_read); return };
             let n = l_read.len().min(r_read.len());
             for i in 0..n {
                 let width = self.smooth_width.step(width_t, sr).max(0.0);
@@ -288,9 +270,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 };
                 l_write[i] = lo * out_lin;
                 r_write[i] = ro * out_lin;
-                self.shared.scope.push((lo + ro) * 0.5);
-            }
-        }
+            }        })?;
         Ok(ProcessStatus::Continue)
     }
 }

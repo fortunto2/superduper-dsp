@@ -131,6 +131,7 @@ impl std::ops::Deref for PluginShared {
         &self.inner
     }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -177,25 +178,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — the comb's long delay taps can otherwise
-        // grind on ~10⁻³⁸ floats. RAII restores host CSR on drop.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params,
-            &self.shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let p = HarmonicParams {
             amount: load(P_AMOUNT),
             bandwidth: load(P_BANDWIDTH),
@@ -207,38 +198,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             bypassed,
         };
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
-            };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else {
-                continue;
-            };
-            let r = ch_r.and_then(split_io);
-
+        let cleaner = &mut self.cleaner;
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             match r {
-                Some((r_read, r_write)) => {
-                    self.cleaner
-                        .process_stereo(l_read, r_read, l_write, r_write, &p);
-                    let n = l_write.len().min(r_write.len());
-                    for i in 0..n {
-                        self.shared.scope.push((l_write[i] + r_write[i]) * 0.5);
-                    }
-                }
-                None => {
-                    // Mono: modulate off L, write only L (empty out_r).
-                    self.cleaner
-                        .process_stereo(l_read, l_read, l_write, &mut [], &p);
-                    for &s in l_write.iter() {
-                        self.shared.scope.push(s);
-                    }
-                }
+                Some((r_read, r_write)) => cleaner.process_stereo(l_read, r_read, l_write, r_write, &p),
+                None => cleaner.process_stereo(l_read, l_read, l_write, &mut [], &p),
             }
-        }
+        })?;
 
         // Publish the live readouts for the GUI.
         self.shared

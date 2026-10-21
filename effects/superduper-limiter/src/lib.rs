@@ -155,6 +155,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -394,24 +395,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        apply_param_events(self.shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &self.shared.gesture_begin,
-            &self.shared.gesture_end,
-            events.output,
-        );
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;
 
-        let input_target = self.shared.params[P_INPUT].load(Ordering::Relaxed);
+        let input_target = shared.params[P_INPUT].load(Ordering::Relaxed);
         let ceiling_db = self.shared.params[P_CEILING].load(Ordering::Relaxed);
         let release_target = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
         // Release coefficient once per block — `exp()` per sample was ~1.5 M
@@ -432,23 +425,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
         let mut meter_rolled = false;
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            let mut iter = channel_pairs.into_iter();
-            let Some(ch_l) = iter.next() else { continue };
-            let ch_r = iter.next();
-
-            use superduper_dsp_sdk::clap_helpers::split_io;
-            let Some((l_read, l_write)) = split_io(ch_l) else { continue };
-            let r = ch_r.and_then(split_io);
-
-            if bypassed {
-                l_write.copy_from_slice(l_read);
-                if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-                self.shared.gain_reduction_db.store(0.0, Ordering::Relaxed);
-                continue;
-            }
-
+        // Bypassed: run_ports passes the dry signal through; the meter says so.
+        if bypassed {
+            shared.gain_reduction_db.store(0.0, Ordering::Relaxed);
+        }
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             let Some((r_read, r_write)) = r else {
                 // Mono — same engine, single-channel meters (process_mono
                 // exists because feeding x,x paid two identical convolutions).
@@ -479,14 +460,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         out += self.tpdf() * dither_amp;
                     }
                     l_write[i] = out;
-                    self.shared.scope.push(out);
                     self.out_tp.process_mono(out);
                     meter_rolled |= self.loudness.process_mono(out);
 
                     let gr_db = 20.0 * g.max(1e-9).log10();
                     if gr_db < max_gr_db { max_gr_db = gr_db; }
                 }
-                continue;
+                return;
             };
 
             let n = l_read.len().min(r_read.len());
@@ -527,13 +507,11 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 }
                 l_write[i] = out_l;
                 r_write[i] = out_r;
-                self.shared.scope.push((out_l + out_r) * 0.5);
                 self.out_tp.process_stereo(out_l, out_r);
                 meter_rolled |= self.loudness.process_stereo(out_l, out_r);
                 let gr_db = 20.0 * g.max(1e-9).log10();
                 if gr_db < max_gr_db { max_gr_db = gr_db; }
-            }
-        }
+            }        })?;
 
         // Meter smoothing — show the strongest GR with 150 ms decay.
         let release_coef = (-1.0 / (0.15 * sr)).exp();

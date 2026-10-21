@@ -46,7 +46,8 @@ the real side-chain input stays for that.
       ring geometry is a separate field (`ring`); `pvoc::LATENCY` and the Vocoder's `STFT_LATENCY`
       are N, so Pitch's Track-mode wet and the Vocoder's dry/wet line up and the host's PDC is
       right (was 512 samples = 10.7 ms short). Vocoder snapshot re-recorded: tone_band_kick −2.3 dB,
-      tone_band_low +1.3 dB, the comb between dry and wet gone; pinned by
+      tone_band_low +1.3 dB, the comb between dry and wet gone; Tune's too (its pvoc path moved
+      512 samples earlier: noise_band_sub +1.1 dB, tone_peak +1.1 dB); pinned by
       effects/superduper-vocoder/tests/latency_align.rs
 
 - [x] NEW SuperDuper Space v1 (2026-10-21): VBAP to Stereo / Quad / 5.1 / 7.1 / 7.1.4 on one

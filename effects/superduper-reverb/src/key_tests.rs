@@ -2,7 +2,6 @@
 //! key faked by writing the scope's key bands directly.
 
 use super::*;
-use clack_plugin::prelude::ChannelPair;
 
 const SR: f32 = 48_000.0;
 
@@ -28,9 +27,9 @@ fn wet_rms(key_db: Option<f32>, key_duck: f32) -> f32 {
         let [mix, width, duck, size, decay, damp, pre, modu] = &mut sm;
         stereo_process(
             &mut state, &mut ducker, mix, width, duck, size, decay, damp, pre, modu,
-            ChannelPair::InputOutput(&inp, &mut ol), Some(ChannelPair::InputOutput(&inp, &mut or)),
-            None, SR, 0.7, 0.7, 0.4, 10.0, 0.3, 1.0, 1.0, 0.0, 5.0, 150.0, false, false,
-            &scope, (&mut key, key_duck),
+            inp.as_slice(), ol.as_mut_slice(), Some((inp.as_slice(), or.as_mut_slice())),
+            None, SR, 0.7, 0.7, 0.4, 10.0, 0.3, 1.0, 1.0, 0.0, 5.0, 150.0, false,
+            (&mut key, key_duck),
         );
         if b >= blocks / 2 { tail.extend_from_slice(&ol); }
     }

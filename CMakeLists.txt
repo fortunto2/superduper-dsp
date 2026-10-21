@@ -21,8 +21,11 @@
 cmake_minimum_required(VERSION 3.21)
 
 # clap-wrapper wants C++17 and Objective-C++ on macOS.
+# 11.0, not 10.13: current Xcode's libc++ rejects 10.13 outright ("The selected platform is no
+# longer supported by libc++", promoted to an error), so a fresh build dir failed at 8 %. The .clap
+# bundles are arm64-only, and arm64 macOS starts at 11, so nothing that can load them is lost.
 if (APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET 10.13 CACHE STRING "Minimum macOS version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version")
 endif()
 
 project(superduper-dsp-wrappers

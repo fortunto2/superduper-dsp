@@ -243,10 +243,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         // If the user has a community .nam in their library, default to
         // it; otherwise fall back to the built-in tube preamp.
+        //
+        // `SUPERDUPER_NAM_FACTORY=1` skips the library so the plugin always boots
+        // on the built-in preamp. Tests set it: a snapshot recorded with a model
+        // from one machine's ~/.superduper-dsp fails on every machine without it.
         let mut net = make_default_net();
+        let factory_only = std::env::var_os("SUPERDUPER_NAM_FACTORY").is_some();
         let lib = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join(".superduper-dsp/nam/wavenet_a1_standard.nam");
-        if lib.exists() {
+        if !factory_only && lib.exists() {
             if let Ok((n, name)) = try_load_nam(&lib) {
                 slog!("activate: loaded {} ({} params)", name, n.param_count());
                 *shared.current_model_name.lock() = name;

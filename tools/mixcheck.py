@@ -9,6 +9,8 @@ found them weeks later. These numbers find them in four seconds.
     python3 mixcheck.py mix.wav                       # absolute report
     python3 mixcheck.py mix.wav --ref commercial.wav  # A/B against a reference
     python3 mixcheck.py mix.wav --sections 140 8,16,32,40,56,64,76,80
+    python3 mixcheck.py mix.wav --start 62 --end 78 --ref ref.wav --ref-start 55 --ref-end 71
+    python3 mixcheck.py ref.wav --start 55 --end 71 --json > ref-chorus.json   # a profile
 
 What it reports and why:
 
@@ -188,8 +190,39 @@ def rms(seg):
     return (sum(v * v for v in seg) / max(1, len(seg))) ** 0.5
 
 
-def report(path, sections=None, ref=None):
+def load(path, start=None, end=None):
+    """Decode and cut to [start, end) seconds — compare chorus with chorus."""
     l, r, sr = decode(path)
+    i0 = int((start or 0) * sr)
+    i1 = int(end * sr) if end else len(l)
+    return l[i0:i1], r[i0:i1], sr
+
+
+def profile(path, start=None, end=None):
+    """Every number the report prints, as a dict (`--json`): one per
+    reference section, so "my mix against the set" needs no re-decoding."""
+    l, r, sr = load(path, start, end)
+    n = min(len(l), len(r))
+    l, r = l[:n], r[:n]
+    mono = [(l[i] + r[i]) * 0.5 for i in range(n)]
+    peak = max(max(abs(v) for v in l), max(abs(v) for v in r))
+    num = sum(l[i] * r[i] for i in range(n))
+    den = math.sqrt(sum(v * v for v in l) * sum(v * v for v in r)) or 1.0
+    out = {
+        "file": str(path), "start": start, "end": end, "seconds": n / sr, "sr": sr,
+        "peak_db": db(peak), "rms_db": db(rms(mono)), "crest_db": db(peak) - db(rms(mono)),
+        "correlation": num / den, "bands_db": band_energy(mono, sr),
+    }
+    try:
+        out["lufs_integrated"], out["lufs_short_max"] = lufs(l, r, sr)
+        out["mono_loss_db"], out["side_mid_low_db"] = mono_loss(l, r, sr)
+    except ImportError:
+        out["note"] = "LUFS and mono loss need numpy + scipy"
+    return out
+
+
+def report(path, sections=None, ref=None, span=(None, None), ref_span=(None, None)):
+    l, r, sr = load(path, *span)
     n = min(len(l), len(r))
     mono = [(l[i] + r[i]) * 0.5 for i in range(n)]
 
@@ -230,7 +263,7 @@ def report(path, sections=None, ref=None):
     mine = band_energy(mono, sr)
     theirs = None
     if ref:
-        rl, rr, rsr = decode(ref)
+        rl, rr, rsr = load(ref, *ref_span)
         rn = min(len(rl), len(rr))
         theirs = band_energy([(rl[i] + rr[i]) * 0.5 for i in range(rn)], rsr)
         try:
@@ -274,14 +307,23 @@ def main():
     ap.add_argument("--ref", help="commercial reference to compare band balance against")
     ap.add_argument("--bpm", type=float, help="enable the section arc")
     ap.add_argument("--bars", help="comma-separated bar boundaries, e.g. 8,16,32,40,56,64,76,80")
+    ap.add_argument("--start", type=float, help="seconds: measure from here (same section as the reference)")
+    ap.add_argument("--end", type=float, help="seconds: measure up to here")
+    ap.add_argument("--ref-start", type=float, help="the reference's section start, seconds")
+    ap.add_argument("--ref-end", type=float, help="the reference's section end, seconds")
+    ap.add_argument("--json", action="store_true", help="print the mix's profile as JSON instead of the report")
     a = ap.parse_args()
+    if a.json:
+        import json
+        print(json.dumps(profile(a.mix, a.start, a.end), indent=1))
+        return
 
     sections = None
     if a.bpm and a.bars:
         edges = [0] + [int(x) for x in a.bars.split(",")]
         sections = (a.bpm, [(edges[i], edges[i + 1], f"bars {edges[i]}-{edges[i+1]}")
                             for i in range(len(edges) - 1)])
-    report(a.mix, sections, a.ref)
+    report(a.mix, sections, a.ref, (a.start, a.end), (a.ref_start, a.ref_end))
 
 
 if __name__ == "__main__":

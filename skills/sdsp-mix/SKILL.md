@@ -438,6 +438,14 @@ mixing-secrets/`: `SUMMARY.md`, `notes/NN-*.md` per chapter with page refs and
 numbers checked against the text), use them for detail; they are never
 committed anywhere.
 
+**References by genre and by question**: `references/reference-tracks.md` —
+tracks per genre, each tagged with what it is a reference *for* (low end,
+vocal, space, brightness, dynamics, loudness), bracket pairs, and which
+mixcheck numbers to compare per question. Audio stays local
+(`~/Music/references/<genre>/`, lossless, never committed); compare the same
+section, gain-matched: `mixcheck.py mix.wav --start A --end B --ref ref.wav
+--ref-start C --ref-end D`; `--json` writes a section's profile.
+
 The ten that matter most (MS ch):
 1. Balance is the goal; process a track only when its fader will not settle (8, 15).
 2. Mix the biggest section first (usually the last chorus), then make earlier

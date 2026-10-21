@@ -51,6 +51,19 @@ def test_low_width_sees_wide_bass_only():
     assert narrow < -60 and wide > -1, (narrow, wide)
 
 
+def test_profile_cuts_the_section(tmp_path=None):
+    import pathlib, struct, tempfile, wave
+    d = pathlib.Path(tmp_path or tempfile.mkdtemp())
+    f = d / "two.wav"
+    loud, quiet = sine(1000, 0.5, 2.0), sine(1000, 0.05, 2.0)
+    with wave.open(str(f), "wb") as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes(b"".join(struct.pack("<hh", int(v * 32767), int(v * 32767)) for v in loud + quiet))
+    a, b = mixcheck.profile(f, 0, 2), mixcheck.profile(f, 2, 4)
+    assert abs((a["rms_db"] - b["rms_db"]) - 20.0) < 0.2, (a["rms_db"], b["rms_db"])
+    assert abs(a["seconds"] - 2.0) < 1e-3 and "bands_db" in a
+
+
 if __name__ == "__main__":
     for name, f in list(globals().items()):
         if name.startswith("test_"):

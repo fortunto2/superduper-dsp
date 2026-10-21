@@ -311,7 +311,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         if id.get() as usize == P_MODE {
             return superduper_dsp_sdk::clap_helpers::enum_value_to_text(
                 &MODE_NAMES,

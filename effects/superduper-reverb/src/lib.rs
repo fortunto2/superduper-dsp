@@ -548,7 +548,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, param_id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         let pid = param_id.get() as usize;
         if pid == P_PD_DIV {
             return write!(writer, "{}",

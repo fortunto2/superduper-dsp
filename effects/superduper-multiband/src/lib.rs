@@ -208,6 +208,7 @@ impl std::ops::Deref for PluginShared {
     type Target = SharedParamsInner;
     fn deref(&self) -> &SharedParamsInner { &self.inner }
 }
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -281,45 +282,36 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         })
     }
 
-    fn process(&mut self, _process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
-        superduper_dsp_sdk::clap_helpers::apply_param_events(&self.shared.params, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(&self.shared.params, &self.shared.dirty_params, events.output);
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(&self.shared.gesture_begin, &self.shared.gesture_end, events.output);
+    fn process(&mut self, _process: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
+        let shared = self.shared;
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
-        let settings = settings_from(&self.shared.params);
+        let settings = settings_from(&shared.params);
         // Bus key, once per block: atomics only (the publisher thread fills them).
-        let key_db = dsp::key_levels(&self.shared.scope, &settings, self.sample_rate);
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-
-        let Some(mut main_pair) = audio.port_pair(0) else { return Ok(ProcessStatus::Continue) };
-        let Some(channel_pairs) = main_pair.channels()?.into_f32() else { return Ok(ProcessStatus::Continue) };
-        let mut iter = channel_pairs.into_iter();
-        let Some(ch_l) = iter.next() else { return Ok(ProcessStatus::Continue) };
-        use superduper_dsp_sdk::clap_helpers::split_io;
-        let Some((l_read, l_write)) = split_io(ch_l) else { return Ok(ProcessStatus::Continue) };
-        let r = iter.next().and_then(split_io);
-
-        if bypassed {
-            l_write.copy_from_slice(l_read);
-            if let Some((rr, rw)) = r { rw.copy_from_slice(rr); }
-            self.publish_meters(&dsp::BlockReport::default(), &key_db, l_read.len());
-            return Ok(ProcessStatus::Continue);
+        let key_db = dsp::key_levels(&shared.scope, &settings, self.sample_rate);
+        if shared.bypass.load(Ordering::Relaxed) {
+            // run_main_port passes the dry signal through; the meters say so.
+            self.publish_meters(&dsp::BlockReport::default(), &key_db, audio.frames_count() as usize);
         }
 
-        let n = l_read.len();
-        let rep = if let Some((r_read, r_write)) = r {
-            let rep = self.engine.process(&settings, &key_db, l_read, r_read, l_write, r_write);
-            for i in 0..n.min(r_write.len()) { self.shared.scope.push(0.5 * (l_write[i] + r_write[i])); }
-            rep
-        } else {
-            let n = n.min(self.mono_r_in.len());
-            self.mono_r_in[..n].copy_from_slice(&l_read[..n]);
-            let rep = self.engine.process(&settings, &key_db, &l_read[..n], &self.mono_r_in[..n], &mut l_write[..n], &mut self.mono_r_out[..n]);
-            for x in &l_write[..n] { self.shared.scope.push(*x); }
-            rep
-        };
-        self.publish_meters(&rep, &key_db, n);
+        let (engine, mono_r_in, mono_r_out) = (&mut self.engine, &mut self.mono_r_in, &mut self.mono_r_out);
+        let mut report = None;
+        superduper_synth_core::effect::run_main_port(&**shared, &mut audio, |l_read, l_write, r| {
+            let n = l_read.len();
+            let rep = if let Some((r_read, r_write)) = r {
+                engine.process(&settings, &key_db, l_read, r_read, l_write, r_write)
+            } else {
+                let n = n.min(mono_r_in.len());
+                mono_r_in[..n].copy_from_slice(&l_read[..n]);
+                engine.process(&settings, &key_db, &l_read[..n], &mono_r_in[..n], &mut l_write[..n], &mut mono_r_out[..n])
+            };
+            report = Some((rep, n));
+        })?;
+        if let Some((rep, n)) = report {
+            self.publish_meters(&rep, &key_db, n);
+        }
         Ok(ProcessStatus::Continue)
     }
 }
@@ -349,7 +341,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         let pid = id.get() as usize;
         if pid >= BAND_BASE && matches!((pid - BAND_BASE) % PER_BAND, F_SOLO | F_BYPASS) {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });

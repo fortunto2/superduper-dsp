@@ -183,6 +183,7 @@ impl std::ops::Deref for PluginShared {
     }
 }
 
+superduper_synth_core::impl_shared_host!(SharedParamsInner);
 impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 // ---------------------------------------------------------------------------
@@ -545,27 +546,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         &mut self,
         _process: Process,
         mut audio: Audio,
-        events: Events,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Flush denormals to zero — long decays / feedback loops
-        // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
-        // periodic ticks at the buffer rate. RAII restores host CSR.
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
+        // Events, dirty/gesture flags, bypass (which still feeds the bus
+        // scope) and the port walk live in synth-core::effect.
         let shared = self.shared;
-        apply_param_events(shared, events.input);
-        superduper_dsp_sdk::clap_helpers::emit_dirty_param_events(
-            &shared.params,
-            &shared.dirty_params,
-            events.output,
-        );
-        superduper_dsp_sdk::clap_helpers::emit_gesture_events(
-            &shared.gesture_begin,
-            &shared.gesture_end,
-            events.output,
-        );
+        superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
-        let bypassed = shared.bypass.load(Ordering::Relaxed);
         let (lo_target, hi_target, q_target) = (load(P_LO), load(P_HI), load(P_Q));
         let mode = load(P_MODE).round() as u32;
 
@@ -595,18 +583,15 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // them ~20×/s, so finer resolution would buy nothing).
         let key_cut = self.engine.key_cuts(|f| shared.scope.key_db_at(f), load(P_KEY_DEPTH), load(P_KEY_RANGE));
 
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
+        let engine = &mut self.engine;
+        superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
+            // A mono port feeds the left channel to both sides of the engine.
+            let (read_r, write_r): (&[f32], Option<&mut [f32]>) = match r {
+                Some((rr, rw)) => (rr, Some(rw)),
+                None => (l_read, None),
             };
-            // Process both channels jointly — sum to mid for envelope
-            // detection then apply per-band gain to L/R independently so
-            // the cut stays stereo-correlated (no phase wandering).
-            let mut chans = channel_pairs.into_iter();
-            let Some(ch_l) = chans.next() else { continue };
-            let ch_r = chans.next();
-            process_port(&mut self.engine, ch_l, ch_r, bypassed, &bp, &key_cut, &shared.scope);
-        }
+            engine.process_block(l_read, read_r, l_write, write_r, &bp, &key_cut, None);
+        })?;
 
         // Publish per-band cut to the GUI once per block (sub-Hz update
         // rate is enough for a meter).
@@ -616,36 +601,6 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         Ok(ProcessStatus::Continue)
     }
-}
-
-/// One port's block: split the CLAP channel pairs into slices, pass through
-/// when bypassed, else run the engine.
-fn process_port(
-    engine: &mut Engine,
-    ch_l: ChannelPair<'_, f32>,
-    ch_r: Option<ChannelPair<'_, f32>>,
-    bypassed: bool,
-    p: &BlockParams,
-    key_cut: &[f32; N_BANDS],
-    scope: &superduper_synth_core::gui::LiveScope,
-) {
-    use superduper_dsp_sdk::clap_helpers::split_io;
-    let Some((read_l, write_l)) = split_io(ch_l) else { return };
-    let (read_r, write_r): (&[f32], Option<&mut [f32]>) = if let Some(ch_r) = ch_r {
-        let Some((r, w)) = split_io(ch_r) else { return };
-        (r, Some(w))
-    } else {
-        (read_l, None)
-    };
-
-    if bypassed {
-        write_l.copy_from_slice(read_l);
-        if let Some(w) = write_r {
-            w.copy_from_slice(read_r);
-        }
-        return;
-    }
-    engine.process_block(read_l, read_r, write_l, write_r, p, key_cut, Some(scope));
 }
 
 // ---------------------------------------------------------------------------

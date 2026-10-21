@@ -370,7 +370,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, value: f64, writer: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         match id.get() as usize {
             P_MODE => enum_value_to_text(&MODE_NAMES, value, writer),
             P_KEY => write!(writer, "{}", scale::KEY_NAMES[(value.round() as usize).min(11)]),

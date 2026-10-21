@@ -1007,7 +1007,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         if id.get() as usize == P_EXT_KEY {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
         }

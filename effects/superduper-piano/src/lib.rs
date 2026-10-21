@@ -598,7 +598,6 @@ impl PluginMainThread<'_> {
     /// What a parameter value reads as — the one place for it, so the host's
     /// text entry (`text_to_value`) accepts exactly what the display shows.
     fn display_text<W: core::fmt::Write>(&mut self, id: ClapId, v: f64, w: &mut W) -> core::fmt::Result {
-        use core::fmt::Write;
         match id.get() as usize {
             P_INSTRUMENT => {
                 if let Some(e) = self.shared.library.lock().get(v.round().max(0.0) as usize) {

@@ -12,7 +12,7 @@
 //! ```ignore
 //! fn process(&mut self, _: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
 //!     let shared = self.shared;
-//!     effect::begin_events(&**shared, &mut events);   // params in, dirty/gesture out
+//!     let _denormals = effect::begin_events(&**shared, &mut events);   // params in, dirty/gesture out, FTZ on
 //!     let p = self.settings();                        // one snapshot of the atomics per block
 //!     effect::run_ports(&**shared, &mut audio, |l_in, l_out, r| {
 //!         self.dsp.run(&p, l_in, l_out, r);
@@ -63,19 +63,27 @@ where
     S: SharedHost,
     F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
-    begin_events(shared, events);
+    let _denormals = begin_events(shared, events);
     run_ports(shared, audio, dsp)
 }
 
 /// The event half: parameter events in, dirty / gesture events out. Call it
 /// **before** snapshotting parameters for the block, or the block runs on
 /// last block's values (one block of automation lag; chorus/filter/midside
-/// had it for an hour on 2026-10-21). Returns a `Guard`-free marker only to
-/// keep the call explicit.
-pub fn begin_events<S: SharedHost>(shared: &S, events: &mut Events) {
+/// had it for an hour on 2026-10-21).
+///
+/// Returns the denormal guard for the whole `process()` — hold it
+/// (`let _denormals = …`). The runners flush denormals too, but work a
+/// plugin does *between* this and the runner (the Looper applying a
+/// record / overdub command to a buffer of subnormals) ran without FTZ and
+/// clap-validator measured it 26–65× slower on subnormal input (2026-10-21).
+#[must_use = "hold the guard for the whole process(): let _denormals = begin_events(..)"]
+pub fn begin_events<S: SharedHost>(shared: &S, events: &mut Events) -> superduper_dsp_sdk::denormals::Guard {
+    let guard = superduper_dsp_sdk::denormals::Guard::new();
     apply_param_events(shared.params(), events.input);
     emit_dirty_param_events(shared.params(), shared.dirty_params(), events.output);
     emit_gesture_events(shared.gesture_begin(), shared.gesture_end(), events.output);
+    guard
 }
 
 /// The audio half, every port pair. Denormals flushed for the block.

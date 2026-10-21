@@ -617,7 +617,10 @@ superduper-synth-core --test invariants` are the proptest invariants of the
 shared DSP blocks (any input: finite, bounded, odd where promised);
 `sdsp-bus controls` plants 15 known spectra on a temp bus and checks what
 `mix_masking` / `mix_phase` say of them — run it before reading a zero from
-the live bus. Parameter text: one `display_text<W>` per plugin and
+the live bus. The validator itself comes from `make validator-install`
+(clap-validator 0.4.1 + `tools/clap-validator-patches/`: its denormal test
+timed its own buffer checks and different random events, 8–65× on a
+2 µs plugin); a plain `cargo install --git` runs the unpatched one. Parameter text: one `display_text<W>` per plugin and
 `ParamDef::text_to_value_by_display` for the entry, never a second names table.
 
 ## Headless CLI tools (no REAPER required)

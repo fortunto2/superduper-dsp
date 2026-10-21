@@ -551,7 +551,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // Events, dirty/gesture flags, bypass (which still feeds the bus
         // scope) and the port walk live in synth-core::effect.
         let shared = self.shared;
-        superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let (lo_target, hi_target, q_target) = (load(P_LO), load(P_HI), load(P_Q));

@@ -20,7 +20,8 @@ help:
 	@echo "SuperDuper DSP build targets:"
 	@echo ""
 	@echo "  make all              CLAP + VST3 + AU, installed to ~/Library/Audio/Plug-Ins/"
-	@echo "  make validate         clap-validator over dist/ bundles (make hooks: run it pre-commit)"
+	@echo "  make validate         clap-validator over dist/ bundles (make hooks: run it pre-commit;"
+	@echo "                          make validator-install: the validator with tools/clap-validator-patches)"
 	@echo "  make clap             Every CLAP bundle → ~/Library/Audio/Plug-Ins/CLAP/"
 	@echo "  make wrappers         VST3 + AU wrappers → ~/Library/Audio/Plug-Ins/{VST3,Components}/"
 	@echo "                          (requires CLAP installed first; depends on 'make clap')"
@@ -65,6 +66,9 @@ validate:
 
 hooks:
 	@./scripts/install_hooks.sh
+
+validator-install:
+	@./scripts/install_clap_validator.sh
 
 test:
 	@cargo test --release --workspace

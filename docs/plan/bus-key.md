@@ -88,12 +88,17 @@ the real side-chain input stays for that.
         not reproduced by tests/odd_sample_rate.rs (every key, velocities down to 0, six rates);
         the validator's note generator also sends note-offs, chokes and sample offsets −4..64 —
         instrument the hit path next
-      - [x] Looper 8–21× "slower on denormals" (warning): read the test (clap-validator
-        src/tests/plugin_instance/processing.rs, 2026-10-21) — the second pass feeds subnormal
-        audio *and a fresh draw of random note/MIDI events*, and the Looper turns MIDI CCs into
-        record / overdub / play commands, so the two passes do different work. Not denormals; the
-        FTZ guard is in place. The ~2× readings on Compressor, Saturator, Double, Formant, NAM
-        move between runs the same way; nothing to fix
+      - [x] Looper 8–65× "slower on denormals" (warning), 2026-10-21: the plugin is fine —
+        effects/superduper-looper/tests/denormals.rs times it on subnormal input idle and while
+        recording / overdubbing through MIDI CCs: 1.0×, and inside process() during the validator's
+        own run both passes took 101 µs for 50 blocks. The ratio was the validator's measurement:
+        its timed region held the buffer fill, a snapshot copy and the per-sample consistency
+        check (all costlier on subnormal data) around 2 µs of plugin work, the two passes got
+        different random events, and the second pass ran on the instance the first had left
+        recording. tools/clap-validator-patches/0001 fixes all three (`make validator-install`);
+        with it every plugin reads ≤ 1.3×. While here: `effect::begin_events` now returns the
+        FTZ guard so work a plugin does before the runner (the Looper applying commands) is
+        covered too
       - [x] Morph: the saved `model` was the store as is, so an instance that had processed
         (factory table loaded for its Target) saved differently from one that had not; the
         state now saves the model the audio thread would use for the current Target

@@ -14,13 +14,19 @@ plugins, a stepped parameter with non-integer bounds in Spectrum, and state
 that differs between two instances given the same parameters in 4 plugins.
 
 A bundle that is older than its crate's sources is reported UNCHECKED, not
-passed: a stale binary proves nothing about the code being committed. Build
+passed: a stale binary proves nothing about the code being committed. A
+warning the validator cannot measure fairly for one plugin is listed in
+KNOWN with its reason and printed as `known`, never as a pass. The
+validator's own source: `git clone https://github.com/free-audio/clap-validator`
+(cargo install keeps no checkout). Build
 it first (`./scripts/build_<name>_bundle.sh`). Exit 1 on any failure or on
 UNCHECKED when a plugin was explicitly requested.
 
-Needs `clap-validator` on PATH (`cargo install --git
-https://github.com/free-audio/clap-validator --locked`, 0.4.1 on rustc 1.99;
-`--tag 0.3.2` builds on 1.93). Both JSON shapes are read: 0.3 keyed tests by
+Needs `clap-validator` on PATH: `scripts/install_clap_validator.sh` (or
+`make validator-install`) builds 0.4.1 with our patches from
+tools/clap-validator-patches/ — a plain `cargo install --git …` works too but
+runs the unpatched process-audio-denormals (random events differ between
+its two passes). rustc >= 1.95; `--tag 0.3.2` builds on 1.93. Both JSON shapes are read: 0.3 keyed tests by
 plugin id, 0.4 lists `results`. A validated bundle with no test entries is
 UNKNOWN, never a pass — 0.4.1 printed "0 failing" through the 0.3 reader
 until a known-bad plugin was run by hand (2026-10-21).
@@ -42,12 +48,11 @@ WARN_AS_FAIL = set()  # scan-time warnings are reported, never fatal
 # is printed as `known`, never as a pass, and names its plan entry: deleting
 # a line here is how the decision gets revisited.
 KNOWN = {
-    # The Preset param recalls every other param on the main thread. The
-    # validator runs on_main_thread() right after flush() but not after
-    # process(), so the two paths read back differently whatever the plugin
-    # does. Fix on the plan: the selector becomes a mailbox doc, not a param.
-    ("pad", "state-reproducibility-flush"): "Preset param recall — docs/plan/bus-key.md",
-    ("wind", "state-reproducibility-flush"): "Preset param recall — docs/plan/bus-key.md",
+    # Nothing at the moment. The Looper's 8–65× "denormal" reading was the
+    # validator's own measurement (tools/clap-validator-patches/ fixes it:
+    # same events in both passes, a fresh instance for the second, only the
+    # plugin's process() timed); the plugin measures 1.0× on subnormals
+    # (effects/superduper-looper/tests/denormals.rs).
 }
 
 

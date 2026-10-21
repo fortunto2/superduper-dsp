@@ -269,9 +269,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     }
 
     fn process(&mut self, _process: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
-        let _denormals = superduper_dsp_sdk::denormals::Guard::new();
         let shared = self.shared;
-        superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &mut events);
 
         // The main port pairs a 2-channel input with a 12-channel output:
         // channels 0–1 come as input+output pairs (or one in-place buffer),

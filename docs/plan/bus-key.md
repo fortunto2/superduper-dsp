@@ -141,6 +141,9 @@ the real side-chain input stays for that.
       v0.15.0 (run 39547209693) uploaded 35 Windows assets; the "macOS arm64" job ran 05:01 →
       11:06 UTC and its step "Build VST3 + AU wrappers" is marked *failure*, then the job was
       cancelled (timeout-minutes 240 on the job; concurrency cancel-in-progress on the workflow).
-      `gh run view --job 119047971209 --log-failed` returns nothing (log gone). Reproduce the
-      wrapper build locally (`tools/clap-wrapper`, cmake) before the next tag; a 6-hour step is a
-      hang, not a compile error
+      `gh run view --job 119047971209 --log-failed` returns nothing (log gone). Reproduced locally
+      2026-10-21: `scripts/build_wrappers.sh` builds all 34 VST3 + 34 AU in 11.5 min on this Mac
+      (with `/opt/homebrew/bin` first on PATH — `/usr/local/bin/cmake` is a dead 2022 pip shim
+      pointing at an Xcode Python that no longer exists). So the 6-hour step is runner-side; next
+      tag: trigger with `workflow_dispatch`, watch that step live, and give each command inside
+      it its own `timeout` so a hang fails in minutes, not at the 4-hour job limit

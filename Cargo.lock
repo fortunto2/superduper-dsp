@@ -2260,6 +2260,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "memoffset"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3610,6 +3619,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sdsp-bus"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "superduper-dsp-sdk",
+]
+
+[[package]]
 name = "sdsp-chain"
 version = "0.1.0"
 dependencies = [
@@ -4037,9 +4054,12 @@ dependencies = [
  "clack-plugin",
  "egui",
  "egui-baseview",
+ "hound",
  "parking_lot",
  "raw-window-handle 0.5.2",
  "sdsp-test-kit",
+ "serde",
+ "serde_json",
  "superduper-dsp-sdk",
  "superduper-dsp-sdk-build",
  "superduper-synth-core",
@@ -4116,6 +4136,7 @@ dependencies = [
  "clack-common",
  "clack-extensions",
  "clack-plugin",
+ "memmap2",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4377,6 +4398,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-piano"
+version = "0.1.0"
+dependencies = [
+ "atomic_float",
+ "baseview",
+ "clack-common",
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "egui",
+ "egui-baseview",
+ "hound",
+ "parking_lot",
+ "raw-window-handle 0.5.2",
+ "sdsp-test-kit",
+ "serde",
+ "serde_json",
+ "superduper-dsp-sdk",
+ "superduper-dsp-sdk-build",
+ "superduper-synth-core",
+]
+
+[[package]]
 name = "superduper-pitch"
 version = "0.1.0"
 dependencies = [
@@ -4544,6 +4588,8 @@ name = "superduper-synth-core"
 version = "0.1.0"
 dependencies = [
  "atomic_float",
+ "clack-extensions",
+ "clack-plugin",
  "egui",
  "fundsp",
  "hound",
@@ -4553,6 +4599,7 @@ dependencies = [
  "serde",
  "serde_json",
  "superduper-dsp-sdk",
+ "symphonia",
  "thiserror 1.0.69",
  "wide 0.7.33",
 ]

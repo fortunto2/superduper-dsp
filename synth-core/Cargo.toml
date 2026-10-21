@@ -18,6 +18,9 @@ parking_lot = { version = "0.12", optional = true }
 # SIMD primitives for NAM inference — `wide` is stable-Rust + cross-arch
 # (NEON on aarch64, SSE/AVX on x86_64), uses intrinsics under the hood.
 wide = "0.7"
+# SFZ sample decoding (FLAC / WAV / OGG) — only behind `sfz-load`, the parser
+# and engine stay dependency-free for iOS.
+symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["flac", "wav", "pcm", "ogg", "vorbis"] }
 
 # GUI helpers are opt-in (every effect plugin enables them via
 # `superduper-synth-core = { path = "...", features = ["gui"] }`).
@@ -25,10 +28,14 @@ wide = "0.7"
 atomic_float = { version = "1", optional = true }
 egui = { version = "0.33", optional = true }
 superduper-dsp-sdk = { path = "../sdk", optional = true }
+# Track name for the bus publisher (CLAP track-info), GUI feature only.
+clack-plugin = { version = "0.1", optional = true }
+clack-extensions = { version = "0.1", optional = true, features = ["track-info", "clack-plugin"] }
 
 [features]
 default = []
-gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lot"]
+sfz-load = ["dep:symphonia"]
+gui = ["dep:atomic_float", "dep:egui", "dep:superduper-dsp-sdk", "dep:parking_lot", "dep:clack-plugin", "dep:clack-extensions"]
 
 [dev-dependencies]
 # Test fixtures only. Cargo allows the cycle (test-kit depends on this crate)

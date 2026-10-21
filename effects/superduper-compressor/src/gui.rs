@@ -320,7 +320,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 fn draw_scope(ui: &mut egui::Ui, state: &mut GuiState) {
     // Refresh scope snapshot. Audio thread writes in real-time; we copy
     // an in-order chronological snapshot once per frame.
-    state.shared.scope.snapshot_in_order(
+    state.shared.meter.snapshot_in_order(
         &mut state.scope_in,
         &mut state.scope_out,
         &mut state.scope_gr,

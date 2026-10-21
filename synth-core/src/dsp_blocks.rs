@@ -227,50 +227,83 @@ impl PadVoice {
 }
 
 // ---------------------------------------------------------------------------
-// Oversampler2x — minimum-phase 11-tap halfband FIR upsampler / downsampler.
+// Oversampler2x — linear-phase 55-tap halfband FIR upsampler / downsampler.
 //
 // Saturation / non-linear processors produce harmonics that mirror around
 // Nyquist; at native rate those mirrors are *audible aliasing*. Running
 // the non-linearity at 2× (or cascaded 4×) the original sample rate moves
 // the artefacts above Nyquist where the decimator's stop-band buries them.
 //
-// Halfband filters are the standard cheap solution for this — coefficients
-// are symmetric around the centre tap and every other tap is zero, so for
-// 11 taps you compute only 5 multiplies plus the centre-tap copy. Designed
-// here for ~80 dB stop-band attenuation at 0.55 × Nyquist.
+// A halfband filter has every other tap zero except the centre (exactly
+// 0.5), so in polyphase form one phase is a pure delay and the other is a
+// 14-pair symmetric FIR. Parks-McClellan design, 44.1 kHz base rate:
+// ±0.0008 dB to 18 kHz, −80.5 dB from 26.1 kHz (the band that folds back
+// below 18 kHz on decimation), DC gain exactly 1.
 //
-// References: musicdsp.org "halfband filter" thread, KVR's "oversampling
-// for distortion plugins", and Bert Schiettecatte's polyphase tutorial.
+// AI-NOTE: the previous version (until 2026-10-20) ran an 11-tap filter
+// over a 6-deep ring, so the taps wrapped onto the wrong samples, and it
+// "decimated" by averaging the pair. Measured on white noise through the
+// Saturator at Drive 0: OS 2× read +5.2 dB at 200 Hz, −7.8 dB at 4 kHz,
+// −17.8 dB at 15 kHz; OS 4× +10.6 dB at 200 Hz. OS 2× was the Saturator's
+// DEFAULT, so every saturated track was EQ'd by a broken filter. Pinned by
+// synth-core/tests/oversampler.rs (flatness + exact latency).
 // ---------------------------------------------------------------------------
 
-/// Halfband FIR coefficients — 11 taps, designed for ~80 dB stop-band,
-/// flat ±0.05 dB pass-band up to 0.4 × Nyquist. Zero coefficients are
-/// elided from the actual multiply.
-const HB_COEFS: [f32; 5] = [
-    0.001461486792,
-    -0.010779382045,
-    0.044949340444,
-    -0.132159402370, // negative — gives proper magnitude response with center=0.5
-    0.596527956179,
+/// Side taps of the halfband, offsets ±1, ±3, … ±27 from the centre.
+const HB_SIDE: [f32; 14] = [
+    0.316868646093,
+    -0.101773699070,
+    0.056666440110,
+    -0.036136009339,
+    0.024100776766,
+    -0.016201182129,
+    0.010755851670,
+    -0.006950963534,
+    0.004318166450,
+    -0.002543209087,
+    0.001395712883,
+    -0.000694711031,
+    0.000299408556,
+    -0.000105228339,
 ];
-const HB_CENTER: f32 = 0.5;
+/// Centre-tap offset of the 55-tap halfband (its group delay at 2× rate).
+const HB_C: usize = 27;
+/// Ring size (power of two ≥ 28 samples of history).
+const HB_RING: usize = 32;
+const HB_MASK: usize = HB_RING - 1;
 
-#[derive(Default, Copy, Clone)]
+/// Latency of `oversample_apply` in base-rate samples, per `os_mode`.
+/// Integer by construction: one 2× up+down pair delays 27 base samples;
+/// the inner 4× stage adds 13.5, padded to 14 with one 2×-rate sample.
+pub const OVERSAMPLE_LATENCY: [usize; 3] = [0, HB_C, HB_C + (HB_C + 1) / 2];
+
+#[derive(Copy, Clone)]
 pub struct Oversampler2x {
-    /// History buffer of input samples (11 deep ring, 6 of them used for the
-    /// upsampler's odd-phase computation).
-    in_history: [f32; 6],
-    write: usize,
-    /// History for the decimator path.
-    out_history: [f32; 6],
-    write_out: usize,
+    /// Upsampler input history (base rate).
+    x: [f32; HB_RING],
+    xw: usize,
+    /// Decimator input history, split by phase: first / second sample of
+    /// each pushed pair.
+    d0: [f32; HB_RING],
+    d1: [f32; HB_RING],
+    dw: usize,
+    /// One 2×-rate sample of padding for the inner stage of a 4× cascade.
+    carry: f32,
+}
+
+impl Default for Oversampler2x {
+    fn default() -> Self {
+        Self { x: [0.0; HB_RING], xw: 0, d0: [0.0; HB_RING], d1: [0.0; HB_RING], dw: 0, carry: 0.0 }
+    }
 }
 
 /// Apply a per-sample non-linearity at the chosen oversampling rate.
 /// `os_mode`: 0 = native, 1 = 2× (one halfband stage), 2 = 4× (two stages
 /// cascaded). At anything other than `Off`, the caller's `f` closure runs
 /// at the oversampled rate and the halfband decimator pushes its
-/// harmonics above Nyquist where the stop-band buries them.
+/// harmonics above Nyquist where the stop-band buries them. The output is
+/// delayed by `OVERSAMPLE_LATENCY[os_mode]` samples — delay any dry signal
+/// you mix with it by the same amount, or the sum combs.
 ///
 /// The two stages are caller-owned so each channel (or each effect) gets
 /// its own independent state — sharing the history smears stereo image
@@ -299,53 +332,57 @@ pub fn oversample_apply<F: FnMut(f32) -> f32>(
             let oo2 = f(oo);
             let e1d = os2.downsample(ee2, eo2);
             let o1d = os2.downsample(oe2, oo2);
-            os1.downsample(e1d, o1d)
+            let (a, b) = os2.pad_pair(e1d, o1d);
+            os1.downsample(a, b)
         }
     }
 }
 
 impl Oversampler2x {
-    /// Push one input sample, return two upsampled samples.
-    /// First is the even phase (just delayed input, no FIR cost), second
-    /// is the FIR-interpolated odd phase.
+    /// Push one input sample, return the two upsampled samples in time
+    /// order. The second is the centre-tap phase — a pure delay of the
+    /// input; the first is the FIR-interpolated phase between samples.
     #[inline]
     pub fn upsample(&mut self, x: f32) -> (f32, f32) {
-        self.in_history[self.write] = x;
-        let len = self.in_history.len();
-        // Center-tap output: just the value 5 samples back (zero-stuffed
-        // input is `x, 0, x, 0, …`, then the halfband centre tap = 0.5
-        // doubles the kept samples — and the implicit `× 2` of the
-        // upsample is part of the canonical halfband design).
-        let center_idx = (self.write + len - 5) % len;
-        let even = self.in_history[center_idx]; // pass-through tap
-        // Odd phase: convolve the 5 non-zero side taps with input history.
-        let mut odd = 0.0_f32;
-        for (i, c) in HB_COEFS.iter().enumerate() {
-            let a = (self.write + len - i) % len;
-            let b = (self.write + len - (10 - i)) % len;
-            odd += c * (self.in_history[a] + self.in_history[b]);
+        self.xw = (self.xw + 1) & HB_MASK;
+        self.x[self.xw] = x;
+        let at = |back: usize| self.x[(self.xw + HB_RING - back) & HB_MASK];
+        // u[2m] = 2·Σ side[j]·(x[m-13+j] + x[m-14-j])  (×2 = zero-stuff gain)
+        let mut first = 0.0_f32;
+        for (j, c) in HB_SIDE.iter().enumerate() {
+            first += c * (at(HB_C / 2 - j) + at(HB_C / 2 + 1 + j));
         }
-        odd += HB_CENTER * self.in_history[center_idx];
-        self.write = (self.write + 1) % len;
-        (even, odd)
+        (2.0 * first, at(HB_C / 2))
     }
 
-    /// Inverse of `upsample`. Push two samples (even, odd), return one
-    /// decimated sample (low-passed against the upper half of the spectrum).
+    /// Inverse of `upsample`. Push two consecutive 2×-rate samples, return
+    /// one decimated sample (low-passed against the upper half-band).
     #[inline]
-    pub fn downsample(&mut self, even: f32, odd: f32) -> f32 {
-        // Decimator is the same halfband flipped — symmetric structure.
-        self.out_history[self.write_out] = (even + odd) * 0.5;
-        let len = self.out_history.len();
-        let center_idx = (self.write_out + len - 5) % len;
-        let mut y = HB_CENTER * self.out_history[center_idx];
-        for (i, c) in HB_COEFS.iter().enumerate() {
-            let a = (self.write_out + len - i) % len;
-            let b = (self.write_out + len - (10 - i)) % len;
-            y += c * (self.out_history[a] + self.out_history[b]);
+    pub fn downsample(&mut self, first: f32, second: f32) -> f32 {
+        self.dw = (self.dw + 1) & HB_MASK;
+        self.d0[self.dw] = first;
+        self.d1[self.dw] = second;
+        let w = self.dw;
+        let d0 = |back: usize| self.d0[(w + HB_RING - back) & HB_MASK];
+        // Keep the EVEN output of the 2×-rate filter: v[m] = y[2m]. The odd
+        // one sits half a base sample later, and a dry signal delayed by an
+        // integer count then combs against it (measured −0.2 dB at 6 kHz in
+        // a 50/50 mix before this choice).
+        // v[m] = 0.5·d1[m-14] + Σ side[j]·(d0[m-13+j] + d0[m-14-j])
+        let mut y = 0.5 * self.d1[(w + HB_RING - (HB_C / 2 + 1)) & HB_MASK];
+        for (j, c) in HB_SIDE.iter().enumerate() {
+            y += c * (d0(HB_C / 2 - j) + d0(HB_C / 2 + 1 + j));
         }
-        self.write_out = (self.write_out + 1) % len;
         y
+    }
+
+    /// Delay a 2×-rate pair stream by one sample (the half-sample pad that
+    /// makes the 4× cascade's latency an integer at the base rate).
+    #[inline]
+    pub fn pad_pair(&mut self, a: f32, b: f32) -> (f32, f32) {
+        let out = (self.carry, a);
+        self.carry = b;
+        out
     }
 }
 

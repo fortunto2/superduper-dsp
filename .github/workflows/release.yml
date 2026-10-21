@@ -71,6 +71,7 @@ jobs:
             -p superduper-chorus \
             -p superduper-drum \
             -p superduper-sampler \
+            -p superduper-piano \
             -p superduper-looper \
             -p superduper-filter \
             -p superduper-midside \
@@ -105,6 +106,7 @@ jobs:
             -p superduper-chorus \
             -p superduper-drum \
             -p superduper-sampler \
+            -p superduper-piano \
             -p superduper-looper \
             -p superduper-filter \
             -p superduper-midside \
@@ -145,6 +147,7 @@ jobs:
               "superduper_chorus|SuperDuperChorus|co.superduperai.chorus" \
               "superduper_drum|SuperDuperDrum|co.superduperai.drum" \
               "superduper_sampler|SuperDuperSampler|co.superduperai.sampler" \
+              "superduper_piano|SuperDuperPiano|co.superduperai.piano" \
               "superduper_looper|SuperDuperLooper|co.superduperai.looper" \
               "superduper_filter|SuperDuperFilter|co.superduperai.filter" \
               "superduper_midside|SuperDuperMidSide|co.superduperai.midside" \
@@ -334,6 +337,7 @@ jobs:
             -p superduper-chorus `
             -p superduper-drum `
             -p superduper-sampler `
+            -p superduper-piano `
             -p superduper-looper `
             -p superduper-filter `
             -p superduper-midside `
@@ -368,6 +372,7 @@ jobs:
             -p superduper-chorus `
             -p superduper-drum `
             -p superduper-sampler `
+            -p superduper-piano `
             -p superduper-looper `
             -p superduper-filter `
             -p superduper-midside `
@@ -408,6 +413,7 @@ jobs:
             @{ dll = "superduper_chorus.dll";     name = "SuperDuperChorus" },
             @{ dll = "superduper_drum.dll";       name = "SuperDuperDrum" },
             @{ dll = "superduper_sampler.dll";    name = "SuperDuperSampler" },
+            @{ dll = "superduper_piano.dll";      name = "SuperDuperPiano" },
             @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" },
             @{ dll = "superduper_filter.dll";     name = "SuperDuperFilter" },
             @{ dll = "superduper_midside.dll";    name = "SuperDuperMidSide" },

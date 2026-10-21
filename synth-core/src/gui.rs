@@ -266,6 +266,10 @@ pub fn learn_param_row_g(
 pub struct LiveScope {
     pub buf: Box<[AtomicF32]>,
     pub head: std::sync::atomic::AtomicUsize,
+    /// For the bus publisher: the rate the pushed samples are at (plugins
+    /// set it in activate; 48 kHz until they do) and the host's track name.
+    pub sample_rate: AtomicF32,
+    pub track: parking_lot::Mutex<String>,
 }
 
 impl LiveScope {
@@ -274,8 +278,12 @@ impl LiveScope {
         Self {
             buf: buf.into_boxed_slice(),
             head: std::sync::atomic::AtomicUsize::new(0),
+            sample_rate: AtomicF32::new(48_000.0),
+            track: parking_lot::Mutex::new(String::new()),
         }
     }
+
+    pub fn set_sample_rate(&self, sr: f32) { self.sample_rate.store(sr, Ordering::Relaxed); }
     /// Audio-thread: push one sample (mono). Lock-free.
     #[inline]
     pub fn push(&self, x: f32) {
@@ -298,6 +306,87 @@ impl LiveScope {
             *slot = self.buf[start.wrapping_add(i) % cap].load(Ordering::Relaxed);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bus publisher — puts what a plugin's LiveScope holds on the shared bus
+// (`superduper_dsp_sdk::bus`): level, peak and a 32-band spectrum, ~20×/s,
+// from a background thread. The audio thread is not involved beyond the
+// `push` it already does for the GUI.
+// ---------------------------------------------------------------------------
+
+/// Ask the host for this instance's track name (CLAP track-info) and keep it
+/// on the scope for the bus. Main thread; hosts without track-info leave it
+/// empty.
+pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'_>, scope: &LiveScope) {
+    use clack_extensions::track_info::{HostTrackInfo, TrackInfoBuffer};
+    let Some(ext) = host.get_extension::<HostTrackInfo>() else { return };
+    let mut buf = TrackInfoBuffer::new();
+    if let Some(info) = ext.get(host, &mut buf) {
+        if let Some(name) = info.name() {
+            *scope.track.lock() = String::from_utf8_lossy(name).trim_end_matches('\0').to_string();
+        }
+    }
+}
+
+/// Bands + level of the scope's last `n` samples. Allocates; publisher thread.
+pub fn scope_spectrum(scope: &LiveScope, n: usize) -> (f32, f32, [f32; superduper_dsp_sdk::bus::BANDS]) {
+    use superduper_dsp_sdk::bus::{band_edges, BANDS};
+    let n = n.min(scope.buf.len()).max(64);
+    let mut x = vec![0f32; n];
+    scope.snapshot(&mut x);
+    let sr = scope.sample_rate.load(Ordering::Relaxed).max(8000.0);
+    let rms = (x.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt();
+    let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
+    let db = |v: f32| 20.0 * v.max(1e-6).log10();
+    for (i, v) in x.iter_mut().enumerate() {
+        *v *= 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos();
+    }
+    let mut planner = realfft::RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(n);
+    let mut spec = fft.make_output_vec();
+    let _ = fft.process(&mut x, &mut spec);
+    let bin_hz = sr / n as f32;
+    // Band level = the RMS of what lies in the band, so bands add up to the
+    // total level. Parseval with a Hann window: rms² in a set of bins =
+    // 16 / (3 N²) · Σ|X_k|² (one-sided). A peak-bin reading instead sags by
+    // up to ~2 dB when a tone falls between bins.
+    let norm = 16.0 / (3.0 * (n as f32) * (n as f32));
+    let pw = |db_pow: f32| 10.0 * db_pow.max(1e-12).log10();
+    let edges = band_edges();
+    let bands: [f32; BANDS] = std::array::from_fn(|b| {
+        let (lo, hi) = (edges[b] / bin_hz, edges[b + 1] / bin_hz);
+        let (i0, i1) = (lo.ceil() as usize, hi.ceil() as usize);
+        let p: f32 = if i1 > i0 {
+            (i0..i1.min(spec.len())).map(|i| spec[i].norm_sqr()).sum()
+        } else {
+            // Narrower than a bin (low end): that bin's power, shared by width.
+            spec.get(lo.round() as usize).map_or(0.0, |c| c.norm_sqr()) * (hi - lo)
+        };
+        pw(p * norm)
+    });
+    (db(rms), db(peak), bands)
+}
+
+/// Spawn the thread that keeps this instance's bus slot current. It ends by
+/// itself when the plugin instance (`shared`) is dropped. No-op if the bus
+/// cannot be opened (read-only home, every slot taken).
+pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, shared: &std::sync::Arc<T>, scope: fn(&T) -> &LiveScope) {
+    let weak = std::sync::Arc::downgrade(shared);
+    let _ = std::thread::Builder::new().name("sdsp-bus".into()).spawn(move || {
+        let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
+        let mut track = String::new();
+        loop {
+            let Some(inner) = weak.upgrade() else { break };
+            let sc = scope(&inner);
+            let t = sc.track.lock().clone();
+            if t != track { publisher.set_track(&t); track = t; }
+            let (rms, peak, bands) = scope_spectrum(sc, 4096);
+            publisher.publish(sc.sample_rate.load(Ordering::Relaxed), rms, peak, &bands);
+            drop(inner);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
 }
 
 /// Render the live scope inside `rect` — green polyline + centre line.

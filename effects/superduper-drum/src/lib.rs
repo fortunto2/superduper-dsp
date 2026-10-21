@@ -24,6 +24,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod pads;
 pub mod presets;
 // Drum voice DSP lives in synth-core (so iOS/live2play reuses it). Re-export
 // under the old `voices` path so every reference keeps working.
@@ -61,6 +62,7 @@ use voices::{
     note_to_voice_with,
 };
 use presets::{PRESETS, PRESET_COUNT};
+use superduper_synth_core::drumlib::SampleHit;
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -130,13 +132,44 @@ pub const PARAMS: &[ParamDef] = &[
     // project — a GM loop, an exported Ableton clip — silently lost its hats
     // and its clap, because GM's 42/46/39 land on no white key at all.
     ParamDef { id: 28, name: b"Note Map", min: 0.0,   max: 2.0, default: 0.0, unit: "" },
+    // Per pad: what sounds — 0 Synth (the voice above), 1 Sample, 2 Layer
+    // (both). Appended, so every existing project keeps its synth kit.
+    ParamDef { id: 29, name: b"Kick Src",  min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    ParamDef { id: 30, name: b"Snare Src", min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    ParamDef { id: 31, name: b"HHc Src",   min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    ParamDef { id: 32, name: b"HHo Src",   min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    ParamDef { id: 33, name: b"Clap Src",  min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    ParamDef { id: 34, name: b"Cowb Src",  min: 0.0, max: 2.0, default: 0.0, unit: "" },
+    // Per pad: index into that pad's slice of the library (kicks for Kick,
+    // hats for the hat pads …), so an agent stepping it never lands a snare
+    // on the kick pad.
+    ParamDef { id: 35, name: b"Kick Smp",  min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    ParamDef { id: 36, name: b"Snare Smp", min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    ParamDef { id: 37, name: b"HHc Smp",   min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    ParamDef { id: 38, name: b"HHo Smp",   min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    ParamDef { id: 39, name: b"Clap Smp",  min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    ParamDef { id: 40, name: b"Cowb Smp",  min: 0.0, max: 4095.0, default: 0.0, unit: "" },
+    // Whole-kit control for agents and automation. Kit Pack: 0 = leave the
+    // pads alone, N = fill every pad from the N-th pack (accepts a pack name
+    // as text). Kit Dice: 0 = the first sound of each type, anything else =
+    // a random kit with that seed. Kit File: N = load the N-th saved kit.
+    // Applied when the value CHANGES, so reopening a project never rebuilds
+    // the kit over the pads someone tweaked by hand.
+    ParamDef { id: 41, name: b"Kit Pack",  min: 0.0, max: 511.0,  default: 0.0, unit: "" },
+    ParamDef { id: 42, name: b"Kit Dice",  min: 0.0, max: 1023.0, default: 0.0, unit: "" },
+    ParamDef { id: 43, name: b"Kit File",  min: 0.0, max: 511.0,  default: 0.0, unit: "" },
+    // Song key for the tonal pads (kick / 808, toms): 0 Off, 1-12 = C..B,
+    // 13 Auto (the song-key bus file, else the notes this kit passes on).
+    // Each sample moves to the key by the shortest way (±6 st); Tune stays
+    // the user's offset on top.
+    ParamDef { id: 44, name: b"Key",       min: 0.0, max: 13.0,   default: 0.0, unit: "" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
 /// the host with IS_STEPPED so it quantises automation instead of sweeping
 /// through the intermediate values — a ramp across a preset selector otherwise
 /// recalls every kit between the two endpoints.
-const STEPPED_PARAMS: &[u32] = &[26, 27, 28];
+const STEPPED_PARAMS: &[u32] = &[26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44];
 
 pub const fn voice_param_idx(voice: usize, offset: usize) -> usize {
     voice * PARAMS_PER_VOICE + offset
@@ -147,6 +180,17 @@ pub const P_MASTER: usize = 25;
 pub const P_NOTE_OUT: usize = 26;
 pub const P_PRESET: usize = 27;
 pub const P_NOTE_MAP: usize = 28;
+/// First of the six `<Pad> Src` params (pad order = voice order).
+pub const P_SRC0: usize = 29;
+/// First of the six `<Pad> Smp` params.
+pub const P_SMP0: usize = 35;
+pub const P_KIT_PACK: usize = 41;
+pub const P_KIT_DICE: usize = 42;
+pub const P_KIT_FILE: usize = 43;
+pub const P_KEY: usize = 44;
+pub const KEY_AUTO: i32 = 13;
+/// The synth kick sits on 55 Hz = A.
+const SYNTH_KICK_KEY: u8 = 9;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -174,6 +218,8 @@ pub struct SharedParamsInner {
     /// block, firing the corresponding voice. Atomic instead of a
     /// channel so we don't allocate or block on the audio thread.
     pub voice_trigger_request: [AtomicF32; 6],
+    /// Sample pads: library, loading, retired samples.
+    pub pads: pads::PadBank,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -189,9 +235,10 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
                 voice_pulse: std::array::from_fn(|_| AtomicF32::new(0.0)),
                 voice_trigger_request: std::array::from_fn(|_| AtomicF32::new(0.0)),
+                pads: pads::PadBank::default(),
             }),
         }
     }
@@ -217,7 +264,9 @@ pub fn apply_preset(shared: &SharedParamsInner, preset_idx: usize) {
         // the kit answers to is a property of the session's MIDI, not of the
         // kit's sound, so swapping Trap for Boom Bap must not silently move
         // the hats back onto a different key.
-        if i == P_PRESET || i == P_NOTE_MAP { continue; }
+        // Pad sources and samples belong to the session too: a factory kit
+        // is a synth sound and must not throw away the samples on the pads.
+        if i == P_PRESET || i == P_NOTE_MAP || i >= P_SRC0 { continue; }
         if let Some(atom) = shared.params.get(i) {
             atom.store(v, Ordering::Relaxed);
             // Mark dirty so the audio thread emits the new value back to the
@@ -270,7 +319,16 @@ pub struct PluginAudioProcessor<'a> {
     clap_voice: ClapVoice,
     cowbell: Cowbell,
     sample_rate: f32,
+    /// The sample each pad plays (None = not loaded yet).
+    pad_sample: [Option<std::sync::Arc<superduper_synth_core::sfz::SampleBuf>>; 6],
+    /// Four overlapping hits per pad, round-robin.
+    hits: [[SampleHit; HITS_PER_PAD]; 6],
+    next_hit: [usize; 6],
+    /// A replaced sample the retired list had no room or lock for yet.
+    graveyard: [Option<std::sync::Arc<superduper_synth_core::sfz::SampleBuf>>; 6],
 }
+
+const HITS_PER_PAD: usize = 4;
 
 impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
     for PluginAudioProcessor<'a>
@@ -281,8 +339,19 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         init_logging();
         slog!("activate sr={}", audio_config.sample_rate);
+        shared.pads.activated.store(true, Ordering::Relaxed);
+        // A re-activation starts with empty pads: ask for every loaded
+        // sample again (the decode is cheap, one-shots are small).
+        for pad in 0..pads::PADS {
+            if shared.pads.pending[pad].lock().is_none() {
+                if let Some(p) = shared.pads.loaded_path[pad].lock().take() {
+                    *shared.pads.requested_path[pad].lock() = Some(p);
+                }
+            }
+        }
         Ok(Self {
             shared,
             host,
@@ -293,6 +362,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             clap_voice: ClapVoice::default(),
             cowbell: Cowbell::default(),
             sample_rate: audio_config.sample_rate as f32,
+            pad_sample: Default::default(),
+            hits: Default::default(),
+            next_hit: [0; 6],
+            graveyard: Default::default(),
         })
     }
 
@@ -330,6 +403,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // Read once per block: the layout must not change mid-batch, or a
         // note-on and its note-off could resolve to different voices.
         let note_map = NoteMap::from_param(self.shared.params[P_NOTE_MAP].load(Ordering::Relaxed));
+
+        self.swap_in_samples();
 
         // Drain GUI-triggered hits — the pads in the GUI write a
         // non-zero velocity here when clicked. We zero each slot
@@ -371,6 +446,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                             if let Some(voice) = voice {
                                 self.trigger(voice, velocity);
                             } else if note_passthrough {
+                                self.shared.pads.note_hist[key as usize % 12].fetch_add(1, Ordering::Relaxed);
                                 // Forward — same timing, same channel, same key.
                                 let fwd = NoteOnEvent::new(
                                     n.header().time(),
@@ -409,6 +485,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                                     if let Some(voice) = note_to_voice_with(note_map, key) {
                                         self.trigger(voice, vel);
                                     } else if note_passthrough {
+                                        self.shared.pads.note_hist[key as usize % 12].fetch_add(1, Ordering::Relaxed);
                                         let fwd = NoteOnEvent::new(
                                             m.header().time(),
                                             Pckn::new(0u16, 0u16, key as u16, 0u32),
@@ -465,7 +542,57 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 }
 
 impl<'a> PluginAudioProcessor<'a> {
+    fn swap_in_samples(&mut self) {
+        for pad in 0..pads::PADS {
+            if let Some(old) = self.graveyard[pad].take() { self.retire(pad, old); }
+            let fresh = self.shared.pads.pending[pad].try_lock().and_then(|mut g| g.take());
+            if let Some(new) = fresh {
+                if let Some(old) = self.pad_sample[pad].replace(new) { self.retire(pad, old); }
+                if self.shared.pads.audition_after_load[pad].swap(false, Ordering::Relaxed) {
+                    self.shared.voice_trigger_request[pad].store(0.9, Ordering::Release);
+                }
+            }
+        }
+    }
+
+    /// Park a replaced sample for the loader to free. Never allocates.
+    fn retire(&mut self, pad: usize, old: std::sync::Arc<superduper_synth_core::sfz::SampleBuf>) {
+        match self.shared.pads.retired.try_lock() {
+            Some(mut list) if list.len() < list.capacity() => list.push(old),
+            _ => self.graveyard[pad] = Some(old),
+        }
+    }
+
+    /// Semitones that move a pad's note to the song key, 0 when Key is off,
+    /// the pad is not tonal (only kick and the tom/perc pad are) or the note
+    /// is unknown (`key` < 0).
+    fn key_shift_for(&self, pad: usize, key: i32) -> f32 {
+        if (pad != 0 && pad != 5) || key < 0 { return 0.0; }
+        match pads::effective_key(&self.shared) {
+            Some(song) => superduper_synth_core::drumlib::key_shift(key as u8, song) as f32,
+            None => 0.0,
+        }
+    }
+
     fn trigger(&mut self, voice: VoiceKind, velocity: f32) {
+        let pad = voice as usize;
+        let src = self.shared.params[P_SRC0 + pad].load(Ordering::Relaxed).round() as u8;
+        if src != pads::src::SYNTH {
+            if voice == VoiceKind::HatClosed {
+                for h in self.hits[3].iter_mut() { h.choke(self.sample_rate); }
+            }
+            if let Some(s) = self.pad_sample[pad].as_ref() {
+                let p = |o: usize| self.shared.params[voice_param_idx(pad, o)].load(Ordering::Relaxed);
+                let slot = self.next_hit[pad];
+                self.next_hit[pad] = (slot + 1) % HITS_PER_PAD;
+                let shift = self.key_shift_for(pad, self.shared.pads.pad_key[pad].load(Ordering::Relaxed));
+                self.hits[pad][slot].start(std::sync::Arc::clone(s), self.sample_rate, p(0) + shift, p(1), p(2) * velocity);
+            }
+            if src == pads::src::SAMPLE {
+                self.shared.voice_pulse[pad].store(1.0, Ordering::Relaxed);
+                return;
+            }
+        }
         match voice {
             VoiceKind::Kick => self.kick.trigger(velocity),
             VoiceKind::Snare => self.snare.trigger(velocity),
@@ -484,8 +611,9 @@ impl<'a> PluginAudioProcessor<'a> {
 
     fn render_block(&mut self, out_l: &mut [f32], out_r: &mut [f32], n: usize, sr: f32) {
         let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let kick_shift = self.key_shift_for(0, SYNTH_KICK_KEY as i32);
         let p_kick = DrumParams {
-            tune_st: load(voice_param_idx(0, 0)),
+            tune_st: load(voice_param_idx(0, 0)) + kick_shift,
             decay_s: load(voice_param_idx(0, 1)),
             level: load(voice_param_idx(0, 2)),
             pan: load(voice_param_idx(0, 3)),
@@ -545,6 +673,19 @@ impl<'a> PluginAudioProcessor<'a> {
             pan_mix(self.hat_open.process(sr, p_hho), p_hho.pan, &mut l, &mut r);
             pan_mix(self.clap_voice.process(sr, p_clap), p_clap.pan, &mut l, &mut r);
             pan_mix(self.cowbell.process(sr, p_cow), p_cow.pan, &mut l, &mut r);
+
+            // Sample hits, panned like their pad's synth voice.
+            for (pad, pan) in [p_kick.pan, p_snare.pan, p_hhc.pan, p_hho.pan, p_clap.pan, p_cow.pan].into_iter().enumerate() {
+                let p = pan.clamp(-1.0, 1.0);
+                let (lg, rg) = ((1.0 - p).clamp(0.0, 1.0).sqrt(), (1.0 + p).clamp(0.0, 1.0).sqrt());
+                for h in self.hits[pad].iter_mut() {
+                    if h.is_active() {
+                        let (sl, sr2) = h.process();
+                        l += sl * lg;
+                        r += sr2 * rg;
+                    }
+                }
+            }
 
             // Drive — soft saturation on the bus for that "808 through
             // an SP-1200" colour.
@@ -608,6 +749,41 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         if pid == P_NOTE_OUT {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });
         }
+        if (P_SRC0..P_SRC0 + 6).contains(&pid) {
+            return write!(w, "{}", ["Synth", "Sample", "Layer"][(v.round() as usize).min(2)]);
+        }
+        if pid == P_KIT_PACK {
+            let i = v.round() as usize;
+            if i == 0 { return write!(w, "manual"); }
+            if let Some(p) = pads::packs(&self.shared.inner).get(i - 1) { return write!(w, "{p}"); }
+        }
+        if pid == P_KEY {
+            const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            let k = v.round() as i32;
+            return match k {
+                0 => write!(w, "Off"),
+                KEY_AUTO => match pads::song_key(&self.shared.inner) {
+                    Some(r) => write!(w, "Auto ({})", N[r as usize]),
+                    None => write!(w, "Auto (–)"),
+                },
+                _ => write!(w, "{}", N[(k.clamp(1, 12) - 1) as usize]),
+            };
+        }
+        if pid == P_KIT_DICE {
+            return if v.round() as i64 == 0 { write!(w, "first") } else { write!(w, "random #{}", v.round() as i64) };
+        }
+        if pid == P_KIT_FILE {
+            let i = v.round() as usize;
+            if i == 0 { return write!(w, "none"); }
+            if let Some(f) = pads::kit_files(&pads::kits_dir()).get(i - 1).and_then(|f| f.file_stem()) {
+                return write!(w, "{}", f.to_string_lossy());
+            }
+        }
+        if (P_SMP0..P_SMP0 + 6).contains(&pid) {
+            if let Some(e) = pads::pad_entry(&self.shared.inner, pid - P_SMP0, v.round().max(0.0) as usize) {
+                return write!(w, "{} / {}", e.pack, e.name);
+            }
+        }
         if pid == P_PRESET {
             if let Some(r) = superduper_dsp_sdk::clap_helpers::preset_value_to_text(
                 |i| PRESETS.get(i).map(|p| p.name),
@@ -620,6 +796,29 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         ParamDef::write_display(PARAMS, id, v, w)
     }
     fn text_to_value(&mut self, id: ClapId, t: &CStr) -> Option<f64> {
+        // Kit Pack / Kit File by name: "kshmr" → that pack's number.
+        let pid = id.get() as usize;
+        if pid == P_KEY {
+            if let Ok(q) = t.to_str() {
+                let q = q.trim();
+                if q.eq_ignore_ascii_case("auto") { return Some(KEY_AUTO as f64); }
+                if q.eq_ignore_ascii_case("off") { return Some(0.0); }
+                if let Some(k) = superduper_synth_core::drumlib::parse_key_name(q) { return Some(k as f64 + 1.0); }
+            }
+        }
+        if pid == P_KIT_PACK || pid == P_KIT_FILE {
+            if let Ok(q) = t.to_str() {
+                let q = q.trim().to_lowercase();
+                if !q.is_empty() && q.parse::<f64>().is_err() {
+                    let names: Vec<String> = if pid == P_KIT_PACK {
+                        pads::packs(&self.shared.inner)
+                    } else {
+                        pads::kit_files(&pads::kits_dir()).iter().filter_map(|f| f.file_stem().map(|s| s.to_string_lossy().into_owned())).collect()
+                    };
+                    if let Some(i) = names.iter().position(|n| n.to_lowercase().contains(&q)) { return Some((i + 1) as f64); }
+                }
+            }
+        }
         // Let "Trap" / "808 Sub" etc. resolve to the preset index too.
         if id.get() as usize == P_PRESET {
             if let Some(v) = superduper_dsp_sdk::clap_helpers::preset_text_to_value(
@@ -651,7 +850,52 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
-superduper_dsp_sdk::simple_state_impl!(PluginMainThread<'_>);
+/// The simple-state JSON plus each pad's sample path. Same `version`, and
+/// `pad_samples` is optional, so projects saved before sample pads load
+/// unchanged and new ones still open in an older build (it ignores the field).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DrumState {
+    version: u32,
+    params: Vec<f32>,
+    bypass: bool,
+    #[serde(default)]
+    active_preset: u32,
+    #[serde(default)]
+    pad_samples: Vec<Option<std::path::PathBuf>>,
+}
+
+impl PluginStateImpl for PluginMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let pads = &self.shared.pads;
+        let state = DrumState {
+            version: superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION,
+            params: self.shared.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+            bypass: self.shared.bypass.load(Ordering::Relaxed),
+            active_preset: self.shared.active_preset.load(Ordering::Relaxed),
+            pad_samples: (0..pads::PADS)
+                .map(|i| pads.requested_path[i].lock().clone().or_else(|| pads.loaded_path[i].lock().clone()))
+                .collect(),
+        };
+        serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON write error"))
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        let state: DrumState = serde_json::from_reader(input).map_err(|_| PluginError::Message("state JSON read error"))?;
+        if state.version != superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION {
+            return Err(PluginError::Message("state version mismatch"));
+        }
+        for (i, v) in state.params.iter().enumerate() {
+            if let Some(slot) = self.shared.params.get(i) { slot.store(*v, Ordering::Relaxed); }
+        }
+        self.shared.bypass.store(state.bypass, Ordering::Relaxed);
+        self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
+        pads::mark_kit_applied(&self.shared.inner);
+        for (i, p) in state.pad_samples.into_iter().enumerate().take(pads::PADS) {
+            if let Some(p) = p { *self.shared.pads.requested_path[i].lock() = Some(p); }
+        }
+        Ok(())
+    }
+}
 
 use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
@@ -734,7 +978,7 @@ impl DefaultPluginFactory for SuperDuperDrum {
     fn get_descriptor() -> PluginDescriptor {
         PluginDescriptor::new("co.superduperai.drum", plugin_display_name!("SuperDuper Drum"))
             .with_vendor("SuperDuperAI")
-            .with_version(version_string!("0.2"))
+            .with_version(version_string!("0.3"))
             .with_description("Analog-synthesis drum machine — 6 voices, MIDI-driven, note passthrough for chained synths")
             .with_features([INSTRUMENT, STEREO, DRUM_MACHINE])
     }
@@ -742,13 +986,17 @@ impl DefaultPluginFactory for SuperDuperDrum {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Drum — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        pads::spawn_loader(&shared.inner);
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Drum", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

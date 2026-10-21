@@ -118,7 +118,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
             }),
         }
     }
@@ -176,6 +176,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         let sr = audio_config.sample_rate as f32;
         slog!("activate sr={}", sr);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
@@ -277,7 +278,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     let out_lin = 10f32.powf(output_db / 20.0);
                     let final_sample = mix * out_lin;
                     *o = final_sample;
-                    self.shared.scope.push(final_sample);
+                    if ch_idx == 0 { self.shared.scope.push(final_sample); } // one channel: L then R blocks read as seams
                 }
             }
         }
@@ -434,12 +435,15 @@ impl DefaultPluginFactory for SuperDuperAmbient {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Ambient — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Ambient", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

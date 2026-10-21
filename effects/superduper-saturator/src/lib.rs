@@ -7,8 +7,16 @@
 //!
 //! Signal chain (per sample):
 //!   in → DCblock → Drive (linear gain from dB knob) → saturate(curve)
-//!      → Tilt (one-pole high-shelf, ±6 dB at ±1.0)
-//!      → Output gain → Mix with dry
+//!      [at 1×/2×/4× via the shared halfband oversampler]
+//!      → pad to SAT_LATENCY → Tilt (one-pole high-shelf, ±6 dB at ±1.0)
+//!      → Output gain → Mix with dry (dry delayed by SAT_LATENCY too)
+//!
+//! Latency is constant (SAT_LATENCY = the 4× path's delay) whatever the OS
+//! mode, and reported to the host — so switching OS never moves PDC and the
+//! Mix knob always blends two time-aligned signals. Before 2026-10-20 the
+//! wet path was late by the oversampler while dry was not, and the
+//! oversampler itself was broken (see dsp_blocks::Oversampler2x): a vocal at
+//! Drive 8 / Mix 0.4 lost 10 dB at 2.5-6 kHz.
 //!
 //! Mono signal-path math; the same chain runs on each channel with its
 //! own per-channel state (DcBlocker / Tilt). No cross-channel coupling.
@@ -38,8 +46,13 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::ParamDef;
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    tanh_drive, tape_clip, tube_clip, DcBlocker, Oversampler2x, SmoothedParam, Tilt,
+    oversample_apply, tanh_drive, tape_clip, tube_clip, DcBlocker, LatencyDelay, Oversampler2x,
+    SmoothedParam, Tilt, OVERSAMPLE_LATENCY,
 };
+
+/// Constant plugin latency in samples: the 4× oversampling path's delay.
+/// The 1× / 2× paths are padded up to it.
+pub const SAT_LATENCY: usize = OVERSAMPLE_LATENCY[2];
 
 // ---------------------------------------------------------------------------
 // Logging — file in ~/.superduper-dsp/saturator.log
@@ -111,7 +124,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
             }),
         }
     }
@@ -153,6 +166,12 @@ pub struct PluginAudioProcessor<'a> {
     os1_r: Oversampler2x,
     os2_l: Oversampler2x,
     os2_r: Oversampler2x,
+    /// Pads the 1× / 2× wet paths up to SAT_LATENCY ([mode 0, mode 1]).
+    pad_l: [LatencyDelay; 2],
+    pad_r: [LatencyDelay; 2],
+    /// Dry path for Mix, delayed by SAT_LATENCY.
+    dry_l: LatencyDelay,
+    dry_r: LatencyDelay,
     smooth_drive: SmoothedParam,
     smooth_tone: SmoothedParam,
     smooth_output: SmoothedParam,
@@ -183,6 +202,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         slog!("activate sr={}", audio_config.sample_rate);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         Ok(Self {
@@ -195,6 +215,10 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             os1_r: Oversampler2x::default(),
             os2_l: Oversampler2x::default(),
             os2_r: Oversampler2x::default(),
+            pad_l: [0, 1].map(|m| LatencyDelay::new(SAT_LATENCY - OVERSAMPLE_LATENCY[m])),
+            pad_r: [0, 1].map(|m| LatencyDelay::new(SAT_LATENCY - OVERSAMPLE_LATENCY[m])),
+            dry_l: LatencyDelay::new(SAT_LATENCY),
+            dry_r: LatencyDelay::new(SAT_LATENCY),
             smooth_drive: SmoothedParam::new(load(P_DRIVE)),
             smooth_tone: SmoothedParam::new(load(P_TONE)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
@@ -234,19 +258,23 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
             for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                let (dc, tilt, os1, os2) = if ch_idx == 0 {
-                    (&mut self.dc_l, &mut self.tilt_l, &mut self.os1_l, &mut self.os2_l)
+                let (dc, tilt, os1, os2, pad, dry) = if ch_idx == 0 {
+                    (&mut self.dc_l, &mut self.tilt_l, &mut self.os1_l, &mut self.os2_l,
+                     &mut self.pad_l, &mut self.dry_l)
                 } else {
-                    (&mut self.dc_r, &mut self.tilt_r, &mut self.os1_r, &mut self.os2_r)
+                    (&mut self.dc_r, &mut self.tilt_r, &mut self.os1_r, &mut self.os2_r,
+                     &mut self.pad_r, &mut self.dry_r)
                 };
                 process_channel(
-                    dc, tilt, os1, os2,
+                    dc, tilt, os1, os2, pad, dry,
                     &mut self.smooth_drive, &mut self.smooth_tone,
                     &mut self.smooth_output, &mut self.smooth_mix,
                     channel_pair, sr, curve, os_mode,
                     drive_db_target, tone_target, output_db_target, mix_target,
                     bypassed,
-                    &self.shared.scope,
+                    // One channel feeds the scope: both, one block after the
+                    // other, read as a waveform full of seams.
+                    (ch_idx == 0).then_some(&self.shared.scope),
                 );
             }
         }
@@ -260,6 +288,8 @@ fn process_channel(
     tilt: &mut Tilt,
     os1: &mut Oversampler2x,
     os2: &mut Oversampler2x,
+    pad: &mut [LatencyDelay; 2],
+    dry_delay: &mut LatencyDelay,
     smooth_drive: &mut SmoothedParam,
     smooth_tone: &mut SmoothedParam,
     smooth_output: &mut SmoothedParam,
@@ -273,17 +303,22 @@ fn process_channel(
     output_db_target: f32,
     mix_target: f32,
     bypassed: bool,
-    scope: &superduper_synth_core::gui::LiveScope,
+    scope: Option<&superduper_synth_core::gui::LiveScope>,
 ) {
     use superduper_dsp_sdk::clap_helpers::split_io;
     let Some((read, write)) = split_io(channel) else { return };
     if bypassed {
-        write.copy_from_slice(read);
+        // Keep the delay lines running so un-bypassing is seamless, and
+        // stay at the reported latency (bypass must not move PDC).
+        for (i, o) in read.iter().zip(write.iter_mut()) {
+            *o = dry_delay.process(*i);
+        }
         return;
     }
 
     for (i, o) in read.iter().zip(write.iter_mut()) {
-        let dry = *i;
+        let input = *i;
+        let dry = dry_delay.process(input);
 
         let drive_db = smooth_drive.step(drive_db_target, sr);
         let tone = smooth_tone.step(tone_target, sr);
@@ -292,32 +327,16 @@ fn process_channel(
         let drive_lin = 10f32.powf(drive_db / 20.0);
         let out_lin = 10f32.powf(out_db / 20.0);
 
-        let cleaned = dc.process(dry);
+        let cleaned = dc.process(input);
 
-        // Saturate at oversampled rate so the harmonics produced by the
-        // non-linearity fold cleanly back into the original Nyquist.
-        let saturated = match os_mode {
-            0 => saturate(curve, cleaned, drive_lin),
-            1 => {
-                // 2×: upsample to two values, saturate each, decimate.
-                let (e, odd) = os1.upsample(cleaned);
-                let se = saturate(curve, e, drive_lin);
-                let so = saturate(curve, odd, drive_lin);
-                os1.downsample(se, so)
-            }
-            _ => {
-                // 4×: cascade two stages.
-                let (e1, o1) = os1.upsample(cleaned);
-                let (e2a, o2a) = os2.upsample(e1);
-                let (e2b, o2b) = os2.upsample(o1);
-                let se2a = saturate(curve, e2a, drive_lin);
-                let so2a = saturate(curve, o2a, drive_lin);
-                let se2b = saturate(curve, e2b, drive_lin);
-                let so2b = saturate(curve, o2b, drive_lin);
-                let a = os2.downsample(se2a, so2a);
-                let b = os2.downsample(se2b, so2b);
-                os1.downsample(a, b)
-            }
+        // Saturate at the oversampled rate so the harmonics produced by the
+        // non-linearity fold cleanly back into the original Nyquist, then pad
+        // the 1× / 2× paths so every mode leaves SAT_LATENCY late.
+        let mode = os_mode.min(2);
+        let sat = oversample_apply(cleaned, mode, os1, os2, |x| saturate(curve, x, drive_lin));
+        let saturated = match pad.get_mut(mode as usize) {
+            Some(p) => p.process(sat),
+            None => sat,
         };
 
         let toned = tilt.process(saturated, sr, tone);
@@ -325,7 +344,7 @@ fn process_channel(
 
         let final_out = dry * (1.0 - mix) + wet * mix;
         *o = final_out;
-        scope.push(final_out);
+        if let Some(sc) = scope { sc.push(final_out); }
     }
 }
 
@@ -472,6 +491,12 @@ impl PluginGuiImpl for PluginMainThread<'_> {
 // Factory
 // ---------------------------------------------------------------------------
 
+impl clack_extensions::latency::PluginLatencyImpl for PluginMainThread<'_> {
+    fn get(&mut self) -> u32 {
+        SAT_LATENCY as u32
+    }
+}
+
 pub struct SuperDuperSaturator;
 
 impl Plugin for SuperDuperSaturator {
@@ -484,7 +509,8 @@ impl Plugin for SuperDuperSaturator {
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
-            .register::<clack_extensions::gui::PluginGui>();
+            .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::latency::PluginLatency>();
     }
 }
 
@@ -495,7 +521,7 @@ impl DefaultPluginFactory for SuperDuperSaturator {
             plugin_display_name!("SuperDuper Saturator"),
         )
         .with_vendor("SuperDuperAI")
-        .with_version(version_string!("0.1"))
+        .with_version(version_string!("0.2"))
         .with_description("Analog warmth — tape / tube / soft-clip saturation")
         .with_features([AUDIO_EFFECT, STEREO, DISTORTION])
     }
@@ -503,13 +529,16 @@ impl DefaultPluginFactory for SuperDuperSaturator {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Saturator — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Saturator", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

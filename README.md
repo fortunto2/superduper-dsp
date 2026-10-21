@@ -64,6 +64,7 @@ click the name to read.
 | [**Kubyz**](effects/superduper-kubyz/README.md) | jaw-harp / khomus | 16-harmonic additive + 3-band formant + IPA vowel pad + tempo-sync mouth trajectory + Bashkir / Khomus / Real-D2 presets. |
 | [**Drum**](effects/superduper-drum/README.md) | drum machine | 6 analog-synthesis voices on consecutive white keys C-A. MIDI passthrough so one clip can drive Drum + bass synth together. |
 | [**Sampler**](effects/superduper-sampler/README.md) | polyphonic WAV player | Recursive sample folder scan + Pack picker, per-voice SVF filter, Reverse, Velocity→Amp/Cutoff, YIN pitch detection. |
+| **Piano** | SFZ multisample player | Any SFZ pack dropped into `~/Music/SFZ/` (Salamander Grand by default): velocity layers, sustain pedal, release samples, keyswitches. Matches sfizz within 0.3 dB. |
 
 All twenty-three share:
 
@@ -147,6 +148,7 @@ below if you'd rather skip make:
 ./scripts/build_kubyz_bundle.sh
 ./scripts/build_reverb_bundle.sh
 ./scripts/build_sampler_bundle.sh
+./scripts/build_piano_bundle.sh
 # ...
 ```
 

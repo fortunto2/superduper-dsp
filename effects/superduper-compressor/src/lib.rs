@@ -52,7 +52,7 @@ use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
     compressor_gain_db, compressor_gain_db_curve, oversample_apply, CompressorCurve, DelayLine,
-    EnvelopeDetector, Oversampler2x, SmoothedParam,
+    EnvelopeDetector, Oversampler2x, SmoothedParam, OVERSAMPLE_LATENCY,
 };
 
 // ---------------------------------------------------------------------------
@@ -230,7 +230,11 @@ pub struct SharedParamsInner {
     /// latency extension's `get()` impl.
     pub latency_samples: std::sync::atomic::AtomicU32,
     /// Live waveform scope, written by the audio thread + read by GUI.
-    pub scope: ScopeBuf,
+    /// In / out / GR meter history for the GUI (decimated peaks).
+    pub meter: ScopeBuf,
+    /// Raw output, mono — the same LiveScope every plugin has (spectrum
+    /// strip, SuperDuper bus).
+    pub scope: superduper_synth_core::gui::LiveScope,
 }
 
 pub struct PluginShared {
@@ -250,7 +254,8 @@ impl PluginShared {
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 gain_reduction_db: AtomicF32::new(0.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
-                scope: ScopeBuf::new(SCOPE_LEN),
+                meter: ScopeBuf::new(SCOPE_LEN),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
             }),
         }
     }
@@ -366,6 +371,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         let sr = audio_config.sample_rate as f32;
         slog!("activate sr={}", sr);
         // Size the delay line for the max-knob position so we never have
@@ -476,9 +482,17 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // when this value changes; a Relaxed store on a clamped knob is
         // cheap enough to send every block.
         let look_samples_target = sr * 0.001 * lookahead_ms_target.min(MAX_LOOKAHEAD_MS);
+        // An oversampled ceiling delays the wet path by the halfband pair;
+        // the dry tap is read that much further back to match (see the
+        // ceiling block), so the plugin as a whole is that much later too.
+        let os_latency = if ceiling_target < -0.05 {
+            OVERSAMPLE_LATENCY[os_mode as usize]
+        } else {
+            0
+        };
         self.shared
             .latency_samples
-            .store(look_samples_target as u32, Ordering::Relaxed);
+            .store(look_samples_target as u32 + os_latency as u32, Ordering::Relaxed);
 
         let mut max_gr_db: f32 = 0.0;
 
@@ -702,15 +716,23 @@ fn process_stereo_block(
         // halfband decimator buries them. Off mode = native rate, no
         // CPU overhead beyond the comparison. ZLCompressor's Oversample
         // setting drives the same thing.
+        let (mut dry_mix_l, mut dry_mix_r) = (delayed_l, delayed_r);
         if ceiling_db < -0.05 {
             let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
             let clip = |s: f32| ceil_lin * (s / ceil_lin).tanh();
             wet_l = oversample_apply(wet_l, os_mode, &mut p.os1_l, &mut p.os2_l, clip);
             wet_r = oversample_apply(wet_r, os_mode, &mut p.os1_r, &mut p.os2_r, clip);
+            // Oversampling delays wet by OVERSAMPLE_LATENCY; take the dry
+            // for Mix from that much further back or the blend combs.
+            let os_lat = OVERSAMPLE_LATENCY[(os_mode as usize).min(2)] as f32;
+            if os_lat > 0.0 {
+                dry_mix_l = p.look_l.read_lagrange3(look_samples + os_lat);
+                dry_mix_r = p.look_r.read_lagrange3(look_samples + os_lat);
+            }
         }
 
-        let out_l = delayed_l * (1.0 - mix) + wet_l * mix;
-        let out_r = delayed_r * (1.0 - mix) + wet_r * mix;
+        let out_l = dry_mix_l * (1.0 - mix) + wet_l * mix;
+        let out_r = dry_mix_r * (1.0 - mix) + wet_r * mix;
         // M/S decode back to L/R for the host. L = M+S, R = M-S.
         let (final_l, final_r) = if ms_mode {
             (out_l + out_r, out_l - out_r)
@@ -725,6 +747,7 @@ fn process_stereo_block(
         let in_peak = raw_l.abs().max(raw_r.abs());
         let out_peak = final_l.abs().max(final_r.abs());
         push_scope(p, in_peak, out_peak, gr_db);
+        p.shared.scope.push(0.5 * (final_l + final_r));
     }
 }
 
@@ -741,7 +764,7 @@ fn push_scope(p: &mut PluginAudioProcessor<'_>, in_lin: f32, out_lin: f32, gr_db
     if p.scope_acc_count >= SCOPE_HOP {
         let in_db = 20.0 * p.scope_acc_in.max(1e-7).log10();
         let out_db = 20.0 * p.scope_acc_out.max(1e-7).log10();
-        p.shared.scope.push(in_db, out_db, p.scope_acc_gr);
+        p.shared.meter.push(in_db, out_db, p.scope_acc_gr);
         p.scope_acc_in = 0.0;
         p.scope_acc_out = 0.0;
         p.scope_acc_gr = 0.0;
@@ -984,7 +1007,7 @@ impl DefaultPluginFactory for SuperDuperCompressor {
             plugin_display_name!("SuperDuper Compressor"),
         )
         .with_vendor("SuperDuperAI")
-        .with_version(version_string!("0.1"))
+        .with_version(version_string!("0.2"))
         .with_description("Soft-knee feed-forward compressor with lookahead and sidechain HPF")
         .with_features([AUDIO_EFFECT, STEREO, COMPRESSOR])
     }
@@ -992,13 +1015,16 @@ impl DefaultPluginFactory for SuperDuperCompressor {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Compressor — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Compressor", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

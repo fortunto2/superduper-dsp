@@ -1,0 +1,10 @@
+[package]
+name = "sdsp-bus"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Show what every SuperDuper plugin instance is publishing on the shared bus"
+
+[dependencies]
+superduper-dsp-sdk = { path = "../../sdk" }
+serde_json = "1"

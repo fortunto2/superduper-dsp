@@ -7,7 +7,7 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
-## Current state — 31 plugins (25 effects + 6 instruments)
+## Current state — 32 plugins (25 effects + 7 instruments)
 
 **Effects (audio-in, audio-out):**
 
@@ -399,6 +399,37 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   clap (39) without a sound or a warning. GM wins the single collision at
   note 40 (GM Electric Snare vs. white-key E hat). Voices live in
   `synth-core/src/drum_voices.rs` (the crate re-exports them as `voices`).
+  **Sample pads (2026-10-20):** every pad plays its synth voice, a sample, or
+  both — `<Pad> Src` (params 29-34: Synth / Sample / Layer) and `<Pad> Smp`
+  (35-40, index into that pad's slice of the library). The library is
+  `synth_core::drumlib`: one-shots under `~/Music/SuperDuper Samples`,
+  `~/Music/Favorite 808s` and any `/Volumes/*/SuperDuper Samples`, classified
+  **by name and folder only** (two passes: words, then 909/808 machine codes)
+  — the sound-based classifier hit the right pad 44-55 % of the time on
+  KSHMR / 909 / Cassette 808 (`synth-core/examples/drum_classify.rs`), so it
+  stays out of the scan. 1504 one-shots, 0.6 s with the feature cache
+  (`~/.superduper-dsp/drum-library.json`). ◀ ▶ in the GUI browse and play the
+  new sound on arrival; Tune/Decay/Level/Pan apply to samples (Decay → fade
+  τ = 6×). Closed hat chokes open-hat samples. Loader thread like Piano;
+  replaced samples are freed only when no hit still holds them. State keeps
+  each pad's path. **Save kit** writes `~/Music/SFZ/Kits/<name>.sfz` (GM keys,
+  hat choke group) — it opens in SuperDuper Piano. Presets never touch Src/Smp.
+  **Whole-kit params for agents (41-43):** `Kit Pack` (0 manual, N = fill
+  from the N-th pack; text "kshmr" works), `Kit Dice` (0 first sound of each
+  type, else a random kit with that seed), `Kit File` (N-th saved kit). They
+  act when the value changes; project load marks them applied so a saved,
+  hand-edited kit is never rebuilt. GUI: one Kit dropdown (Synth kits /
+  Sample kits per pack / My kits) + 🎲. **Key (44):** Off / C..B / Auto — kick
+  (sample and synth, which sits on A = 55 Hz) and tom/perc pad move to the
+  song key by the shortest way (±6 st), Tune on top. Sample keys: name first,
+  else `drumlib::drum_pitch_hz` (FFT peak of the tail 60-460 ms after the
+  peak; 66 % exact / 83 % ±1 st on 273 named KSHMR kicks, the loudest-slice
+  YIN got 18 %). **Auto** reads the song-key bus `~/.superduper-dsp/song-key`
+  (any text like "F#m"; override `SUPERDUPER_SONG_KEY`), else the most
+  common pitch class of the notes Drum forwards to a bass synth. **Fixed
+  2026-10-20:** the synth Clap's derived Default started mid-clap — every
+  instance clapped once (−23 dB) on its first block; the old snapshot had
+  pinned it. Known, not fixed: Clap bursts ignore velocity.
 - **superduper-sampler** — polyphonic WAV player with YIN pitch tuner,
   multi-mode SVF filter (LP/HP/BP/Notch), reverse playback,
   velocity→amp/cutoff, click-to-audition on the waveform. **8 factory
@@ -406,7 +437,27 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   Vinyl Stab / Sub Bass) — playback character only: `apply_preset` never
   touches the `Sample` slot, which belongs to the session's bank.
 
-All 31 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
+- **superduper-piano** *(new 2026-10-20)* — SFZ multisample player, built for
+  pianos, plays any SFZ pack. Engine is `synth_core::sfz` (parser with stream-order
+  `#define`/`#include`, typed regions + curves, RT-safe voices with sustain pedal,
+  deferred release triggers, keyswitches, CC-triggered regions, `off_by` /
+  `polyphony` / `note_polyphony` chokes; loader behind feature `sfz-load` decodes
+  FLAC/WAV/OGG in parallel into a process-wide i16 cache). **Packs = folders under
+  `~/Music/SFZ/`** (override `SUPERDUPER_PIANO_ROOT`), nothing bundled, Salamander
+  Grand V3 preferred as default. Loader thread waits for the first `activate()` so
+  a plugin scan never decodes; finished `Arc<Instrument>` goes in through
+  `pending`, the old one leaves through `retired` and is dropped off the audio
+  thread. State saves the `.sfz` path (indices shift when packs are added).
+  9 params: Instrument (0..1023), Output, Transpose (moves the KEY, so each note
+  keeps its own sample), Tune, Vel Curve, Release ×, Tone (tilt), Width, Hold
+  (latched pedal). **Verified against sfizz_render 1.2.3 on Salamander:** waveform
+  correlation 0.994, velocity curve within 0.3 dB at v20/60/100/127, one constant
+  +7.35 dB offset = sfizz's default master volume (`synth-core/tests/sfz_salamander.rs`,
+  mutation-checked). Salamander: 1121 regions, 641 samples, 1.3 GB in RAM, 1.2 s
+  load on 8 threads. Not yet: disk streaming, WAV `smpl` loop points, filters/EGs
+  beyond ampeg, CC modulation of already-sounding voices.
+
+All 32 ship as `.clap` bundles with a `[bNNNNN]` build-number suffix
 in their display name. Released for macOS arm64 + Windows x64 via CI.
 
 **Cross-cutting features now in every plugin:**
@@ -499,6 +550,26 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 **Tempo sync** in Kubyz Mouth Rate + Wave LFO Rate — toggle `Sync`,
 pick a `Div` (1/1 ↔ 1/16t, dotted + triplet variants), rate computes
 from host BPM read out of `CoreEventSpace::Transport` events.
+
+## SuperDuper bus (2026-10-20)
+
+Every plugin instance publishes what it hears — RMS, peak, a 32-band
+spectrum (20 Hz-20 kHz, band RMS so bands sum to the total), its host track
+name (CLAP track-info, read at instantiation) and optionally a key — into a
+memory-mapped file `~/.superduper-dsp/bus` (`SUPERDUPER_BUS` overrides).
+`sdk::bus` = layout + `Publisher` / `Reader` (128 slots, CAS-claimed, seqlock
+per slot, 3 s heartbeat → a crashed host's slot is reclaimed). A file because
+every plugin is its own dylib (no shared statics) and outside tools must see
+it too. Publishing is a background thread per instance
+(`synth_core::gui::spawn_bus_publisher`) reading the `LiveScope` every plugin
+already fills — nothing new on the audio thread. `tools/sdsp-bus` prints the
+live table (`--watch`, `--json` for agents). Verified by
+`superduper-eq/tests/bus.rs`: a 1 kHz tone lands in the 974-1209 Hz band at
+−9.0 dB (its RMS), neighbours ≤ −41 dB. That test found EQ, Ambient and
+Saturator pushing L then R blocks into one scope (seams → a −31 dB broadband
+skirt); they now push one channel. Scopes are 4096 samples (85 ms) so the
+low bands resolve. Next: control region (song key, track roles), MCP + OSC
+gateway, Soothe band-wise sidechain keyed from the bus.
 
 ## Headless CLI tools (no REAPER required)
 
@@ -1242,6 +1313,17 @@ and the CFBundleIdentifier. The script also installs to
     the mid-song revert. Formant/tune/vocoder intentionally do NOT latch:
     their silence semantics live in the tracker/param (vowel freeze, pitch
     hold, carrier select).
+
+25. **Measure a "transparent" block's frequency response, not just its
+    output level.** `Oversampler2x` ran an 11-tap halfband over a 6-deep ring
+    and "decimated" by averaging — for months the Saturator's DEFAULT (OS 2×)
+    was an EQ: +5.8 dB at 100 Hz, −7.3 dB at 4 kHz, −24 dB at 15 kHz
+    (re-measured here 2026-10-20 before applying Ildar's fix). Snapshots
+    pinned the broken sound as correct. Fixed with a 55-tap polyphase
+    halfband (flat to 18 kHz), constant Saturator latency 41 via CLAP
+    `latency`, dry path delayed to match; `synth-core/tests/oversampler.rs`
+    pins flatness. Anything mixed through Saturator before that date sounds
+    darker than intended.
 
 ## DSP code style rules — never violate inside `process()`
 

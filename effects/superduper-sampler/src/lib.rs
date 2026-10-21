@@ -212,7 +212,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
                 active_sample: Mutex::new(empty_sample()),
                 library: Mutex::new(Vec::new()),
                 sample_roots: Mutex::new(bank::load_folders_config()),
@@ -412,6 +412,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         cfg: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(cfg.sample_rate as f32);
         init_logging();
         let sr = cfg.sample_rate as f32;
         slog!("activate sr={}", sr);
@@ -835,11 +836,13 @@ impl DefaultPluginFactory for SuperDuperSampler {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             });
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Sampler", &shared.inner, |s| &s.scope);
         Ok(shared)
     }
-    fn new_main_thread<'a>(_host: HostMainThreadHandle<'a>, shared: &'a PluginShared)
+    fn new_main_thread<'a>(mut host: HostMainThreadHandle<'a>, shared: &'a PluginShared)
         -> Result<PluginMainThread<'a>, PluginError>
     {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared, gui_handle: None, gui_resize: gui::new_resize_bridge(),
         })

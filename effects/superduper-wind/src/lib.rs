@@ -201,7 +201,7 @@ impl PluginShared {
                 active_preset: AtomicU32::new(DEFAULT_PRESET as u32),
                 pitch_bend_st: AtomicF32::new(0.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
             }),
         }
     }
@@ -726,6 +726,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         let sr = audio_config.sample_rate as f32;
         slog!("activate sr={}", sr);
         let max_frames = audio_config.max_frames_count as usize;
@@ -1192,13 +1193,16 @@ impl DefaultPluginFactory for SuperDuperWind {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Wind — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Wind", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

@@ -23,6 +23,8 @@ pub mod pitch;
 pub mod pitch_engine; // picks PSOLA or the phase vocoder by measuring the material (shared by superduper-pitch and superduper-tune)
 pub mod pvoc; // STFT phase vocoder — the polyphony-capable engine, and PSOLA's fallback on material with no glottal epoch
 pub mod psola; // TD-PSOLA pitch/formant shifter (extracted from superduper-pitch; shared with superduper-tune + iOS)
+pub mod drumlib; // drum one-shot library: class from name or sound, pad mapping (+ folder scan behind `sfz-load`)
+pub mod sfz; // SFZ multisample engine: parser, regions, voices (+ loader behind `sfz-load`) — SuperDuper Piano
 pub mod spectral;
 pub mod supermass;
 pub mod swiftf0; // SwiftF0 neural pitch tracker, pure-Rust inference (option in superduper-tune)

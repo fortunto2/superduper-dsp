@@ -27,6 +27,8 @@ members = [
     "effects/superduper-chorus",
     "effects/superduper-drum",
     "effects/superduper-sampler",
+    "effects/superduper-piano",
+    "tools/sdsp-bus",
     "effects/superduper-looper",
     "effects/superduper-filter",
     "effects/superduper-midside",

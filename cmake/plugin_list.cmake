@@ -34,6 +34,7 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-chorus|SuperDuperChorus|co.superduperai.chorus|co.superduperai.wrappers.chorus|aufx|sdCh"
     "superduper-drum|SuperDuperDrum|co.superduperai.drum|co.superduperai.wrappers.drum|aumu|sdDr"
     "superduper-sampler|SuperDuperSampler|co.superduperai.sampler|co.superduperai.wrappers.sampler|aumu|sdSl"
+    "superduper-piano|SuperDuperPiano|co.superduperai.piano|co.superduperai.wrappers.piano|aumu|sdPn"
     "superduper-looper|SuperDuperLooper|co.superduperai.looper|co.superduperai.wrappers.looper|aufx|sdLp"
     "superduper-filter|SuperDuperFilter|co.superduperai.filter|co.superduperai.wrappers.filter|aufx|sdFl"
     "superduper-midside|SuperDuperMidSide|co.superduperai.midside|co.superduperai.wrappers.midside|aufx|sdMs"

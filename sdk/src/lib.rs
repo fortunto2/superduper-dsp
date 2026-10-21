@@ -44,6 +44,7 @@
 
 pub mod dsp;
 pub mod build_meta;
+pub mod bus; // shared-memory bus: every instance publishes level + spectrum (+ key); anyone reads
 pub mod clap_helpers;
 pub mod denormals;
 pub mod log;

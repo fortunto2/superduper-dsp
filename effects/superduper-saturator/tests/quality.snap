@@ -1,9 +1,9 @@
 # Quality snapshot for saturator. Regenerate deliberately:
 #   SDSP_UPDATE_SNAPSHOTS=1 cargo test -p superduper-saturator --test quality
 # A change here is a change in how the plugin sounds.
-aliasing_18k_db = -19.367
-noise_gain_db = 2.547
-noise_max_step = 0.893
+aliasing_18k_db = -28.935
+noise_gain_db = 2.494
+noise_max_step = 0.793
 param_00_drive_default = 6.000
 param_00_drive_max = 36.000
 param_00_drive_min = 0.000
@@ -23,13 +23,13 @@ param_05_os_default = 1.000
 param_05_os_max = 2.000
 param_05_os_min = 0.000
 params_count = 6.000
-tone_band_air = -41.081
-tone_band_body = -80.764
-tone_band_kick = -94.230
-tone_band_low = -101.395
+tone_band_air = -37.168
+tone_band_body = -80.359
+tone_band_kick = -91.429
+tone_band_low = -96.110
 tone_band_mid = 0.000
-tone_band_presence = -22.281
-tone_band_sub = -80.405
-tone_gain_db = 4.700
-tone_peak_db = -1.830
-tone_thd_db = -22.258
+tone_band_presence = -19.132
+tone_band_sub = -79.288
+tone_gain_db = 0.818
+tone_peak_db = -5.891
+tone_thd_db = -19.082

@@ -150,7 +150,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
                 latency_samples: AtomicU32::new(0),
                 detected_hz: AtomicF32::new(0.0),
                 correction_st: AtomicF32::new(0.0),
@@ -283,6 +283,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         let sr = audio_config.sample_rate as f32;
         let max_frames = audio_config.max_frames_count as usize;
         let mut tune = Box::new(Tune::new(sr, max_frames));
@@ -660,13 +661,16 @@ impl DefaultPluginFactory for SuperDuperTune {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
         init_logging();
         slog!("new_shared: Tune — build {} ({})", build_num!(), build_date!());
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Tune", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

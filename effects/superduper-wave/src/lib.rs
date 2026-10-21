@@ -257,7 +257,7 @@ impl PluginShared {
                 cc_volume: AtomicF32::new(1.0),
                 host_bpm: AtomicF32::new(120.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
                 midi_learn: superduper_synth_core::gui::MidiLearnState::new(),
             }),
         }
@@ -931,6 +931,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         let sr = audio_config.sample_rate as f32;
         slog!("activate sr={}", sr);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
@@ -1447,12 +1448,14 @@ impl DefaultPluginFactory for SuperDuperWave {
             let mips: Vec<_> = frames.iter().map(|f| osc::mip_from_table(f)).collect();
             push_custom_frames(&shared, mips);
         }
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Wave", &shared.inner, |s| &s.scope);
         Ok(shared)
     }
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

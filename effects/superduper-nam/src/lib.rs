@@ -168,7 +168,7 @@ impl PluginShared {
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
-                scope: superduper_synth_core::gui::LiveScope::new(1024),
+                scope: superduper_synth_core::gui::LiveScope::new(4096),
                 current_model_name: parking_lot::Mutex::new("Warm Tube (built-in)".into()),
                 pending_net: parking_lot::Mutex::new(None),
             }),
@@ -238,6 +238,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared: &'a PluginShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
         slog!("activate sr={}", audio_config.sample_rate);
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         // If the user has a community .nam in their library, default to
@@ -623,13 +624,16 @@ impl DefaultPluginFactory for SuperDuperNam {
             build_num!(),
             build_date!()
         );
-        Ok(PluginShared::new())
+        let shared = PluginShared::new();
+        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper NAM", &shared.inner, |s| &s.scope);
+        Ok(shared)
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
+        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
             gui_handle: None,

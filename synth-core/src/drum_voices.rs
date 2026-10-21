@@ -222,7 +222,7 @@ impl HiHat {
 // CLAP — burst of three noise hits 7 ms apart then a longer noise tail.
 // ---------------------------------------------------------------------------
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct Clap {
     burst_env: OneShotEnv,
     tail_env: OneShotEnv,
@@ -232,6 +232,25 @@ pub struct Clap {
     noise: Noise,
     bp: OnePoleBp,
     cached_freq: f32,
+}
+
+/// Not derived: a derived Default has `burst_count = 0`, which `process()`
+/// reads as "a clap is starting" — every fresh instance clapped once on its
+/// first block with no note at all (−23 dB, found 2026-10-20). A new Clap is
+/// one whose bursts are already spent.
+impl Default for Clap {
+    fn default() -> Self {
+        Self {
+            burst_env: OneShotEnv::default(),
+            tail_env: OneShotEnv::default(),
+            burst_count: 3,
+            burst_samples_remaining: 0,
+            burst_total: 0,
+            noise: Noise::default(),
+            bp: OnePoleBp::default(),
+            cached_freq: 0.0,
+        }
+    }
 }
 
 impl Clap {
@@ -434,5 +453,21 @@ pub fn note_to_voice_with(map: NoteMap, key: u8) -> Option<VoiceKind> {
         NoteMap::Auto => note_to_voice_auto(key),
         NoteMap::WhiteKeys => note_to_voice(key),
         NoteMap::Gm => note_to_voice_gm(key),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_voices_are_silent_until_triggered() {
+        let p = DrumParams { tune_st: 0.0, decay_s: 0.3, level: 1.0, pan: 0.0 };
+        let mut clap = Clap::default();
+        let peak = (0..4800).map(|_| clap.process(48_000.0, p).abs()).fold(0f32, f32::max);
+        assert_eq!(peak, 0.0, "an untriggered clap made sound");
+        clap.trigger(1.0);
+        let peak = (0..4800).map(|_| clap.process(48_000.0, p).abs()).fold(0f32, f32::max);
+        assert!(peak > 0.05, "a triggered clap is silent: {peak}");
     }
 }

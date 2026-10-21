@@ -12,7 +12,13 @@
 //!
 //! **RT-safe:** all buffers + FFT plans are allocated in [`StftProcessor::new`];
 //! [`process_sample`](StftProcessor::process_sample) never allocates. Latency =
-//! `N − hop` (reported by the caller via the CLAP latency extension).
+//! `N − hop` is what `latency()` returns and what the callers report to the
+//! host — but an impulse comes out exactly `N` samples late (pinned by
+//! `latency_probe` below; Morph measured the same and delays its dry by N).
+//! `latency` is also the ring geometry (rover reset, output read offset), so
+//! it cannot simply be set to N: fixing the report means a separate field and
+//! re-aligning Pitch's and the Vocoder's dry paths — tracked in
+//! docs/plan/bus-key.md.
 //!
 //! ## Normalisation
 //! Hann analysis × Hann synthesis at hop `N/osamp` overlap-adds to a constant
@@ -243,5 +249,27 @@ pub fn smooth_proportional(src: &[f32], dst: &mut [f32], frac: f32, prefix: &mut
         let lo = k.saturating_sub(w);
         let hi = (k + w).min(n - 1);
         dst[k] = ((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1) as f64) as f32;
+    }
+}
+
+#[cfg(test)]
+mod latency_probe {
+    use super::*;
+
+    /// Where does an impulse come out of a pass-through processor? One full
+    /// window late — `hop` more than `latency()` says. Pinned so the report
+    /// gets fixed deliberately, not by accident.
+    #[test]
+    fn impulse_comes_out_one_window_late_not_at_reported_latency() {
+        let (n, hop) = (2048, 512);
+        let mut p = StftProcessor::new(48_000.0, n, hop, 1);
+        let mut out = Vec::new();
+        for i in 0..4 * n {
+            let x = if i == 1000 { 1.0 } else { 0.0 };
+            out.push(p.process_sample(&[x], |ins, o| o.copy_from_slice(ins[0])));
+        }
+        let at = out.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).map(|(i, _)| i).unwrap();
+        assert_eq!(at - 1000, p.n(), "peak {} samples late (reported {})", at - 1000, p.latency());
+        assert_eq!(p.latency(), p.n() - hop, "the report is still N − hop; see the module doc");
     }
 }

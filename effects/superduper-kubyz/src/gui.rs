@@ -85,6 +85,8 @@ struct GuiState {
     selected_user_preset: Option<usize>,
     /// Transient "Saved!" / "Load failed: …" toast under the toolbar.
     last_io_msg: Option<(String, std::time::Instant)>,
+    /// Selection / drag of the formant editor.
+    formant_editor: crate::formant_editor::EditorState,
 }
 
 pub fn open_window<P: HasRawWindowHandle>(
@@ -115,6 +117,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         user_presets,
         selected_user_preset: None,
         last_io_msg: None,
+        formant_editor: Default::default(),
     };
     EguiWindow::open_parented(
         parent,
@@ -268,6 +271,15 @@ fn draw_vowel_pad(ui: &mut egui::Ui, shared: &SharedParams, rect: egui::Rect) {
     let cur_p = to_screen(cur_f1, cur_f2);
     painter.circle_filled(cur_p, 6.0, core_gui::GREEN_DIM);
     painter.circle_stroke(cur_p, 7.0, egui::Stroke::new(1.0, core_gui::GREEN));
+    // Hz next to the dot, so the pad reads against a mix analyser too.
+    let right_half = cur_p.x > rect.center().x;
+    painter.text(
+        egui::pos2(cur_p.x + if right_half { -10.0 } else { 10.0 }, cur_p.y + 10.0),
+        if right_half { egui::Align2::RIGHT_TOP } else { egui::Align2::LEFT_TOP },
+        format!("F1 {cur_f1:.0} · F2 {cur_f2:.0} Hz"),
+        egui::FontId::monospace(9.0),
+        core_gui::GREEN_BRIGHT,
+    );
 
     // Trajectory overlay — only visible when MouthDepth > 0. Sample the
     // shape at 64 points and draw the closed curve, then put a bright
@@ -375,6 +387,8 @@ fn snapshot_kubyz_preset(
             harmonics,
             formant_bw: std::array::from_fn(|i| shared.formant_bw[i].load(Ordering::Relaxed)),
             formant_gain: std::array::from_fn(|i| shared.formant_gain[i].load(Ordering::Relaxed)),
+            formant_count: crate::formants::count(shared) as u32,
+            formant_free: crate::formants::snapshot_free(shared),
         },
     }
 }
@@ -446,6 +460,11 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                             state.shared.formant_gain[i]
                                 .store(preset.extra.formant_gain[i], Ordering::Relaxed);
                         }
+                        crate::formants::restore_free(
+                            &state.shared,
+                            preset.extra.formant_count,
+                            &preset.extra.formant_free,
+                        );
                         state.selected_user_preset = Some(i);
                         state.last_io_msg =
                             Some((format!("Loaded '{name}'"), std::time::Instant::now()));
@@ -540,6 +559,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         ui.add_space(8.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            core_gui::section(ui, "Formants (drag to shape)", |ui| {
+                ui.weak(format!(
+                    "{} of {} bands  ·  drag hill = freq/gain (Shift: freq only)  ·  drag ■ = width  ·  \
+                     double-click = add  ·  right-click / Del = remove",
+                    crate::formants::count(&state.shared),
+                    crate::formants::MAX_FORMANTS,
+                ));
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 200.0),
+                    egui::Sense::hover(),
+                );
+                crate::formant_editor::draw(ui, &state.shared, rect, &mut state.formant_editor);
+            });
             core_gui::section(ui, "Vowel (formant pad)", |ui| {
                 let cur_f1 = state.shared.params[P_F1].load(Ordering::Relaxed);
                 let cur_f2 = state.shared.params[P_F2].load(Ordering::Relaxed);
@@ -653,8 +685,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     (
                         "What it is",
                         "Physical-model jaw harp / khomus. 16-harmonic additive engine \
-                         shaped by a 3-band formant filter you drive with an IPA vowel \
-                         pad. Played by MIDI; pitch = drone note, articulation = mouth \
+                         shaped by a 1–6 band formant filter: drag the hills in the \
+                         Formants editor, or drive F1/F2 with the IPA vowel pad. Played by MIDI; pitch = drone note, articulation = mouth \
                          trajectory.",
                     ),
                     (

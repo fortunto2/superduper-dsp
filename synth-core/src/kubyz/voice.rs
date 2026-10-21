@@ -1,4 +1,4 @@
-//! Kubyz voice — additive 16-harmonic oscillator + ADSR + 3-band formant.
+//! Kubyz voice — additive 16-harmonic oscillator + ADSR + 1–6 band formant bank.
 //!
 //! Why additive instead of a wavetable: kubyz/khomus tone has a sharp
 //! resonant character that's defined as much by the *which harmonics*
@@ -7,8 +7,8 @@
 //! between presets (and let the user redraw harmonics live).
 
 use crate::dsp_blocks::{AdsrEnvelope, DcBlocker};
-use crate::formant::Formant;
 
+use super::formant_bank::{FormantBands, FormantBank};
 use super::N_HARMONICS;
 
 /// One playable kubyz voice. Holds 16 sine-osc phases, the formant stage
@@ -16,7 +16,7 @@ use super::N_HARMONICS;
 #[derive(Clone, Copy)]
 pub struct KubyzVoice {
     phases: [f32; N_HARMONICS],
-    formant: Formant,
+    formant: FormantBank,
     /// First-order high-pass after the formant stack — catches any DC
     /// the tanh/BPF chain might leave behind, which otherwise reads as
     /// a quiet background rumble.
@@ -59,7 +59,7 @@ impl Default for KubyzVoice {
     fn default() -> Self {
         Self {
             phases: [0.0; N_HARMONICS],
-            formant: Formant::default(),
+            formant: FormantBank::default(),
             dc_block_l: DcBlocker::default(),
             dc_block_r: DcBlocker::default(),
             env: AdsrEnvelope::default(),
@@ -88,7 +88,7 @@ impl KubyzVoice {
     /// the ADSR's attack — which kills any residual click no matter
     /// how short the user set Attack to.
     pub fn on_note_on(&mut self, sample_rate: f32) {
-        let phi = 0.618_033_988_5_f32;
+        let phi = 0.618_034_f32;
         let mut p = 0.137_f32;
         for ph in self.phases.iter_mut() {
             *ph = p;
@@ -106,9 +106,9 @@ pub struct KubyzParams<'a> {
     pub sr: f32,
     pub root_hz: f32,
     pub harmonics: &'a [f32; N_HARMONICS],
-    pub formant_f: [f32; 3],
-    pub formant_bw: [f32; 3],
-    pub formant_gain: [f32; 3],
+    /// Formant centres / widths / gains and the live band count (1..=6).
+    /// `FormantBands::three(f, bw, gain)` builds the classic 3-band set.
+    pub formants: FormantBands,
     pub formant_mix: f32,
     /// Velocity-coupled formant shift: at vel=1, multiplies each F by
     /// `1 + velocity_formant_shift`. Matches KubyzVoice.swift.
@@ -144,14 +144,14 @@ impl KubyzVoice {
 
         // 3. Velocity-shifted formant frequencies.
         let shift = 1.0 + self.velocity * p.velocity_formant_shift;
-        let f = [
-            p.formant_f[0] * shift,
-            p.formant_f[1] * shift,
-            p.formant_f[2] * shift,
-        ];
+        let mut bands = p.formants;
+        let live = bands.live();
+        for f in bands.f.iter_mut().take(live) {
+            *f *= shift;
+        }
 
         // 4. Apply formant (mix=0 = bypass, audible only when user opens it).
-        self.formant.process(drive, drive, p.sr, f, p.formant_bw, p.formant_gain, p.formant_mix)
+        self.formant.process(drive, drive, p.sr, &bands, p.formant_mix)
     }
 
     /// Public render entry point — wraps `process_inner` with the on-note

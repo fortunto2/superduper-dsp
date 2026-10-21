@@ -2,7 +2,8 @@
 //!
 //! Architecture mirrors Pad/Wave: 8-voice pool, sample-accurate batching,
 //! click-free voice steal, soft-fade choke. DSP is additive-16-harmonics
-//! plus a 3-band formant (matches KubizBeat's KubyzVoice.swift).
+//! plus a 1–6 band formant bank (3 by default, matching KubizBeat's
+//! KubyzVoice.swift; the GUI's formant editor adds / removes bands).
 //!
 //! Harmonic amplitudes are kept in a `Mutex<[f32; N_HARMONICS]>` on the
 //! Shared so the GUI can let the user draw them live. Presets ship as
@@ -10,6 +11,8 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod formant_editor; // direct-manipulation formant shapes (drag / stretch / add / remove)
+pub mod formants; // the 1–6 band formant set: model + atomics + persistence glue
 pub mod gui;
 pub mod mail; // harmonics + formants as a bus-mailbox document for agents
 pub mod presets;
@@ -41,7 +44,7 @@ use clack_extensions::state::{PluginState, PluginStateImpl};
 use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
-use parking_lot::Mutex;
+
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use superduper_dsp_sdk::clap_helpers::ParamDef;
@@ -53,6 +56,7 @@ fn init_logging() { superduper_dsp_sdk::log::init("kubyz"); }
 use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams, SmoothedParam, midi_note_to_hz};
 
 use presets::{presets, KubyzPreset, N_HARMONICS, PRESET_COUNT};
+use superduper_synth_core::kubyz::formant_bank::FormantBands;
 use voice::{KubyzParams, KubyzVoice, NOTE_FREE};
 
 // ---------------------------------------------------------------------------
@@ -156,8 +160,18 @@ pub struct SharedParamsInner {
     /// apply and state load — so a preset recall while notes were playing
     /// could block the callback. Same treatment `harmonics` above already had,
     /// and the codebase's own rule: atomics only inside process().
-    pub formant_bw: [AtomicF32; 3],
-    pub formant_gain: [AtomicF32; 3],
+    ///
+    /// Sized for the editor's maximum of six bands; slots ≥ `formant_count`
+    /// are kept (so removing and re-adding restores a band) but not heard.
+    pub formant_bw: [AtomicF32; formants::MAX_FORMANTS],
+    pub formant_gain: [AtomicF32; formants::MAX_FORMANTS],
+    /// Centres of formant bands 4–6. Bands 1–3 are the F1/F2/F3 params.
+    pub formant_hi_f: [AtomicF32; formants::MAX_FORMANTS - formants::PARAM_BANDS],
+    /// Live formant bands, 1..=6. 3 for every pre-editor project and preset.
+    pub formant_count: AtomicU32,
+    /// MIDI key of the most recent note (written by the audio thread on
+    /// NoteOn). The formant editor draws the 16 harmonics at this pitch.
+    pub last_key: AtomicU32,
     /// Continuously-advanced LFO phase for the mouth trajectory — the
     /// audio thread bumps it once per sample at MouthRate, the GUI reads
     /// it to animate the cursor on the vowel pad.
@@ -197,12 +211,21 @@ pub struct PluginShared {
     pub inner: SharedParams,
 }
 
+/// Band `i` of a 3-band preset, with the free-slot defaults above it.
+fn init_band(p: &KubyzPreset, i: usize) -> formants::Band {
+    if i < formants::PARAM_BANDS {
+        formants::Band { f: p.formant.f[i], bw: p.formant.bw[i], gain: p.formant.gain[i] }
+    } else {
+        formants::FREE_DEFAULTS[i - formants::PARAM_BANDS]
+    }
+}
+
 impl PluginShared {
     pub fn new() -> Self {
         // Bashkir as the default landing patch — it's the most representative
         // jaw-harp tone in the library and the one the user reaches for first.
         let init = &presets()[1];
-        let mut params = std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32));
+        let params = std::array::from_fn(|i| AtomicF32::new(PARAMS[i].default as f32));
         // Pre-load the preset's formant / envelope so the loaded plugin
         // already sounds like Bashkir without the user having to pick it.
         params[P_F1].store(init.formant.f[0], Ordering::Relaxed);
@@ -221,8 +244,12 @@ impl PluginShared {
                 bypass: AtomicBool::new(false),
                 active_voices: AtomicU32::new(0),
                 harmonics,
-                formant_bw: std::array::from_fn(|i| AtomicF32::new(init.formant.bw[i])),
-                formant_gain: std::array::from_fn(|i| AtomicF32::new(init.formant.gain[i])),
+                formant_bw: std::array::from_fn(|i| AtomicF32::new(init_band(init, i).bw)),
+                formant_gain: std::array::from_fn(|i| AtomicF32::new(init_band(init, i).gain)),
+                formant_hi_f: std::array::from_fn(|j| AtomicF32::new(formants::FREE_DEFAULTS[j].f)),
+                formant_count: AtomicU32::new(formants::DEFAULT_COUNT as u32),
+                // D2 — the typical kubyz pitch — until the first note arrives.
+                last_key: AtomicU32::new(50),
                 mouth_phase: AtomicF32::new(0.0),
                 dirty_params: std::array::from_fn(|_| AtomicBool::new(false)),
                 gesture_begin: std::array::from_fn(|_| AtomicBool::new(false)),
@@ -276,6 +303,9 @@ pub fn apply_preset(shared: &SharedParamsInner, preset: &KubyzPreset) {
         shared.formant_bw[i].store(preset.formant.bw[i], Ordering::Relaxed);
         shared.formant_gain[i].store(preset.formant.gain[i], Ordering::Relaxed);
     }
+    // Factory presets are 3-band: recalling one drops any added bands (they
+    // stay in their slots, silent, until the editor adds a band again).
+    shared.formant_count.store(formants::DEFAULT_COUNT as u32, Ordering::Relaxed);
     // Tell the audio thread every CLAP param changed so it emits a
     // ParamValue event to the host — preset picks become automation too.
     for flag in shared.dirty_params.iter() {
@@ -353,7 +383,22 @@ pub struct PluginAudioProcessor<'a> {
     smooth_bright: SmoothedParam,
     smooth_output: SmoothedParam,
     smooth_cc_vol: SmoothedParam,
+    /// Slewed formant gains (6) and band 4–6 centres (3). Gains of bands
+    /// beyond `formant_count` slew to 0 before the band is dropped, so
+    /// removing a formant in the editor fades instead of clicking.
+    formant_gain_s: [f32; formants::MAX_FORMANTS],
+    formant_hi_s: [f32; formants::MAX_FORMANTS - formants::PARAM_BANDS],
     sample_rate: f32,
+}
+
+/// Formant targets read once per event batch (atomics only), handed to
+/// `render_subblock`. Bands 1–3 centres travel as the F1–F3 params.
+#[derive(Clone, Copy)]
+struct FormantTargets {
+    hi_f: [f32; formants::MAX_FORMANTS - formants::PARAM_BANDS],
+    bw: [f32; formants::MAX_FORMANTS],
+    gain: [f32; formants::MAX_FORMANTS],
+    count: usize,
 }
 
 #[inline]
@@ -400,8 +445,10 @@ impl<'a> PluginAudioProcessor<'a> {
             v.env.gate_on();
             v.choke_remaining = 0;
             v.on_note_on(sr);
+            self.shared.last_key.store(key as u32, Ordering::Relaxed);
             return;
         }
+        self.shared.last_key.store(key as u32, Ordering::Relaxed);
         // 3. Steal — quietest releasing, else oldest. Skip voices already in a
         // deferred-steal fade (`choke_remaining > 0`): re-choking one resets its
         // ramp (a click) and clobbers the note parked on it. It frees in ~4 ms.
@@ -597,9 +644,12 @@ impl<'a> PluginAudioProcessor<'a> {
         vox_target: f32, bright_target: f32, output_target: f32,
         attack_s: f32, decay_s: f32, sustain: f32, release_s: f32,
         vel_shift: f32,
-        formant_bw: [f32; 3], formant_gain: [f32; 3],
+        ft: FormantTargets,
     ) {
         let sr = self.sample_rate;
+        // Same 5 ms one-pole as SmoothedParam, coefficient hoisted out of the
+        // sample loop (nine more `exp` per sample would be pure waste).
+        let slew = (-1.0 / (0.005 * sr)).exp();
         // Snapshot current harmonic table and scale by Bright.
         let mut harmonics = [0.0_f32; N_HARMONICS];
         for i in 0..N_HARMONICS {
@@ -651,6 +701,7 @@ impl<'a> PluginAudioProcessor<'a> {
             let f3 = self.smooth_f3.step(f3_target, sr);
             let f1 = (f1_c + dy).clamp(80.0, 1500.0);
             let f2 = (f2_c + dx).clamp(200.0, 3500.0);
+            let formant_bands = self.step_formants(&ft, [f1, f2, f3], slew);
             let vox = self.smooth_vox.step(vox_target, sr).clamp(0.0, 1.0);
             let bright = self.smooth_bright.step(bright_target, sr).max(0.0);
             let output_db = self.smooth_output.step(output_target, sr);
@@ -677,9 +728,7 @@ impl<'a> PluginAudioProcessor<'a> {
                     sr,
                     root_hz: root,
                     harmonics: &h_scaled,
-                    formant_f: [f1, f2, f3],
-                    formant_bw,
-                    formant_gain,
+                    formants: formant_bands,
                     formant_mix: vox,
                     velocity_formant_shift: vel_shift,
                 };
@@ -759,6 +808,29 @@ impl<'a> PluginAudioProcessor<'a> {
         self.shared.mouth_phase.store(mouth_phase, Ordering::Relaxed);
     }
 
+    /// Advance the formant slews one sample and assemble the bank's input.
+    /// The rendered band count is the live count, extended while a removed
+    /// band's gain is still fading out.
+    #[inline]
+    fn step_formants(&mut self, ft: &FormantTargets, f123: [f32; 3], slew: f32) -> FormantBands {
+        let mut render = ft.count;
+        for i in 0..formants::MAX_FORMANTS {
+            let target = if i < ft.count { ft.gain[i] } else { 0.0 };
+            let g = &mut self.formant_gain_s[i];
+            *g = target + (*g - target) * slew;
+            if i >= ft.count && g.abs() > 1e-4 {
+                render = i + 1;
+            }
+        }
+        for (s, t) in self.formant_hi_s.iter_mut().zip(ft.hi_f) {
+            *s = t + (*s - t) * slew;
+        }
+        let mut f = [0.0_f32; formants::MAX_FORMANTS];
+        f[..3].copy_from_slice(&f123);
+        f[3..].copy_from_slice(&self.formant_hi_s);
+        FormantBands { f, bw: ft.bw, gain: self.formant_gain_s, count: render }
+    }
+
     fn count_active(&self) -> u32 {
         self.voices
             .iter()
@@ -792,6 +864,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_bright: SmoothedParam::new(load(P_BRIGHT)),
             smooth_output: SmoothedParam::new(load(P_OUTPUT)),
             smooth_cc_vol: SmoothedParam::new(1.0),
+            formant_gain_s: std::array::from_fn(|i| {
+                if i < formants::count(shared) {
+                    shared.formant_gain[i].load(Ordering::Relaxed)
+                } else {
+                    0.0
+                }
+            }),
+            formant_hi_s: std::array::from_fn(|j| shared.formant_hi_f[j].load(Ordering::Relaxed)),
             sample_rate: sr,
         })
     }
@@ -891,10 +971,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 let sustain = self.shared.params[P_SUSTAIN].load(Ordering::Relaxed);
                 let release = self.shared.params[P_RELEASE].load(Ordering::Relaxed);
                 let vel_shift = self.shared.params[P_VEL_SHIFT].load(Ordering::Relaxed);
-                let formant_bw: [f32; 3] =
-                    std::array::from_fn(|i| self.shared.formant_bw[i].load(Ordering::Relaxed));
-                let formant_gain: [f32; 3] =
-                    std::array::from_fn(|i| self.shared.formant_gain[i].load(Ordering::Relaxed));
+                let ft = FormantTargets {
+                    hi_f: std::array::from_fn(|j| self.shared.formant_hi_f[j].load(Ordering::Relaxed)),
+                    bw: std::array::from_fn(|i| self.shared.formant_bw[i].load(Ordering::Relaxed)),
+                    gain: std::array::from_fn(|i| self.shared.formant_gain[i].load(Ordering::Relaxed)),
+                    count: formants::count(self.shared),
+                };
 
                 self.render_subblock(
                     &mut out_l[start..end],
@@ -902,7 +984,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     f1, f2, f3, vox, bright, output,
                     attack, decay, sustain, release,
                     vel_shift,
-                    formant_bw, formant_gain,
+                    ft,
                 );
             }
             // Anything past the first two channels gets silence. The
@@ -1029,6 +1111,14 @@ struct KubyzState {
     /// project reopen. Optional in JSON for backward compat with v1/v2.
     #[serde(default)]
     active_preset: u32,
+    /// Live formant bands (1..=6). Absent in pre-editor saves → 3.
+    #[serde(default = "formants::default_count")]
+    formant_count: u32,
+    /// Bands 4–6 (centre/bw/gain). Absent in pre-editor saves → slots keep
+    /// their defaults. `formant_bw` / `formant_gain` above stay 3 long so a
+    /// project saved here still opens in an older build (it ignores these).
+    #[serde(default)]
+    formant_free: Vec<formants::Band>,
 }
 
 const STATE_VERSION: u32 = 2;
@@ -1048,6 +1138,8 @@ impl PluginStateImpl for PluginMainThread<'_> {
             bypass: self.shared.bypass.load(Ordering::Relaxed),
             midi_learn: self.shared.midi_learn.snapshot(),
             active_preset: self.shared.active_preset.load(Ordering::Relaxed),
+            formant_count: formants::count(&self.shared.inner) as u32,
+            formant_free: formants::snapshot_free(&self.shared.inner),
         };
         serde_json::to_writer(output, &state).map_err(|_| PluginError::Message("state JSON error"))
     }
@@ -1077,6 +1169,7 @@ impl PluginStateImpl for PluginMainThread<'_> {
         self.shared.bypass.store(state.bypass, Ordering::Relaxed);
         self.shared.midi_learn.replace(&state.midi_learn);
         self.shared.active_preset.store(state.active_preset, Ordering::Relaxed);
+        formants::restore_free(&self.shared.inner, state.formant_count, &state.formant_free);
         Ok(())
     }
 }
@@ -1161,7 +1254,7 @@ impl DefaultPluginFactory for SuperDuperKubyz {
         )
         .with_vendor("SuperDuperAI")
         .with_version(version_string!("0.1"))
-        .with_description("Bashkir/Yakut jaw-harp synth — additive 16-harmonic + 3-band formant")
+        .with_description("Bashkir/Yakut jaw-harp synth — additive 16-harmonic + 1–6 band formant")
         .with_features([INSTRUMENT, STEREO, SYNTHESIZER])
     }
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<PluginShared, PluginError> {
@@ -1185,6 +1278,7 @@ impl DefaultPluginFactory for SuperDuperKubyz {
                 shared.formant_bw[i].store(preset.extra.formant_bw[i], Ordering::Relaxed);
                 shared.formant_gain[i].store(preset.extra.formant_gain[i], Ordering::Relaxed);
             }
+            formants::restore_free(&shared.inner, preset.extra.formant_count, &preset.extra.formant_free);
         }
         superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Kubyz", &shared.inner, |s| &s.scope, Some(mail::handle));
         Ok(shared)
@@ -1213,5 +1307,59 @@ fn _meta() -> (&'static str, &'static str) {
 impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
     fn changed(&self) {
         self.track_watch.refresh();
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    /// A project saved before the formant editor: no count, no free bands.
+    #[test]
+    fn pre_editor_state_loads_as_three_bands() {
+        let json = r#"{"version":2,"params":[705.0,1301.0,2165.0],"harmonics":[1.0],
+            "formant_bw":[200.0,300.0,400.0],"formant_gain":[1.0,0.9,0.75],"bypass":false}"#;
+        let st: KubyzState = serde_json::from_str(json).expect("old state parses");
+        assert_eq!(st.formant_count, 3);
+        assert!(st.formant_free.is_empty());
+        let shared = PluginShared::new();
+        shared.formant_count.store(5, Ordering::Relaxed);
+        formants::restore_free(&shared.inner, st.formant_count, &st.formant_free);
+        assert_eq!(formants::count(&shared.inner), 3);
+    }
+
+    /// New state survives save → load, and still parses as the old shape
+    /// (the 3-long arrays are untouched, extra fields are just ignored there).
+    #[test]
+    fn six_band_state_round_trips() {
+        let shared = PluginShared::new();
+        let mut set = formants::load(&shared.inner);
+        set.insert_sorted(formants::Band { f: 2900.0, bw: 350.0, gain: 0.6 }).unwrap();
+        set.insert_sorted(formants::Band { f: 4100.0, bw: 500.0, gain: 0.4 }).unwrap();
+        formants::store(&shared.inner, &set);
+        let st = KubyzState {
+            version: STATE_VERSION,
+            params: shared.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+            harmonics: vec![],
+            formant_bw: std::array::from_fn(|i| shared.formant_bw[i].load(Ordering::Relaxed)),
+            formant_gain: std::array::from_fn(|i| shared.formant_gain[i].load(Ordering::Relaxed)),
+            bypass: false,
+            midi_learn: vec![],
+            active_preset: 1,
+            formant_count: formants::count(&shared.inner) as u32,
+            formant_free: formants::snapshot_free(&shared.inner),
+        };
+        let json = serde_json::to_string(&st).unwrap();
+        let back: KubyzState = serde_json::from_str(&json).unwrap();
+        let fresh = PluginShared::new();
+        for (i, v) in back.params.iter().enumerate() {
+            fresh.params[i].store(*v, Ordering::Relaxed);
+        }
+        for i in 0..3 {
+            fresh.formant_bw[i].store(back.formant_bw[i], Ordering::Relaxed);
+            fresh.formant_gain[i].store(back.formant_gain[i], Ordering::Relaxed);
+        }
+        formants::restore_free(&fresh.inner, back.formant_count, &back.formant_free);
+        assert_eq!(formants::load(&fresh.inner), set);
     }
 }

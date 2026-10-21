@@ -42,6 +42,7 @@
 //! 53 dB тише неё (излучатель мал относительно длины волны 68.93 Гц), и
 //! только после горба идёт -12.6 dB/окт. Разбор с atlas-relay на доске.
 
+use superduper_synth_core::kubyz::formant_bank::FormantBands;
 use superduper_synth_core::kubyz::voice::{KubyzParams, KubyzVoice};
 use superduper_synth_core::kubyz::N_HARMONICS;
 
@@ -101,9 +102,7 @@ fn main() {
                     sr: SR,
                     root_hz: ROOT_HZ,
                     harmonics: &harmonics,
-                    formant_f: [f1, f2, f3],
-                    formant_bw: bw,
-                    formant_gain: gain,
+                    formants: FormantBands::three([f1, f2, f3], bw, gain),
                     formant_mix: 1.0,
                     velocity_formant_shift: 0.0, // velocity одинакова во всех сериях
                 });

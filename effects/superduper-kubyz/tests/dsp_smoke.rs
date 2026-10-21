@@ -2,6 +2,7 @@
 
 use superduper_kubyz::presets::{presets, N_HARMONICS};
 use superduper_kubyz::voice::{KubyzParams, KubyzVoice};
+use superduper_synth_core::kubyz::formant_bank::FormantBands;
 use superduper_synth_core::dsp_blocks::{AdsrEnvelope, AdsrParams, midi_note_to_hz};
 
 const SR: f32 = 48_000.0;
@@ -18,9 +19,7 @@ fn voice_produces_audio_on_held_note() {
         sr: SR,
         root_hz: midi_note_to_hz(50.0),
         harmonics: &preset.harmonics,
-        formant_f: preset.formant.f,
-        formant_bw: preset.formant.bw,
-        formant_gain: preset.formant.gain,
+        formants: FormantBands::three(preset.formant.f, preset.formant.bw, preset.formant.gain),
         formant_mix: 0.6,
         velocity_formant_shift: preset.velocity_formant_shift,
     };
@@ -76,9 +75,7 @@ fn velocity_shifts_formant_frequencies() {
         sr: SR,
         root_hz: midi_note_to_hz(50.0),
         harmonics: &preset.harmonics,
-        formant_f: preset.formant.f,
-        formant_bw: preset.formant.bw,
-        formant_gain: preset.formant.gain,
+        formants: FormantBands::three(preset.formant.f, preset.formant.bw, preset.formant.gain),
         formant_mix: 1.0,
         velocity_formant_shift: 0.4,
     };

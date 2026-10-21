@@ -18,6 +18,7 @@ use superduper_synth_core::dsp_blocks::{
 use superduper_synth_core::drum_voices::{
     note_to_voice, Clap, Cowbell, DrumParams, HiHat, Kick, Snare, VoiceKind,
 };
+use superduper_synth_core::kubyz::formant_bank::FormantBands;
 use superduper_synth_core::kubyz::voice::{KubyzParams, KubyzVoice};
 use superduper_synth_core::kubyz::N_HARMONICS;
 use superduper_synth_core::supermass;
@@ -477,7 +478,7 @@ pub extern "C" fn sdsp_process(p: *mut Engine, out_l: *mut f32, out_r: *mut f32,
                 let fmt = [f1, f2, 2700.0];
                 let params = KubyzParams {
                     sr: srate, root_hz: f, harmonics: &e.kubyz_presets[kp],
-                    formant_f: fmt, formant_bw: KUBYZ_FORMANT_BW, formant_gain: KUBYZ_FORMANT_GAIN,
+                    formants: FormantBands::three(fmt, KUBYZ_FORMANT_BW, KUBYZ_FORMANT_GAIN),
                     formant_mix: (mod_cents / 60.0).clamp(0.0, 1.0), velocity_formant_shift: 0.1,
                 };
                 let (kl, kr) = v.kubyz.process(params);

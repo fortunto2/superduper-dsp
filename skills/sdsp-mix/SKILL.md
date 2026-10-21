@@ -75,8 +75,10 @@ Then **look at the PNG** (Read it). Three panels:
 - re-run `mixmap.py`: the pair's share should drop well below 50 %. One change
   at a time, as everywhere here.
 
-When `sdsp-bus serve` is running, the same data is on MCP (`superduper-bus` in
-`.mcp.json`, port 7892; 7891 is each plugin's own server): `bus_list`,
+The same data is on MCP as `superduper-bus` in `.mcp.json` (stdio:
+`sdsp-bus serve --stdio`, started by the client; `sdsp-bus serve` gives HTTP on
+:7892 — 7891 is each plugin's own server; install with
+`cargo install --path tools/sdsp-bus`): `bus_list`,
 `track_spectrum`, `mix_masking` (listens N seconds, share = clashing time /
 listened time, and says which track is louder in the band and by how much),
 `get_song_key` / `set_song_key`. Use `mix_masking` instead of the picture when

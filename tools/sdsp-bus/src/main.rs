@@ -4,6 +4,7 @@
 //!     sdsp-bus --watch    refresh twice a second
 //!     sdsp-bus --json     machine-readable (agents)
 //!     sdsp-bus serve      MCP server on 127.0.0.1:7892/mcp (`--port N`)
+//!     sdsp-bus serve --stdio   MCP over stdio — the client starts it, no daemon
 //!
 //! Each row is one plugin instance: its track, level, peak, a 32-band
 //! spectrum as a bar strip (20 Hz on the left, 20 kHz on the right) and the
@@ -25,8 +26,13 @@ fn strip(bands: &[f32; BANDS]) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("serve") {
-        let port = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).unwrap_or(7892);
-        if let Err(e) = serve::run(port) { eprintln!("serve: {e}"); std::process::exit(1); }
+        let res = if args.iter().any(|a| a == "--stdio") {
+            serve::run_stdio()
+        } else {
+            let port = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).unwrap_or(7892);
+            serve::run(port)
+        };
+        if let Err(e) = res { eprintln!("serve: {e}"); std::process::exit(1); }
         return;
     }
     let watch = args.iter().any(|a| a == "--watch");

@@ -1,7 +1,8 @@
 //! `sdsp-bus serve` — the bus as an MCP server, for agents.
 //!
-//! Streamable HTTP on 127.0.0.1:7892/mcp (the `superduper-bus` entry in the
-//! project's .mcp.json). Not 7891: that is each plugin's own MCP server.
+//! Over stdio (`--stdio`, what the project's .mcp.json uses: the client
+//! starts it, nothing to keep running) or streamable HTTP on
+//! 127.0.0.1:7892/mcp. Not 7891: that is each plugin's own MCP server.
 //! Read-only on the plugins, plus the one thing an agent writes today: the
 //! song key Drum's Key = Auto follows.
 
@@ -190,5 +191,15 @@ pub fn run(port: u16) -> std::io::Result<()> {
         );
         let router = axum::Router::new().nest_service("/mcp", service);
         axum::serve(listener, router).await
+    })
+}
+
+pub fn run_stdio() -> std::io::Result<()> {
+    use rmcp::ServiceExt;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    rt.block_on(async {
+        let svc = BusServer::new().serve(rmcp::transport::stdio()).await.map_err(std::io::Error::other)?;
+        svc.waiting().await.map_err(std::io::Error::other)?;
+        Ok(())
     })
 }

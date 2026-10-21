@@ -89,7 +89,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --release \
+          cargo test --release --no-fail-fast \
             -p superduper-reverb \
             -p superduper-supermass \
             -p superduper-spectrum \
@@ -121,6 +121,10 @@ jobs:
             -p superduper-granular \
             -p superduper-stretch \
             -p superduper-wind \
+            -p superduper-multiband \
+            -p superduper-morph \
+            -p superduper-double \
+            -p superduper-space \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -271,7 +275,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Agent tools for the .pkg (same set as scripts/build_mac_release.sh);
+          # each tool built alone — a workspace build unifies features.
+          cargo build --release -p sdsp-bus
+          cargo build --release -p sdsp-chain
+          mkdir -p dist/agent/bin dist/agent/skills
+          cp target/release/sdsp-bus target/release/sdsp-chain dist/agent/bin/
+          for b in dist/agent/bin/*; do codesign --force --sign - "$b" || true; done
+          for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto "skills/$s" "dist/agent/skills/$s"; done
           bash installer/macos/build_pkg.sh "$V"
+          cp "dist/SuperDuperDSP-${V}-macos-arm64.pkg" dist/SuperDuperDSP-macos-arm64.pkg
           (cd dist && shasum -a 256 *.pkg >> SHA256SUMS-macos.txt)
           ls -la dist/*.pkg
 
@@ -358,7 +371,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --release `
+          cargo test --release --no-fail-fast `
             -p superduper-reverb `
             -p superduper-supermass `
             -p superduper-spectrum `
@@ -390,6 +403,10 @@ jobs:
             -p superduper-granular `
             -p superduper-stretch `
             -p superduper-wind `
+            -p superduper-multiband `
+            -p superduper-morph `
+            -p superduper-double `
+            -p superduper-space `
             -p superduper-synth-core
 
       - name: Package .clap files
@@ -476,6 +493,9 @@ jobs:
         run: |
           # iscc ships on the windows-latest image.
           & iscc "/DMyAppVersion=$env:V" installer\windows\superduper.iss
+          # Stable name for releases/latest/download (the site's Windows button).
+          Copy-Item "dist/SuperDuperDSP-$env:V-windows-x64-Setup.exe" "dist/SuperDuperDSP-windows-x64-Setup.exe"
+          Get-ChildItem dist/*.exe | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Add-Content dist/SHA256SUMS-windows.txt
           Get-ChildItem dist/*.exe
 
       - name: Upload artifact (workflow_dispatch)
@@ -516,6 +536,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          # A body written by hand before CI finished (local macOS builds) stays;
+          # the generated part goes under it.
+          append_body: true
           body: |
             SuperDuper DSP ${{ github.ref_name }}
 

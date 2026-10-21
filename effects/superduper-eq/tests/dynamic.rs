@@ -39,9 +39,15 @@ fn dyn_off_is_bit_identical_to_the_static_eq() {
     // The events must have landed, or this pins a flat EQ.
     let (fl, _) = render_with::<Target>(SR, 512, &noise, &noise, |_, _| {});
     assert_ne!(fnv(&fl), fnv(&l), "param events were ignored");
+    // The baseline was recorded on macOS arm64. MSVC's libm rounds sin/exp/pow
+    // differently in the last bits, so the Windows release job failed here on
+    // a hash, not on a behaviour (v0.16.0, 2026-10-21). Bit-identity is a
+    // same-platform promise; the behaviour tests below run everywhere.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert_eq!(h, BASELINE, "Dyn Gain 0 must not change a single sample");
 }
 
+#[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), allow(dead_code))]
 const BASELINE: u64 = 0x71e68b74c2b0ba41;
 
 // ---------------------------------------------------------------------------

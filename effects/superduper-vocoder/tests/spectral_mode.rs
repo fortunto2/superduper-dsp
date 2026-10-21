@@ -123,10 +123,26 @@ fn lin_spectrum(x: &[f32]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Peak of the spectrum smoothed over ±1/6 octave. A raw single-bin peak on a
+/// noise carrier lands on whichever bin the noise favoured: moving the analysis
+/// window by 512 samples (the STFT-latency fix, 2026-10-21) moved it from
+/// 1105 Hz to 413 Hz with the DSP untouched.
 fn peak_hz(spec: &[(f32, f32)], lo: f32, hi: f32) -> f32 {
+    let mut cum = Vec::with_capacity(spec.len() + 1);
+    cum.push(0.0f64);
+    for &(_, m) in spec {
+        cum.push(cum.last().unwrap() + (m as f64) * (m as f64));
+    }
+    let k = 2f32.powf(1.0 / 6.0);
+    let idx = |hz: f32| spec.partition_point(|&(f, _)| f < hz);
     spec.iter()
-        .filter(|(hz, _)| *hz >= lo && *hz <= hi)
-        .fold((0.0, 0.0), |acc, &(hz, m)| if m > acc.1 { (hz, m) } else { acc })
+        .enumerate()
+        .filter(|(_, (hz, _))| *hz >= lo && *hz <= hi)
+        .map(|(i, &(hz, _))| {
+            let (a, b) = (idx(hz / k), idx(hz * k).max(i + 1));
+            (hz, (cum[b] - cum[a]) / (b - a) as f64)
+        })
+        .fold((0.0, 0.0), |acc, (hz, e)| if e > acc.1 { (hz, e) } else { acc })
         .0
 }
 
@@ -223,11 +239,16 @@ fn spectral_mode_transfers_modulator_formant() {
     assert!(rms(&tail) > 1e-4, "spectral output too quiet: rms={}", rms(&tail));
 
     let spec = lin_spectrum(&tail);
-    let pk = peak_hz(&spec, 200.0, 6000.0);
-    println!("Spectral formant=0 peak = {pk:.0} Hz (expected ~{FORMANT_HZ:.0})");
+    // Detail Mid smooths the envelope over ±28 bins (±656 Hz), so a 800-1000 Hz
+    // modulator becomes a flat plateau ~340-1460 Hz: its "peak" is whichever
+    // bin the noise carrier favoured (it read 1105 Hz, then 413 Hz after the
+    // analysis window moved 512 samples, DSP untouched). The plateau's energy
+    // centroid is what Spectral mode actually places — measure that.
+    let c = centroid(&spec, 100.0, 4000.0);
+    println!("Spectral formant=0 centroid = {c:.0} Hz (expected ~{FORMANT_HZ:.0})");
     assert!(
-        (600.0..=1400.0).contains(&pk),
-        "spectral output peak {pk:.0} Hz should sit near the {FORMANT_HZ:.0} Hz modulator formant"
+        (750.0..=1100.0).contains(&c),
+        "spectral output centred at {c:.0} Hz, should sit on the {FORMANT_HZ:.0} Hz modulator formant"
     );
 
     // The flat-spectrum carrier got shaped: energy in the formant band vastly

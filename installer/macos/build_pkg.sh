@@ -39,10 +39,15 @@ build_component() {
     [[ -n "$(ls -d $srcdir/$srcglob 2>/dev/null || true)" ]] || { echo "skip $id (no files)"; return 1; }
     local rootd="$WORK/root-$id"
     mkdir -p "$rootd$dest"
-    cp -R $srcdir/$srcglob "$rootd$dest/"
+    # pkgbuild turns extended attributes (com.apple.provenance, which `xattr -c`
+    # cannot remove) into AppleDouble `._<name>` files in the payload — 18 stray
+    # `._SuperDuper*.vst3` reached /Library/…/VST3 in the first 0.16.0 build.
+    # ditto --noextattr copies without them; COPYFILE_DISABLE keeps pkgbuild off them.
+    local f
+    for f in $srcdir/$srcglob; do ditto --noextattr --norsrc "$f" "$rootd$dest/$(basename "$f")"; done
     local scriptd="$WORK/scripts-$id"
     mk_scripts "$scriptd" "$quarglob"
-    pkgbuild --root "$rootd" --scripts "$scriptd" \
+    COPYFILE_DISABLE=1 pkgbuild --root "$rootd" --scripts "$scriptd" \
         --identifier "$id" --version "$V" \
         --install-location "/" "$PKGS/$out"
 }

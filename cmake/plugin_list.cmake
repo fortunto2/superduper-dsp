@@ -49,4 +49,5 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-formant|SuperDuperFormant|co.superduperai.formant|co.superduperai.wrappers.formant|aufx|sdFm"
     "superduper-granular|SuperDuperGranular|co.superduperai.granular|co.superduperai.wrappers.granular|aufx|sdGr"
     "superduper-stretch|SuperDuperStretch|co.superduperai.stretch|co.superduperai.wrappers.stretch|aufx|sdSt"
+    "superduper-multiband|SuperDuperMultiband|co.superduperai.multiband|co.superduperai.wrappers.multiband|aufx|sdMb"
 )

@@ -62,10 +62,38 @@ When adding `superduper-<name>` to the codebase, every one of these must be upda
 - [ ] `effects/superduper-<name>/src/presets.rs` — `&[Preset]` static slice using `define_preset!` from SDK or `Preset::from_overrides` (typo-proof sparse initialiser).
 - [ ] Tests: minimum `dsp_smoke.rs` + `clap_e2e.rs` + `spectrum.rs`.
 
+### 1b. MCP-first — the plugin must be drivable by an agent (every plugin, no exceptions)
+
+An agent mixes through the SuperDuper bus server (`sdsp-bus serve`), not the
+DAW UI. A plugin without these is invisible to it:
+- [ ] `new_shared`: `superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper <Name>", &shared.inner, |s| &s.scope, Some(ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle) /* or None */)`
+  — publishes level + 32-band spectrum, exposes every parameter (`plugin_params` /
+  `plugin_set_params`), the bus key (`key` doc), and the plugin's own docs.
+- [ ] `shared.scope.push(...)` in `process()` (mono of the output) so the bus has a spectrum.
+- [ ] `new_main_thread`: `let track_watch = TrackInfoWatch::new(host, &shared.scope);` stored on
+  the main thread, `.register::<clack_extensions::track_info::PluginTrackInfo>()`, and
+  `impl PluginTrackInfoImpl for PluginMainThread<'_> { fn changed(&self) { self.track_watch.refresh(); } }`
+  — the track name and master/bus/return kind follow the host (renames, FX added by an agent).
+- [ ] GUI top bar: `core_gui::top_bar_mix(&state.shared.scope, ui, …)` — the `[ ] mix` strip.
+- [ ] State: `simple_state_impl!` saves params, bypass, preset **and the bus key track**; a
+  custom serde state must add `key_track` with `#[serde(default)]` itself.
+- [ ] Non-parameter state an agent should reach (a drawn wavetable, harmonics, a captured
+  timbre) → `src/mail.rs` with a document: `list` / `get` / `set`, JSON in the terms a
+  mix decision needs (harmonics, not 2048 samples). Meters (gain reduction) → a read-only doc.
+- [ ] Reacting to another track → `superduper_synth_core::bus_key` (`KeyEnvelope`,
+  `key_factor`, `duck_gain`, `span_level_db`) + `mix_view::key_picker(ui, &scope)` in the GUI;
+  new params appended, **default off** (the bus lags 50–100 ms: slow ducking, not pumping).
+- [ ] New params only ever **appended** to `PARAMS`; the quality snapshot may then gain probes
+  and `params_count` only — check the diff after `SDSP_UPDATE_SNAPSHOTS=1`.
+- [ ] Tell the agent: add the plugin to `skills/sdsp-mix/SKILL.md` → "Which plugin for what"
+  (what it fixes, its bus-reachable params/docs), and to `tools/sdsp-chain` / `sdsp-mash`
+  if it belongs in an offline chain.
+
 ### 2. Workspace registration
 
 - [ ] `Cargo.toml` (root) — add `"effects/superduper-<name>"` to `[workspace] members`.
-- [ ] `scripts/build_<name>_bundle.sh` — copy `scripts/build_saturator_bundle.sh` and replace every `superduper-saturator` / `SuperDuperSaturator` / `saturator` / `co.superduperai.saturator` / `libsuperduper_saturator.dylib`. Keep `chmod +x` on the new file.
+- [ ] `scripts/build_<name>_bundle.sh` — `scripts/build_all_bundles.sh` and the wrappers read the
+  plugin list from `cmake/plugin_list.cmake`, so a script per plugin is all they need. Copy `scripts/build_saturator_bundle.sh` and replace every `superduper-saturator` / `SuperDuperSaturator` / `saturator` / `co.superduperai.saturator` / `libsuperduper_saturator.dylib`. Keep `chmod +x` on the new file.
 - [ ] `cmake/plugin_list.cmake` — add a row to `SDSP_WRAPPER_PLUGINS`:
   ```
   "superduper-<name>|SuperDuper<Name>|co.superduperai.<name>|co.superduperai.wrappers.<name>|aufx|sd<XX>"
@@ -227,7 +255,11 @@ clack_export_entry!(SinglePluginEntry<...>);
   a clear message and grey-out the file in its library.
 
 ### `superduper_synth_core::gui` (`feature = "gui"`)
-- `top_bar(ui, name, build, ver, bypass, combo_id, presets, &mut selected)`
+- `top_bar(ui, name, build, ver, bypass, combo_id, presets, &mut selected)` — prefer
+  `top_bar_mix(&scope, ui, …)` (same + the bus mix strip)
+- `TrackInfoWatch`, `spawn_bus_publisher_mcp`, `ParamsAccess`, `LiveScope::key_db_at` — see 1b
+- `superduper_synth_core::mix_view`: `key_picker`, `mix_toggle` / `mix_strip`, `MixView`
+- `superduper_synth_core::bus_key` / `bus_mail` / `mixmap` — key reaction, mailbox, masking
 - `section(ui, title, |ui| { … })`
 - `param_row(ui, &shared.params[P_X], &PARAMS[P_X])`
 - `dirty_param_row` / `learn_param_row_g` — for plugins with MIDI learn or gestures

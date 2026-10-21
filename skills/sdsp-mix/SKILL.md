@@ -122,6 +122,25 @@ Keep the `plugin_params` reading from before a change: that is the undo.
 REAPER MCP is for what the bus cannot do — adding or removing FX, MIDI,
 volume/pan, transport, render.
 
+**Which plugin for what** (all reachable on the bus: `plugin_params` lists
+exact names; everything below is off by default):
+
+| Problem | Plugin → what to set (bus) |
+|---|---|
+| a part covers a more important one only while that one plays | Soothe `duck_under(track, key, depth_db)`; or Multiband preset "Duck Under Key" (one band ducks, the rest compress) |
+| one band of a part needs taming only while the key plays | EQ `Dyn Source`=Key, `Dyn Gain` (−dB) at Mid Freq, key = the lead; `Self` = classic dynamic EQ |
+| level jumps; transparent program control | Compressor `Detector`=Dual (RMS stage + peak stage above `Peak Crest`), `Release RMS`/`Release Peak`; read GR: `plugin_get(…, "Compressor", "meter")` |
+| slow ducking from another track, no routing | Compressor `Key` 0..1 with `Key Lo`/`Key Hi`; for kick pumping use the side-chain input instead |
+| one region too dynamic (mud, harshness, boom) | Multiband: 2–4 bands, transparent when idle (bit-exact), per-band `Key %`; presets De-Mud Low-Mid, Vocal De-Harsh, Bass Control, Mastering Glue |
+| reverb/delay wash over the vocal | Reverb/Delay `Key Duck` (dB) + `Key Range`, key = the vocal |
+| pad/synth in the vocal's way | Filter `Key Mod` (octaves, negative closes) while the key plays |
+| vocal level vs the music | Vocal `Rider`, `Rider Target` (dB over the key), `Rider Max`; key = the instrumental bus, not the master |
+| more density/loudness without peaks (mastering) | Saturator `Type`=Inflate (3), `Curve` −50..50, `Drive` = input, `Mix` = effect |
+| an 808/synth's harmonics fight a part | Wave `plugin_set(…, "Wave", "wavetable", {harmonics: [[…]]})` — design the harmonics; read first with `plugin_get` |
+| Kubyz timbre / mouth | `plugin_set(…, "Kubyz", "harmonics", {harmonics, formants: [{f, bw, gain}]})` (1–6 formants) |
+| a thin vocal, needs a double | Double (Natural drift or Tuned) — once installed |
+| morph one sound into another | Morph (Source: Sidechain / Captured / Model) — once installed |
+
 **Phase: parts that cancel in the sum** (after Sound Radix Pi). Two tracks can
 each sound fine and lose their low end together: kick against bass in
 opposite polarity, two layered kicks a few ms apart, two mics on one source.

@@ -108,7 +108,9 @@ pitch survives through its harmonics): 69% → 0%, guitar −2.2 dB.
   `plugin_set` on the bus server. Wave's `wavetable` is read and written in
   harmonics — `{harmonics: [[1, 0.4, 0, 0.15, 0.1]]}` = fundamental, some 2nd,
   no 3rd, a little 4th/5th for audibility. `plugin_get` first and keep it:
-  that is the undo. WT Pos (a parameter) morphs between frames, so an
+  that is the undo. Kubyz's `harmonics` doc is its 16 harmonic amplitudes
+  (0..1.5) plus 3 formant bandwidths/gains — a short list zeroes the rest.
+  WT Pos (a parameter) morphs between Wave's frames, so an
   automation envelope on it changes the timbre per section.
 
 **Deciding the fix** — one band, one owner:

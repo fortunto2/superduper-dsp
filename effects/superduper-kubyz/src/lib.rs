@@ -11,6 +11,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod mail; // harmonics + formants as a bus-mailbox document for agents
 pub mod presets;
 pub mod user_extra;
 // Kubyz voice + trajectory DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the
@@ -1185,7 +1186,7 @@ impl DefaultPluginFactory for SuperDuperKubyz {
                 shared.formant_gain[i].store(preset.extra.formant_gain[i], Ordering::Relaxed);
             }
         }
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Kubyz", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Kubyz", &shared.inner, |s| &s.scope, Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(

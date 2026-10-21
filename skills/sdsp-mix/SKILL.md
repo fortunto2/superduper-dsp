@@ -427,8 +427,44 @@ sources (hats, sparkle layers), the master EQ cannot invent it.
 
 ## Reference: Mike Senior, *Mixing Secrets for the Small Studio*
 
-The book this skill leans on for method (Focal Press, 3rd ed.; no legal free
-PDF). Its free companion site is the useful part for agents:
+The book this skill leans on for method (Focal Press; no legal free PDF).
+**The whole method, step by step, in our words: `references/mixing-method.md`**
+— order of work, low end, panning and mono, dynamics, EQ, reverb/delay, master
+bus and automation, referencing, each rule with its chapter. Read it before a
+full mix, not just for one clash.
+
+If this machine has the book's local notes (`~/Music/1music/references/
+mixing-secrets/`: `SUMMARY.md`, `notes/NN-*.md` per chapter with page refs and
+numbers checked against the text), use them for detail; they are never
+committed anywhere.
+
+The ten that matter most (MS ch):
+1. Balance is the goal; process a track only when its fader will not settle (8, 15).
+2. Mix the biggest section first (usually the last chorus), then make earlier
+   ones smaller — never push the climax to make it bigger (8).
+3. Add tracks in order of importance to *this* section; in a clash the
+   lower-ranked track gives way (8, 11).
+4. Per track: routing → polarity → high-pass in context → pan → fader (8).
+5. Below ~100 Hz belongs to kick and bass; strip it from the rest (3).
+6. Compress only to steady a level: ~6 dB on peaks to find it, then the least
+   that still works (9).
+7. EQ with the mix playing; shelves before peaks, cuts before boosts; more than
+   one boost or > 6 dB is a warning (11).
+8. One reverb per job: blend (10–20 ms predelay, low mids cut) and size
+   (50 ms+); delays in tempo, quarter = 60000 / BPM (16, 17).
+9. Glue on the bus while mixing: ~2–3 dB at ≤ 2:1, no multiband on the master (19).
+10. Reference gain-matched, lossless, same genre and section, many rounds (4, 19).
+
+**Where our meters fall short of the book** (so do not claim these were
+checked): `mix_masking` only flags two tracks *within 6 dB* in a band — the
+book's other masking, a loud part burying a quiet one that must be heard, it
+reads as "ownership" and stays silent; no mono/correlation meter (proxy: mute
+Sides with Mid/Side on the master and compare per-track levels); `mixcheck.py`
+has no LUFS (peak/RMS/crest in 7 bands, nothing above 16 kHz) — LUFS is on the
+Spectrum and Limiter meters; compressor side-chain and gain-reduction readout
+unverified; no gate, transient shaper or de-esser (Soothe on the band stands in).
+
+The free companion site (3rd edition) is the useful part for agents:
 https://cambridge-mt.com/ms3/ — one page of resources per chapter, and the
 chapter order is a sane order for a mix: groundwork → timing & tuning →
 **comping & arrangement** (before any processing, which is this skill's

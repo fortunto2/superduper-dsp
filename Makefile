@@ -20,7 +20,7 @@ help:
 	@echo "SuperDuper DSP build targets:"
 	@echo ""
 	@echo "  make all              CLAP + VST3 + AU, installed to ~/Library/Audio/Plug-Ins/"
-	@echo "  make clap             All 13 CLAP bundles → ~/Library/Audio/Plug-Ins/CLAP/"
+	@echo "  make clap             Every CLAP bundle → ~/Library/Audio/Plug-Ins/CLAP/"
 	@echo "  make wrappers         VST3 + AU wrappers → ~/Library/Audio/Plug-Ins/{VST3,Components}/"
 	@echo "                          (requires CLAP installed first; depends on 'make clap')"
 	@echo "  make <plugin>         One plugin's .clap bundle (e.g. 'make wave')"
@@ -36,7 +36,7 @@ help:
 # Default target: end-to-end build + install.
 all: wrappers
 
-# All 13 CLAP bundles.
+# Every CLAP bundle in cmake/plugin_list.cmake.
 clap:
 	@./scripts/build_all_bundles.sh
 

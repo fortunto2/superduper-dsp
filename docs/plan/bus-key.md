@@ -23,7 +23,8 @@ the real side-chain input stays for that.
 - [x] MCP-first: generic `params` doc in all 31 plugins; plugin_params / plugin_set_params / duck_under
 
 - [x] fader blind spot: mix_masking fader_db (Pi sits post-fader; the bus is pre-fader)
-- [ ] phase interactions between tracks (Sound Radix Pi): each instance also
+- [x] phase interactions, detection on bus v1: mix_phase (master vs sum of tracks per band, broadband removed); fix = polarity/nudge via REAPER, measured
+- [ ] phase, automatic (Sound Radix Pi): each instance also
       publishes a short low-band (<~800 Hz) audio window; the bus computes per
       pair how much energy the sum loses (kick vs bass, layered kicks, mics);
       fix with polarity / allpass rotation. Needs a bigger slot → bus VERSION 2

@@ -249,6 +249,43 @@ pub struct DuckInput {
     pub amount_db: Option<f32>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct PhaseInput {
+    /// How long to listen while the song plays (default 10, max 60).
+    pub seconds: Option<f32>,
+    /// Same as mix_masking: track → plugin that stands for its output.
+    pub prefer: Option<Prefer>,
+    /// Same as mix_masking: track → fader dB.
+    pub fader_db: Option<std::collections::HashMap<String, f32>>,
+    /// Which master plugin to read (substring) — the first on the master is
+    /// closest to the raw sum; default: the loudest master instance.
+    pub master_plugin: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct PhaseBand {
+    pub low_hz: f32,
+    pub high_hz: f32,
+    /// Master minus the sum of the tracks, broadband part removed. ≈ 0 = the
+    /// parts add up; negative = they cancel here.
+    pub deficit_db: f32,
+    /// The loudest tracks in this band: the suspects.
+    pub tracks: Vec<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct PhaseOut {
+    pub seconds: f32,
+    pub master: String,
+    /// Bands losing more than 2 dB to cancellation, worst first.
+    pub cancelling: Vec<PhaseBand>,
+    /// All 32 bands, low to high (dB, broadband removed).
+    pub deficit_db: Vec<f32>,
+    /// Bands where the master has much more than the tracks: sources that
+    /// are not on the bus (no SuperDuper plugin), which hide cancellation.
+    pub not_on_bus_hz: Vec<f32>,
+}
+
 #[derive(Clone)]
 pub struct BusServer { tool_router: ToolRouter<Self> }
 
@@ -329,6 +366,50 @@ impl BusServer {
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
         Ok(rmcp::Json(out))
+    }
+
+    #[rmcp::tool(description = "Where parts cancel when summed (Sound Radix Pi's question): listens to the master and every track, and per band compares the master's energy with the sum of the tracks' — the broadband part (master limiter, fader offsets) removed. A band 2+ dB short is cancellation; its loudest tracks are the suspects (kick vs bass, layered kicks, two mics). Fix by flipping one suspect's polarity in the DAW (REAPER run_lua: SetMediaTrackInfo_Value(track, \"B_PHASE\", 1)) or nudging it a few ms, then run again and keep only what shrinks the deficit. Needs a SuperDuper plugin on the master and on every track that matters.")]
+    async fn mix_phase(&self, Parameters(i): Parameters<PhaseInput>) -> Result<rmcp::Json<PhaseOut>, McpError> {
+        use superduper_dsp_sdk::bus::TRACK_MASTER;
+        let secs = i.seconds.unwrap_or(10.0).clamp(2.0, 60.0);
+        let r = reader()?;
+        let frames = (secs * 10.0) as usize;
+        let prefer = i.prefer.unwrap_or_default();
+        let (mut tp, mut mp) = ([0f64; BANDS], [0f64; BANDS]);
+        let mut master_name = String::new();
+        let mut contrib: std::collections::HashMap<String, [f64; BANDS]> = Default::default();
+        for _ in 0..frames {
+            let rows = r.read_all();
+            let is_master = |s: &Snapshot| s.track_flags & TRACK_MASTER != 0 || s.track.eq_ignore_ascii_case("master");
+            let m = rows.iter().filter(|s| is_master(s))
+                .filter(|s| i.master_plugin.as_ref().is_none_or(|p| s.plugin.to_lowercase().contains(&p.to_lowercase())))
+                .max_by(|a, b| a.rms_db.total_cmp(&b.rms_db));
+            let Some(m) = m else {
+                return Err(McpError::invalid_params("no SuperDuper plugin on the master: put one there (Spectrum or EQ, first in the chain)", None));
+            };
+            master_name = m.plugin.clone();
+            for (b, v) in m.bands_db.iter().enumerate() { mp[b] += 10f64.powf(*v as f64 / 10.0); }
+            for t in tracks(&rows, &prefer).into_iter().filter(|t| !t.bus) {
+                let g = i.fader_db.as_ref().and_then(|f| f.get(&t.name)).copied().unwrap_or(0.0);
+                let c = contrib.entry(t.name.clone()).or_insert([0.0; BANDS]);
+                for (b, v) in t.bands_db.iter().enumerate() {
+                    let p = 10f64.powf((*v + g) as f64 / 10.0);
+                    tp[b] += p;
+                    c[b] += p;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let d = superduper_synth_core::mixmap::sum_deficit_db(&tp, &mp);
+        let edges = band_edges();
+        let mut cancelling: Vec<PhaseBand> = (0..BANDS).filter(|&b| d[b] < -2.0 && tp[b] > 1e-9 * frames as f64).map(|b| {
+            let mut who: Vec<(&String, f64)> = contrib.iter().map(|(n, c)| (n, c[b])).collect();
+            who.sort_by(|x, y| y.1.total_cmp(&x.1));
+            PhaseBand { low_hz: edges[b], high_hz: edges[b + 1], deficit_db: d[b], tracks: who.into_iter().take(3).filter(|w| w.1 > 0.0).map(|w| w.0.clone()).collect() }
+        }).collect();
+        cancelling.sort_by(|a, b| a.deficit_db.total_cmp(&b.deficit_db));
+        let not_on_bus_hz = (0..BANDS).filter(|&b| d[b] > 6.0).map(|b| (edges[b] * edges[b + 1]).sqrt()).collect();
+        Ok(rmcp::Json(PhaseOut { seconds: secs, master: master_name, cancelling, deficit_db: d.to_vec(), not_on_bus_hz }))
     }
 
     #[rmcp::tool(description = "Compare two labelled mix_masking runs (same section of the song): each clash's share before and after, and each track's level. Use after a change to see whether it helped; undo it in the DAW if it did not.")]
@@ -420,7 +501,7 @@ impl ServerHandler for BusServer {
         rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
             .with_server_info(info)
-            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), plugin_params/plugin_set_params (any SuperDuper plugin's parameters, no DAW needed), duck_under (Soothe keyed ducking), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics; every plugin also has \"key\"), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
+            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), mix_phase (bands where parts cancel in the sum), plugin_params/plugin_set_params (any SuperDuper plugin's parameters, no DAW needed), duck_under (Soothe keyed ducking), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics; every plugin also has \"key\"), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
     }
 }
 

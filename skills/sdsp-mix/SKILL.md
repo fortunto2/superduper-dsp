@@ -122,6 +122,25 @@ Keep the `plugin_params` reading from before a change: that is the undo.
 REAPER MCP is for what the bus cannot do — adding or removing FX, MIDI,
 volume/pan, transport, render.
 
+**Phase: parts that cancel in the sum** (after Sound Radix Pi). Two tracks can
+each sound fine and lose their low end together: kick against bass in
+opposite polarity, two layered kicks a few ms apart, two mics on one source.
+Electronic producers use Pi for exactly this — to "pack" a beat: aligned
+kick/sub/bass layers hit harder at the same level. Ours, explicitly:
+1. a SuperDuper plugin on the master (first in its chain) and on every track
+   that matters; loop the section;
+2. `mix_phase(seconds=10, fader_db=…)` — `cancelling` lists bands 2+ dB short
+   of the tracks' sum, with the loudest tracks there as suspects;
+   `not_on_bus_hz` warns where the master holds sources the bus cannot see;
+3. flip one suspect's polarity (REAPER `run_lua`:
+   `reaper.SetMediaTrackInfo_Value(reaper.GetTrack(0, i), "B_PHASE", 1)`) or
+   nudge it 1–5 ms (item position), run `mix_phase` again; keep the change
+   only if that band's deficit shrinks and nothing else grows. One change at
+   a time; pitched material (bass vs keys) can swing either way across notes.
+Pi's channel weight is our track ranking (the more important part keeps its
+phase, the other moves), its groups are the tracks you move together (all
+drum mics flip as one).
+
 **Ducking: when two parts must both play** (MS ch14). If register and timing
 are right and a part still covers a more important one *only while that one
 plays* — guitar or pad under the vocal, a synth under the lead — the fix is not

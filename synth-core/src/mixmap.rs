@@ -50,6 +50,23 @@ pub fn loudest_per_track<'a>(rows: impl IntoIterator<Item = (&'a str, bool, f32,
     v
 }
 
+/// Per band, how much energy the master is missing against the sum of the
+/// tracks (dB), with the broadband part (master compression/limiting, fader
+/// offsets) removed: each band minus the median of all bands. Tracks that sum
+/// without interacting read ≈ 0; a band where parts cancel (kick vs bass in
+/// opposite polarity, two mics of one source) reads negative. `track_power`
+/// and `master_power` are linear power per band, averaged over the listen.
+pub fn sum_deficit_db(track_power: &[f64; BANDS], master_power: &[f64; BANDS]) -> [f32; BANDS] {
+    let raw: Vec<f32> = (0..BANDS)
+        .map(|b| (10.0 * ((master_power[b] + 1e-20) / (track_power[b] + 1e-20)).log10()) as f32)
+        .collect();
+    // Median over bands where the tracks actually have energy.
+    let mut live: Vec<f32> = (0..BANDS).filter(|&b| track_power[b] > 1e-9).map(|b| raw[b]).collect();
+    live.sort_by(f32::total_cmp);
+    let median = live.get(live.len() / 2).copied().unwrap_or(0.0);
+    std::array::from_fn(|b| if track_power[b] > 1e-9 { raw[b] - median } else { 0.0 })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clash {
     pub a: String,
@@ -225,6 +242,18 @@ mod tests {
         assert!(b[0].share > 0.99);
         assert!(m.top(5).is_empty(), "10 dB apart is not a clash");
         assert!(m.top_buried(5, Some("Gtr")).is_empty(), "the loud one is not buried");
+    }
+
+    #[test]
+    fn sum_deficit_sees_a_cancelling_band_not_a_limiter() {
+        let tracks = [1e-3f64; BANDS];
+        // The limiter takes 3 dB everywhere; band 4 also lost 9 dB more to
+        // cancellation.
+        let mut master = [1e-3f64 * 0.5; BANDS];
+        master[4] *= 0.125;
+        let d = sum_deficit_db(&tracks, &master);
+        assert!(d[0].abs() < 0.01 && d[20].abs() < 0.01, "broadband loss is removed");
+        assert!((d[4] + 9.03).abs() < 0.05, "{}", d[4]);
     }
 
     #[test]

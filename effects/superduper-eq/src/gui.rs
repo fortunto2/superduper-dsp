@@ -6,8 +6,8 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_HIGH_FREQ, P_HIGH_GAIN, P_HP, P_LOW_FREQ, P_LOW_GAIN, P_LP, P_MID_FREQ, P_MID_GAIN,
-            P_MID_Q, P_OUTPUT, PARAMS, SharedParams};
+use crate::{P_DYN_GAIN, P_DYN_RANGE, P_DYN_SOURCE, P_HIGH_FREQ, P_HIGH_GAIN, P_HP, P_LOW_FREQ,
+            P_LOW_GAIN, P_LP, P_MID_FREQ, P_MID_GAIN, P_MID_Q, P_OUTPUT, PARAMS, SharedParams};
 use std::sync::atomic::Ordering;
 use superduper_synth_core::dsp_blocks::Biquad;
 
@@ -106,6 +106,18 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MID_GAIN], &PARAMS[P_MID_GAIN], &state.shared.dirty_params[P_MID_GAIN], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MID_GAIN);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MID_Q], &PARAMS[P_MID_Q], &state.shared.dirty_params[P_MID_Q], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MID_Q);
             });
+            core_gui::section(ui, "Dynamic (key)", |ui| {
+                let g = || core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end };
+                const SOURCES: [&str; 2] = ["Key", "Self"];
+                core_gui::dirty_choice_row_g(ui, &state.shared.params[P_DYN_SOURCE], &PARAMS[P_DYN_SOURCE], &SOURCES, &state.shared.dirty_params[P_DYN_SOURCE], g(), P_DYN_SOURCE);
+                if state.shared.params[P_DYN_SOURCE].load(Ordering::Relaxed) < 0.5 {
+                    superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+                }
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DYN_GAIN], &PARAMS[P_DYN_GAIN], &state.shared.dirty_params[P_DYN_GAIN], g(), P_DYN_GAIN);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_DYN_RANGE], &PARAMS[P_DYN_RANGE], &state.shared.dirty_params[P_DYN_RANGE], g(), P_DYN_RANGE);
+                let now = state.shared.dyn_now.load(Ordering::Relaxed);
+                ui.label(egui::RichText::new(format!("Mid now {:+.1} dB", now)).small().color(DYN_COLOR));
+            });
             core_gui::section(ui, "High Shelf", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_HIGH_FREQ], &PARAMS[P_HIGH_FREQ], &state.shared.dirty_params[P_HIGH_FREQ], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HIGH_FREQ);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_HIGH_GAIN], &PARAMS[P_HIGH_GAIN], &state.shared.dirty_params[P_HIGH_GAIN], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_HIGH_GAIN);
@@ -117,9 +129,61 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
     });
 }
 
+/// The dynamic band's ghost curve colour: warm, so it reads against the green.
+const DYN_COLOR: egui::Color32 = egui::Color32::from_rgb(240, 170, 80);
+
+/// The EQ chain's biquads from the live param values, with `mid_offset` dB
+/// added to the Mid bell (0 = the static curve).
+fn chain_from_params(shared: &SharedParams, sr: f32, mid_offset: f32) -> Vec<Biquad> {
+    let p = |i: usize| shared.params[i].load(Ordering::Relaxed);
+    let mut biquads: Vec<Biquad> = Vec::with_capacity(5);
+    let hp_freq = p(P_HP);
+    if hp_freq > 1.0 {
+        let mut b = Biquad::default();
+        b.set_hpf(sr, hp_freq.clamp(20.0, sr * 0.49), 0.707);
+        biquads.push(b);
+    }
+    let mut low = Biquad::default();
+    low.set_low_shelf(sr, p(P_LOW_FREQ), 1.0, p(P_LOW_GAIN));
+    biquads.push(low);
+    let mut mid = Biquad::default();
+    mid.set_peaking(sr, p(P_MID_FREQ), p(P_MID_Q), p(P_MID_GAIN) + mid_offset);
+    biquads.push(mid);
+    let mut high = Biquad::default();
+    high.set_high_shelf(sr, p(P_HIGH_FREQ), 1.0, p(P_HIGH_GAIN));
+    biquads.push(high);
+    let lp_freq = p(P_LP);
+    if lp_freq > 100.0 && lp_freq < sr * 0.49 {
+        let mut b = Biquad::default();
+        b.set_lpf(sr, lp_freq, 0.707);
+        biquads.push(b);
+    }
+    biquads
+}
+
+/// Draw one response curve: log 20 Hz – 20 kHz across, ±18 dB down the strip.
+fn draw_curve(painter: &egui::Painter, rect: egui::Rect, sr: f32, biquads: &[Biquad], out_db: f32, stroke: egui::Stroke) {
+    let centre_y = rect.center().y;
+    let y_scale = rect.height() * 0.45 / 18.0;
+    let log_lo = 20.0_f32.log10();
+    let log_hi = 20_000.0_f32.log10();
+    let cols = (rect.width() as usize).clamp(8, 800);
+    let points: Vec<egui::Pos2> = (0..cols)
+        .map(|i| {
+            let frac = i as f32 / (cols - 1) as f32;
+            let f = 10f32.powf(log_lo + (log_hi - log_lo) * frac);
+            let db = out_db + biquads.iter().map(|b| b.magnitude_db_at(f, sr)).sum::<f32>();
+            egui::pos2(rect.left() + frac * rect.width(), centre_y - db.clamp(-18.0, 18.0) * y_scale)
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, stroke));
+}
+
 /// Compute the combined EQ frequency response in dB and draw it as a
 /// bright polyline on top of the existing spectrum strip. Visualises
-/// the curve the user is shaping — Pro-Q / FabFilter feel.
+/// the curve the user is shaping — Pro-Q / FabFilter feel. While the
+/// dynamic band is on, a second, warm curve shows where the Mid bell
+/// actually is right now.
 fn draw_eq_curve_overlay(
     ui: &mut egui::Ui,
     shared: &SharedParams,
@@ -127,78 +191,20 @@ fn draw_eq_curve_overlay(
     sr: f32,
 ) {
     let painter = ui.painter_at(rect);
-    // Reconstruct the EQ chain biquads from the live param values.
-    let mut biquads: Vec<Biquad> = Vec::with_capacity(5);
-    let hp_freq = shared.params[P_HP].load(Ordering::Relaxed);
-    if hp_freq > 1.0 {
-        let mut b = Biquad::default();
-        b.set_hpf(sr, hp_freq.clamp(20.0, sr * 0.49), 0.707);
-        biquads.push(b);
-    }
-    let mut low = Biquad::default();
-    low.set_low_shelf(
-        sr,
-        shared.params[P_LOW_FREQ].load(Ordering::Relaxed),
-        1.0,
-        shared.params[P_LOW_GAIN].load(Ordering::Relaxed),
-    );
-    biquads.push(low);
-    let mut mid = Biquad::default();
-    mid.set_peaking(
-        sr,
-        shared.params[P_MID_FREQ].load(Ordering::Relaxed),
-        shared.params[P_MID_Q].load(Ordering::Relaxed),
-        shared.params[P_MID_GAIN].load(Ordering::Relaxed),
-    );
-    biquads.push(mid);
-    let mut high = Biquad::default();
-    high.set_high_shelf(
-        sr,
-        shared.params[P_HIGH_FREQ].load(Ordering::Relaxed),
-        1.0,
-        shared.params[P_HIGH_GAIN].load(Ordering::Relaxed),
-    );
-    biquads.push(high);
-    let lp_freq = shared.params[P_LP].load(Ordering::Relaxed);
-    if lp_freq > 100.0 && lp_freq < sr * 0.49 {
-        let mut b = Biquad::default();
-        b.set_lpf(sr, lp_freq, 0.707);
-        biquads.push(b);
-    }
     let out_db = shared.params[P_OUTPUT].load(Ordering::Relaxed);
-
-    // Y mapping: ±18 dB across the strip's vertical extent.
     let centre_y = rect.center().y;
-    let y_scale = rect.height() * 0.45 / 18.0;
-    let to_y = |db: f32| centre_y - db.clamp(-18.0, 18.0) * y_scale;
-
-    // X mapping: log 20 Hz – 20 kHz.
-    let log_lo = 20.0_f32.log10();
-    let log_hi = 20_000.0_f32.log10();
-    let cols = (rect.width() as usize).max(8).min(800);
-    let mut prev: Option<egui::Pos2> = None;
-    for i in 0..cols {
-        let frac = i as f32 / (cols - 1) as f32;
-        let f = 10f32.powf(log_lo + (log_hi - log_lo) * frac);
-        let mut db = out_db;
-        for b in &biquads {
-            db += b.magnitude_db_at(f, sr);
-        }
-        let x = rect.left() + frac * rect.width();
-        let y = to_y(db);
-        let pt = egui::pos2(x, y);
-        if let Some(p) = prev {
-            painter.line_segment([p, pt], egui::Stroke::new(1.5, core_gui::GREEN_BRIGHT));
-        }
-        prev = Some(pt);
-    }
 
     // 0 dB reference line.
     painter.line_segment(
-        [
-            egui::pos2(rect.left(), centre_y),
-            egui::pos2(rect.right(), centre_y),
-        ],
+        [egui::pos2(rect.left(), centre_y), egui::pos2(rect.right(), centre_y)],
         egui::Stroke::new(0.5, core_gui::GREEN_FAINT),
     );
+    let dyn_on = shared.params[P_DYN_GAIN].load(Ordering::Relaxed) < 0.0;
+    let now = shared.dyn_now.load(Ordering::Relaxed);
+    if dyn_on || now != 0.0 {
+        let ghost = chain_from_params(shared, sr, now);
+        draw_curve(&painter, rect, sr, &ghost, out_db, egui::Stroke::new(1.5, DYN_COLOR));
+    }
+    let stat = chain_from_params(shared, sr, 0.0);
+    draw_curve(&painter, rect, sr, &stat, out_db, egui::Stroke::new(1.5, core_gui::GREEN_BRIGHT));
 }

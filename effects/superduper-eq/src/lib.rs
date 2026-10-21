@@ -9,6 +9,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod dynamic;
 pub mod gui;
 pub mod presets;
 
@@ -22,8 +23,7 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
     PluginParams,
 };
-use clack_common::stream::{InputStream, OutputStream};
-use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_extensions::state::PluginState;
 
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
@@ -60,7 +60,15 @@ pub const PARAMS: &[ParamDef] = &[
     ParamDef { id: 8, name: b"LP",        min: 0.0,    max: 22000.0, default: 0.0,    unit: "Hz" },
     // Output trim
     ParamDef { id: 9, name: b"Output",    min: -12.0,  max: 12.0,    default: 0.0,    unit: "dB" },
+    // Dynamic Mid (appended so old projects keep their values). Dyn Gain 0 = off.
+    ParamDef { id: 10, name: b"Dyn Gain",  min: -18.0, max: 0.0,     default: 0.0,    unit: "dB" },
+    ParamDef { id: 11, name: b"Dyn Range", min: 6.0,   max: 40.0,    default: 24.0,   unit: "dB" },
+    // 0 = Key (the bus key track's level at Mid Freq), 1 = Self (the band's own level).
+    ParamDef { id: 12, name: b"Dyn Source", min: 0.0,  max: 1.0,     default: 0.0,    unit: ""   },
 ];
+
+/// Enum params the host must quantise instead of sweeping.
+pub const STEPPED_PARAMS: &[u32] = &[12];
 
 pub const P_LOW_FREQ: usize = 0;
 pub const P_LOW_GAIN: usize = 1;
@@ -72,6 +80,9 @@ pub const P_HIGH_GAIN: usize = 6;
 pub const P_HP: usize = 7;
 pub const P_LP: usize = 8;
 pub const P_OUTPUT: usize = 9;
+pub const P_DYN_GAIN: usize = 10;
+pub const P_DYN_RANGE: usize = 11;
+pub const P_DYN_SOURCE: usize = 12;
 
 // ---------------------------------------------------------------------------
 // Shared
@@ -90,6 +101,8 @@ pub struct SharedParamsInner {
     /// Currently-selected preset index — persisted via simple_state
     /// so the dropdown survives project reopens.
     pub active_preset: std::sync::atomic::AtomicU32,
+    /// The dynamic band's current gain offset (dB, ≤ 0), for the GUI's ghost curve.
+    pub dyn_now: AtomicF32,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -104,6 +117,7 @@ impl PluginShared {
                 gesture_begin: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 gesture_end: std::array::from_fn(|_| std::sync::atomic::AtomicBool::new(false)),
                 active_preset: std::sync::atomic::AtomicU32::new(0),
+                dyn_now: AtomicF32::new(0.0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 scope: superduper_synth_core::gui::LiveScope::new(4096),
             }),
@@ -133,10 +147,151 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
+    dsp: EqDsp,
+}
+
+/// The EQ's DSP, separate from the CLAP wrapper so tests can drive it with
+/// plain slices and a hand-set bus key.
+pub struct EqDsp {
     chain_l: [Biquad; 5], // HP, LowShelf, MidPeak, HighShelf, LP
     chain_r: [Biquad; 5],
     smooth_output: SmoothedParam,
     sample_rate: f32,
+    dynamic: dynamic::DynBand,
+}
+
+/// One channel's input and output for a block.
+pub type Io<'b> = (&'b [f32], &'b mut [f32]);
+
+/// Block-constant values read from the atomics once per block.
+struct Block { hp_on: bool, lp_on: bool, out_db: f32, mid_f: f32, mid_g: f32, mid_q: f32 }
+
+#[inline]
+fn run_chain(chain: &mut [Biquad; 5], x: f32, b: &Block) -> f32 {
+    let mut y = x;
+    if b.hp_on { y = chain[0].process(y); }
+    y = chain[1].process(y);
+    y = chain[2].process(y);
+    y = chain[3].process(y);
+    if b.lp_on { y = chain[4].process(y); }
+    y
+}
+
+impl EqDsp {
+    pub fn new(sample_rate: f32, output_db: f32) -> Self {
+        Self {
+            chain_l: Default::default(),
+            chain_r: Default::default(),
+            smooth_output: SmoothedParam::new(output_db),
+            sample_rate,
+            dynamic: dynamic::DynBand::default(),
+        }
+    }
+
+    /// One block, stereo (or mono when `r` is None). Reads params, the bus
+    /// key and bypass from `shared`; writes the dynamic offset back for the GUI.
+    pub fn process(&mut self, shared: &SharedParamsInner, l: Io<'_>, r: Option<Io<'_>>) {
+        let bypassed = shared.bypass.load(Ordering::Relaxed);
+        let sr = self.sample_rate;
+        let p = |i: usize| shared.params[i].load(Ordering::Relaxed);
+
+        // Coefficient update — recompute every block. Biquad coefs are cheap
+        // (5 mul + 4 add) and we already had to read the atomics.
+        let (lo_f, lo_g, hi_f, hi_g, hp, lp) =
+            (p(P_LOW_FREQ), p(P_LOW_GAIN), p(P_HIGH_FREQ), p(P_HIGH_GAIN), p(P_HP), p(P_LP));
+        let b = Block {
+            hp_on: hp >= 20.0,
+            lp_on: lp >= 20.0 && lp < sr * 0.45,
+            out_db: p(P_OUTPUT),
+            mid_f: p(P_MID_FREQ),
+            mid_g: p(P_MID_GAIN),
+            mid_q: p(P_MID_Q),
+        };
+        // HP at 0 Hz = off; we still feed identity coefs to keep state moving.
+        for chain in [&mut self.chain_l, &mut self.chain_r] {
+            if b.hp_on { chain[0].set_hpf(sr, hp, 0.707); }
+            chain[1].set_low_shelf(sr, lo_f, 1.0, lo_g);
+            chain[2].set_peaking(sr, b.mid_f, b.mid_q, b.mid_g);
+            chain[3].set_high_shelf(sr, hi_f, 1.0, hi_g);
+            if b.lp_on { chain[4].set_lpf(sr, lp, 0.707); }
+        }
+
+        let dyn_gain = p(P_DYN_GAIN);
+        if bypassed || (dyn_gain >= 0.0 && self.dynamic.is_idle()) {
+            // The static EQ, exactly as it was before the dynamic band.
+            self.process_static(shared, l, &b, bypassed, 0);
+            if let Some(r) = r { self.process_static(shared, r, &b, bypassed, 1); }
+            if bypassed { self.dynamic.offset_db = 0.0; }
+        } else {
+            let level = if p(P_DYN_SOURCE) >= 0.5 {
+                None // self: measured per chunk inside
+            } else {
+                Some(shared.scope.key_db_at(b.mid_f))
+            };
+            self.process_dynamic(shared, l, r, &b, level, dyn_gain.min(0.0), p(P_DYN_RANGE));
+        }
+        shared.dyn_now.store(self.dynamic.offset_db, Ordering::Relaxed);
+    }
+
+    fn process_static(&mut self, shared: &SharedParamsInner, (read, write): Io<'_>, b: &Block, bypassed: bool, ch: usize) {
+        if bypassed {
+            write.copy_from_slice(read);
+            return;
+        }
+        let sr = self.sample_rate;
+        let chain = if ch == 0 { &mut self.chain_l } else { &mut self.chain_r };
+        for (i, o) in read.iter().zip(write.iter_mut()) {
+            let out_db = self.smooth_output.step(b.out_db, sr);
+            let out_lin = 10f32.powf(out_db / 20.0);
+            let final_out = run_chain(chain, *i, b) * out_lin;
+            *o = final_out;
+            if ch == 0 { shared.scope.push(final_out); } // one channel: L then R blocks read as seams
+        }
+    }
+
+    /// Both channels together, chunk by chunk, so L and R share the moving
+    /// bell. `key_level` is the bus key's level at Mid Freq, or None to
+    /// detect the band's own input level.
+    #[allow(clippy::too_many_arguments)]
+    fn process_dynamic(
+        &mut self, shared: &SharedParamsInner, (l_in, l_out): Io<'_>, mut r: Option<Io<'_>>,
+        b: &Block, key_level: Option<f32>, dyn_gain: f32, range: f32,
+    ) {
+        let sr = self.sample_rate;
+        let det_coef = dynamic::DynBand::detect_coef(sr);
+        if key_level.is_none() { self.dynamic.tune(sr, b.mid_f, b.mid_q); }
+        let n = l_in.len().min(l_out.len());
+        let mut start = 0;
+        while start < n {
+            let end = (start + dynamic::CHUNK).min(n);
+            let level = match key_level {
+                Some(k) => k,
+                None => {
+                    for (i, &xl) in l_in[start..end].iter().enumerate() {
+                        let x = match &r { Some((ri, _)) => 0.5 * (xl + ri.get(start + i).copied().unwrap_or(0.0)), None => xl };
+                        self.dynamic.detect(x, det_coef);
+                    }
+                    self.dynamic.self_level_db()
+                }
+            };
+            let off = self.dynamic.step(dynamic::target_db(level, dyn_gain, range), end - start, sr);
+            self.chain_l[2].set_peaking(sr, b.mid_f, b.mid_q, b.mid_g + off);
+            self.chain_r[2].set_peaking(sr, b.mid_f, b.mid_q, b.mid_g + off);
+            for i in start..end {
+                let out_db = self.smooth_output.step(b.out_db, sr);
+                let out_lin = 10f32.powf(out_db / 20.0);
+                let yl = run_chain(&mut self.chain_l, l_in[i], b) * out_lin;
+                l_out[i] = yl;
+                shared.scope.push(yl);
+                if let Some((ri, ro)) = r.as_mut() {
+                    if let (Some(x), Some(o)) = (ri.get(i), ro.get_mut(i)) {
+                        *o = run_chain(&mut self.chain_r, *x, b) * out_lin;
+                    }
+                }
+            }
+            start = end;
+        }
+    }
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -157,12 +312,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         slog!("activate sr={}", sr);
         Ok(Self {
             shared,
-            chain_l: Default::default(),
-            chain_r: Default::default(),
-            smooth_output: SmoothedParam::new(
-                shared.params[P_OUTPUT].load(Ordering::Relaxed),
-            ),
-            sample_rate: sr,
+            dsp: EqDsp::new(sr, shared.params[P_OUTPUT].load(Ordering::Relaxed)),
         })
     }
 
@@ -185,65 +335,13 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             events.output,
         );
 
-        let bypassed = self.shared.bypass.load(Ordering::Relaxed);
-        let sr = self.sample_rate;
-
-        // Coefficient update — recompute every block. Biquad coefs are cheap
-        // (5 mul + 4 add) and we already had to read the atomics.
-        let lo_f = self.shared.params[P_LOW_FREQ].load(Ordering::Relaxed);
-        let lo_g = self.shared.params[P_LOW_GAIN].load(Ordering::Relaxed);
-        let mid_f = self.shared.params[P_MID_FREQ].load(Ordering::Relaxed);
-        let mid_g = self.shared.params[P_MID_GAIN].load(Ordering::Relaxed);
-        let mid_q = self.shared.params[P_MID_Q].load(Ordering::Relaxed);
-        let hi_f = self.shared.params[P_HIGH_FREQ].load(Ordering::Relaxed);
-        let hi_g = self.shared.params[P_HIGH_GAIN].load(Ordering::Relaxed);
-        let hp = self.shared.params[P_HP].load(Ordering::Relaxed);
-        let lp = self.shared.params[P_LP].load(Ordering::Relaxed);
-        let output_db_target = self.shared.params[P_OUTPUT].load(Ordering::Relaxed);
-
-        // HP at 0 Hz = off; we still feed identity coefs to keep state moving.
-        if hp >= 20.0 {
-            self.chain_l[0].set_hpf(sr, hp, 0.707);
-            self.chain_r[0].set_hpf(sr, hp, 0.707);
-        }
-        self.chain_l[1].set_low_shelf(sr, lo_f, 1.0, lo_g);
-        self.chain_r[1].set_low_shelf(sr, lo_f, 1.0, lo_g);
-        self.chain_l[2].set_peaking(sr, mid_f, mid_q, mid_g);
-        self.chain_r[2].set_peaking(sr, mid_f, mid_q, mid_g);
-        self.chain_l[3].set_high_shelf(sr, hi_f, 1.0, hi_g);
-        self.chain_r[3].set_high_shelf(sr, hi_f, 1.0, hi_g);
-        if lp >= 20.0 && lp < sr * 0.45 {
-            self.chain_l[4].set_lpf(sr, lp, 0.707);
-            self.chain_r[4].set_lpf(sr, lp, 0.707);
-        }
-
-        let hp_on = hp >= 20.0;
-        let lp_on = lp >= 20.0 && lp < sr * 0.45;
-
+        use superduper_dsp_sdk::clap_helpers::split_io;
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
-            for (ch_idx, channel_pair) in channel_pairs.into_iter().enumerate() {
-                let chain = if ch_idx == 0 { &mut self.chain_l } else { &mut self.chain_r };
-                use superduper_dsp_sdk::clap_helpers::split_io;
-                let Some((read, write)) = split_io(channel_pair) else { continue };
-                if bypassed {
-                    write.copy_from_slice(read);
-                    continue;
-                }
-                for (i, o) in read.iter().zip(write.iter_mut()) {
-                    let out_db = self.smooth_output.step(output_db_target, sr);
-                    let out_lin = 10f32.powf(out_db / 20.0);
-                    let mut y = *i;
-                    if hp_on { y = chain[0].process(y); }
-                    y = chain[1].process(y);
-                    y = chain[2].process(y);
-                    y = chain[3].process(y);
-                    if lp_on { y = chain[4].process(y); }
-                    let final_out = y * out_lin;
-                    *o = final_out;
-                    if ch_idx == 0 { self.shared.scope.push(final_out); } // one channel: L then R blocks read as seams
-                }
-            }
+            let mut chans = channel_pairs.into_iter();
+            let Some(l) = chans.next().and_then(split_io) else { continue };
+            let r = chans.next().and_then(split_io);
+            self.dsp.process(self.shared, l, r);
         }
         Ok(ProcessStatus::Continue)
     }
@@ -273,7 +371,7 @@ impl PluginAudioPortsImpl for PluginMainThread<'_> {
 impl PluginMainThreadParams for PluginMainThread<'_> {
     fn count(&mut self) -> u32 { PARAMS.len() as u32 }
     fn get_info(&mut self, idx: u32, info: &mut ParamInfoWriter) {
-        ParamDef::write_info(PARAMS, idx, info);
+        ParamDef::write_info_stepped(PARAMS, idx, info, STEPPED_PARAMS);
     }
     fn get_value(&mut self, id: ClapId) -> Option<f64> {
         let i = id.get() as usize;

@@ -59,7 +59,7 @@ fn parameter_table_is_consistent() {
     // Ids dense and ordered, defaults inside range, names unique, stepped
     // params actually discrete. The table is hand-maintained and its indices
     // are duplicated into P_* constants, presets and the GUI.
-    sdsp_test_kit::params::check_table("superduper-eq", superduper_eq::PARAMS, &[]);
+    sdsp_test_kit::params::check_table("superduper-eq", superduper_eq::PARAMS, superduper_eq::STEPPED_PARAMS);
 }
 
 #[global_allocator]
@@ -75,4 +75,18 @@ fn process_does_not_allocate() {
     sdsp_test_kit::alloc::reset();
     let _ = render_effect::<Target>(SR, &noise, &noise);
     sdsp_test_kit::alloc::assert_rt_clean("superduper-eq", frames / 512);
+
+    // The dynamic band's path too (Dyn Gain −12, Self source, so the
+    // detector and the per-chunk bell recompute both run).
+    use clack_common::events::{event_types::ParamValueEvent, Pckn};
+    use clack_common::utils::{ClapId, Cookie};
+    sdsp_test_kit::alloc::reset();
+    let _ = sdsp_test_kit::host::render_with::<Target>(SR, 512, &noise, &noise, |pos, buf| {
+        if pos == 0 {
+            for (id, v) in [(superduper_eq::P_DYN_GAIN, -12.0), (superduper_eq::P_DYN_SOURCE, 1.0)] {
+                buf.push(&ParamValueEvent::new(0, ClapId::new(id as u32), Pckn::new(0u16, 0u16, 0u16, 0u32), v, Cookie::empty()));
+            }
+        }
+    });
+    sdsp_test_kit::alloc::assert_rt_clean("superduper-eq (dynamic)", frames / 512);
 }

@@ -9,6 +9,7 @@
 # `make` (no args) is the same as `make all`.
 
 .PHONY: help all clap wrappers install test test-fast clean release ios \
+        tools validate hooks validator-install \
         ambient compressor delay eq kubyz limiter pad reverb saturator \
         spectrum supermass vocal wave
 

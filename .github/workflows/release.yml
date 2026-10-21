@@ -241,7 +241,10 @@ jobs:
           cp -R dist/macos/SuperDuper*.clap "$HOME/Library/Audio/Plug-Ins/CLAP/"
           # CMake configure + build. The script handles patch application
           # idempotently and picks the right SDK if available.
-          bash scripts/build_wrappers.sh
+          # A hang here fails in 90 minutes, not at the job's 4-hour limit:
+          # v0.15.0's macOS job sat 6 h in this step (the same build takes
+          # 11.5 min on a laptop) and the log was gone by the time anyone looked.
+          timeout 90m bash scripts/build_wrappers.sh
 
           mkdir -p dist/vst3 dist/au
           for vst3 in build-wrappers/SuperDuper*.vst3; do

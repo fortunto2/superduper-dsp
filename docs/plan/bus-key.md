@@ -88,8 +88,12 @@ the real side-chain input stays for that.
         not reproduced by tests/odd_sample_rate.rs (every key, velocities down to 0, six rates);
         the validator's note generator also sends note-offs, chokes and sample offsets −4..64 —
         instrument the hit path next
-      - [ ] Looper 21× slower on denormal input (warning): the FTZ guard is in place, so it is
-        data-dependent work, not denormals — profile with the validator's input
+      - [x] Looper 8–21× "slower on denormals" (warning): read the test (clap-validator
+        src/tests/plugin_instance/processing.rs, 2026-10-21) — the second pass feeds subnormal
+        audio *and a fresh draw of random note/MIDI events*, and the Looper turns MIDI CCs into
+        record / overdub / play commands, so the two passes do different work. Not denormals; the
+        FTZ guard is in place. The ~2× readings on Compressor, Saturator, Double, Formant, NAM
+        move between runs the same way; nothing to fix
       - [x] Morph: the saved `model` was the store as is, so an instance that had processed
         (factory table loaded for its Target) saved differently from one that had not; the
         state now saves the model the audio thread would use for the current Target

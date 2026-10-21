@@ -419,6 +419,7 @@ impl_stage!(stage_vocoder,    superduper_vocoder::SuperDuperVocoder,       "co.s
 impl_stage!(stage_harmonic,   superduper_harmonic::SuperDuperHarmonic,     "co.superduperai.harmonic",   "/sdsp-chain/harm");
 impl_stage!(stage_wind,       superduper_wind::SuperDuperWind,             "co.superduperai.wind",       "/sdsp-chain/wind");
 impl_stage!(stage_soothe,     superduper_soothe::SuperDuperSoothe,         "co.superduperai.soothe",     "/sdsp-chain/sth");
+impl_stage!(stage_multiband,  superduper_multiband::SuperDuperMultiband,   "co.superduperai.multiband",  "/sdsp-chain/mb");
 
 macro_rules! impl_instrument {
     ($fn_name:ident, $plugin_ty:path, $bundle_id:literal, $entry_path:literal, $n_in:expr) => {
@@ -679,6 +680,7 @@ fn registry() -> &'static [PluginSpec] {
         PluginSpec { key: "harmonic",   params: superduper_harmonic::PARAMS,   presets: || superduper_harmonic::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_harmonic,   sidechain: false },
         PluginSpec { key: "wind",       params: superduper_wind::PARAMS,       presets: || superduper_wind::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_wind,       sidechain: false },
         PluginSpec { key: "soothe",     params: superduper_soothe::PARAMS,     presets: || superduper_soothe::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_soothe,     sidechain: false },
+        PluginSpec { key: "multiband",  params: superduper_multiband::PARAMS,  presets: || superduper_multiband::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_multiband,  sidechain: false },
     ]
 }
 

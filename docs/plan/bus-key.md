@@ -33,4 +33,9 @@ the real side-chain input stays for that.
 - [ ] NEW SuperDuper Multiband (Pro-MB style: dynamic phase, bands on the spectrum, per-band bus key) — agent running
 - [x] Saturator Inflate (Oxford Inflator curve)
 
+- [ ] tools/sdsp-chain + sdsp-mash: register Multiband, Morph, Double (and the new params) once Morph/Double land
+- [ ] skills: Morph + Double rows in sdsp-mix once installed
+
+- [ ] genre target curve (Ozone Tonal Balance, transparent): `mixcheck --target refs/*.json` — the corridor (mean ± spread) of 5–10 reference choruses per band; the agent moves EQ/Multiband only where the mix leaves it
+
 ## Done

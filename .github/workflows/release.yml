@@ -54,38 +54,10 @@ jobs:
 
       - name: Build plugins
         run: |
-          cargo build --release \
-            -p superduper-reverb \
-            -p superduper-supermass \
-            -p superduper-spectrum \
-            -p superduper-saturator \
-            -p superduper-delay \
-            -p superduper-compressor \
-            -p superduper-eq \
-            -p superduper-limiter \
-            -p superduper-ambient \
-            -p superduper-pad \
-            -p superduper-vocal \
-            -p superduper-wave \
-            -p superduper-kubyz \
-            -p superduper-chorus \
-            -p superduper-drum \
-            -p superduper-sampler \
-            -p superduper-piano \
-            -p superduper-looper \
-            -p superduper-filter \
-            -p superduper-midside \
-            -p superduper-lineq \
-            -p superduper-soothe \
-            -p superduper-vocoder \
-            -p superduper-pitch \
-            -p superduper-nam \
-            -p superduper-harmonic \
-            -p superduper-tune \
-            -p superduper-formant \
-            -p superduper-granular \
-            -p superduper-stretch \
-            -p superduper-wind
+          # Every plugin crate in cmake/plugin_list.cmake — the one list the bundle,
+          # wrapper and installer steps also read (a hand-typed list here lost
+          # Multiband/Morph/Double/Space in 0.16.0).
+          cargo build --release $(grep -oE '^ +"superduper-[a-z0-9-]+' cmake/plugin_list.cmake | tr -d ' "' | sed 's/^/-p /')
 
       - name: Run tests
         run: |
@@ -134,40 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/macos
-          for entry in \
-              "superduper_reverb|SuperDuperReverb|co.superduperai.reverb" \
-              "superduper_supermass|SuperDuperSupermass|co.superduperai.supermass" \
-              "superduper_spectrum|SuperDuperSpectrum|co.superduperai.spectrum" \
-              "superduper_saturator|SuperDuperSaturator|co.superduperai.saturator" \
-              "superduper_delay|SuperDuperDelay|co.superduperai.delay" \
-              "superduper_compressor|SuperDuperCompressor|co.superduperai.compressor" \
-              "superduper_eq|SuperDuperEq|co.superduperai.eq" \
-              "superduper_limiter|SuperDuperLimiter|co.superduperai.limiter" \
-              "superduper_ambient|SuperDuperAmbient|co.superduperai.ambient" \
-              "superduper_pad|SuperDuperPad|co.superduperai.pad" \
-              "superduper_vocal|SuperDuperVocal|co.superduperai.vocal" \
-              "superduper_wave|SuperDuperWave|co.superduperai.wave" \
-              "superduper_kubyz|SuperDuperKubyz|co.superduperai.kubyz" \
-              "superduper_chorus|SuperDuperChorus|co.superduperai.chorus" \
-              "superduper_drum|SuperDuperDrum|co.superduperai.drum" \
-              "superduper_sampler|SuperDuperSampler|co.superduperai.sampler" \
-              "superduper_piano|SuperDuperPiano|co.superduperai.piano" \
-              "superduper_looper|SuperDuperLooper|co.superduperai.looper" \
-              "superduper_filter|SuperDuperFilter|co.superduperai.filter" \
-              "superduper_midside|SuperDuperMidSide|co.superduperai.midside" \
-              "superduper_lineq|SuperDuperLineq|co.superduperai.lineq" \
-              "superduper_soothe|SuperDuperSoothe|co.superduperai.soothe" \
-              "superduper_nam|SuperDuperNam|co.superduperai.nam" \
-              "superduper_vocoder|SuperDuperVocoder|co.superduperai.vocoder" \
-              "superduper_pitch|SuperDuperPitch|co.superduperai.pitch" \
-              "superduper_harmonic|SuperDuperHarmonic|co.superduperai.harmonic" \
-              "superduper_tune|SuperDuperTune|co.superduperai.tune" \
-              "superduper_formant|SuperDuperFormant|co.superduperai.formant" \
-              "superduper_granular|SuperDuperGranular|co.superduperai.granular" \
-              "superduper_stretch|SuperDuperStretch|co.superduperai.stretch" \
-              "superduper_wind|SuperDuperWind|co.superduperai.wind"
+          grep -E '^\s+"superduper-' cmake/plugin_list.cmake | tr -d ' "' | while IFS='|' read -r crate name bundle_id _rest
           do
-              IFS='|' read -r dylib_stem name bundle_id <<<"$entry"
+              dylib_stem="${crate//-/_}"
               dylib="target/release/lib${dylib_stem}.dylib"
               [[ -f "$dylib" ]] || { echo "missing $dylib"; exit 1; }
               bundle="dist/macos/${name}.clap"
@@ -228,7 +169,10 @@ jobs:
             cmake-wrappers-${{ runner.os }}-
 
       - name: Build VST3 + AU wrappers
-        timeout-minutes: 240
+        # A hang fails in 90 minutes, not at the job's limit: v0.15.0 sat 6 h
+        # here (11.5 min on a laptop). Not `timeout 90m` in the script — macOS
+        # runners have no GNU timeout, and that line failed 0.16.1 with 127.
+        timeout-minutes: 90
         env:
           V: ${{ steps.ver.outputs.version }}
           CMAKE_C_COMPILER_LAUNCHER: ccache
@@ -245,10 +189,7 @@ jobs:
           cp -R dist/macos/SuperDuper*.clap "$HOME/Library/Audio/Plug-Ins/CLAP/"
           # CMake configure + build. The script handles patch application
           # idempotently and picks the right SDK if available.
-          # A hang here fails in 90 minutes, not at the job's 4-hour limit:
-          # v0.15.0's macOS job sat 6 h in this step (the same build takes
-          # 11.5 min on a laptop) and the log was gone by the time anyone looked.
-          timeout 90m bash scripts/build_wrappers.sh
+          bash scripts/build_wrappers.sh
 
           mkdir -p dist/vst3 dist/au
           for vst3 in build-wrappers/SuperDuper*.vst3; do
@@ -336,38 +277,9 @@ jobs:
 
       - name: Build plugins
         run: |
-          cargo build --release `
-            -p superduper-reverb `
-            -p superduper-supermass `
-            -p superduper-spectrum `
-            -p superduper-saturator `
-            -p superduper-delay `
-            -p superduper-compressor `
-            -p superduper-eq `
-            -p superduper-limiter `
-            -p superduper-ambient `
-            -p superduper-pad `
-            -p superduper-vocal `
-            -p superduper-wave `
-            -p superduper-kubyz `
-            -p superduper-chorus `
-            -p superduper-drum `
-            -p superduper-sampler `
-            -p superduper-piano `
-            -p superduper-looper `
-            -p superduper-filter `
-            -p superduper-midside `
-            -p superduper-lineq `
-            -p superduper-soothe `
-            -p superduper-vocoder `
-            -p superduper-pitch `
-            -p superduper-nam `
-            -p superduper-harmonic `
-            -p superduper-tune `
-            -p superduper-formant `
-            -p superduper-granular `
-            -p superduper-stretch `
-            -p superduper-wind
+          # Every plugin crate in cmake/plugin_list.cmake (see the macOS job).
+          $crates = Select-String -Path cmake/plugin_list.cmake -Pattern '^\s+"(superduper-[a-z0-9-]+)\|' | ForEach-Object { "-p"; $_.Matches[0].Groups[1].Value }
+          cargo build --release @crates
 
       - name: Run tests
         run: |
@@ -416,39 +328,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           New-Item -ItemType Directory -Force -Path dist/clap | Out-Null
-          $plugins = @(
-            @{ dll = "superduper_reverb.dll";     name = "SuperDuperReverb" },
-            @{ dll = "superduper_supermass.dll";  name = "SuperDuperSupermass" },
-            @{ dll = "superduper_spectrum.dll";   name = "SuperDuperSpectrum" },
-            @{ dll = "superduper_saturator.dll";  name = "SuperDuperSaturator" },
-            @{ dll = "superduper_delay.dll";      name = "SuperDuperDelay" },
-            @{ dll = "superduper_compressor.dll"; name = "SuperDuperCompressor" },
-            @{ dll = "superduper_eq.dll";         name = "SuperDuperEq" },
-            @{ dll = "superduper_limiter.dll";    name = "SuperDuperLimiter" },
-            @{ dll = "superduper_ambient.dll";    name = "SuperDuperAmbient" },
-            @{ dll = "superduper_pad.dll";        name = "SuperDuperPad" },
-            @{ dll = "superduper_vocal.dll";      name = "SuperDuperVocal" },
-            @{ dll = "superduper_wave.dll";       name = "SuperDuperWave" },
-            @{ dll = "superduper_kubyz.dll";      name = "SuperDuperKubyz" },
-            @{ dll = "superduper_chorus.dll";     name = "SuperDuperChorus" },
-            @{ dll = "superduper_drum.dll";       name = "SuperDuperDrum" },
-            @{ dll = "superduper_sampler.dll";    name = "SuperDuperSampler" },
-            @{ dll = "superduper_piano.dll";      name = "SuperDuperPiano" },
-            @{ dll = "superduper_looper.dll";     name = "SuperDuperLooper" },
-            @{ dll = "superduper_filter.dll";     name = "SuperDuperFilter" },
-            @{ dll = "superduper_midside.dll";    name = "SuperDuperMidSide" },
-            @{ dll = "superduper_lineq.dll";      name = "SuperDuperLineq" },
-            @{ dll = "superduper_soothe.dll";     name = "SuperDuperSoothe" },
-            @{ dll = "superduper_nam.dll";        name = "SuperDuperNam" },
-            @{ dll = "superduper_vocoder.dll";    name = "SuperDuperVocoder" },
-            @{ dll = "superduper_pitch.dll";      name = "SuperDuperPitch" },
-            @{ dll = "superduper_harmonic.dll";   name = "SuperDuperHarmonic" },
-            @{ dll = "superduper_tune.dll";       name = "SuperDuperTune" },
-            @{ dll = "superduper_formant.dll";    name = "SuperDuperFormant" },
-            @{ dll = "superduper_granular.dll";   name = "SuperDuperGranular" },
-            @{ dll = "superduper_stretch.dll";    name = "SuperDuperStretch" },
-            @{ dll = "superduper_wind.dll";       name = "SuperDuperWind" }
-          )
+          # From cmake/plugin_list.cmake, like the build step above.
+          $plugins = Select-String -Path cmake/plugin_list.cmake -Pattern '^\s+"(superduper-[a-z0-9-]+)\|([A-Za-z]+)\|' | ForEach-Object {
+            @{ dll = ($_.Matches[0].Groups[1].Value -replace '-', '_') + ".dll"; name = $_.Matches[0].Groups[2].Value }
+          }
           foreach ($p in $plugins) {
             $src = "target/release/$($p.dll)"
             $clap = "dist/$($p.name).clap"

@@ -505,7 +505,9 @@ pub fn spawn_bus_publisher_mcp<T: Send + Sync + 'static>(
                 keyed = false;
             }
             if let Some(req) = crate::bus_mail::take_request(publisher.instance()) {
-                let out = match (req.doc.as_str(), mail) {
+                // A panic in a handler must not take this thread with it: the
+                // slot would go stale and key_bands would freeze at their last value.
+                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match (req.doc.as_str(), mail) {
                     ("key", _) => key_doc(sc, &req.op, req.value),
                     ("params", _) => match &params {
                         Some(p) => params_doc(p, &inner, &req.op, req.value),
@@ -517,7 +519,7 @@ pub fn spawn_bus_publisher_mcp<T: Send + Sync + 'static>(
                     }
                     (_, Some(handle)) => handle(&inner, &req.doc, &req.op, req.value),
                     (d, None) => Err(format!("this plugin has only the \"key\" and \"params\" documents; got {d:?}")),
-                };
+                })).unwrap_or_else(|_| Err("the plugin's mail handler panicked; nothing was changed".into()));
                 crate::bus_mail::reply(publisher.instance(), req.id, out);
             }
             drop(inner);

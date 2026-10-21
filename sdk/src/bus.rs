@@ -104,7 +104,10 @@ fn put_f32(map: &MmapMut, off: usize, v: f32) { atomic_u32(map, off).store(v.to_
 fn get_f32(map: &MmapMut, off: usize) -> f32 { f32::from_bits(atomic_u32(map, off).load(Ordering::Relaxed)) }
 
 fn put_str(map: &MmapMut, off: usize, len: usize, s: &str) {
-    let bytes = s.as_bytes();
+    // Cut on a char boundary (64 bytes = 32 Cyrillic letters), never inside one.
+    let mut end = s.len().min(len - 1);
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    let bytes = &s.as_bytes()[..end];
     for i in 0..len / 4 {
         let mut w = [0u8; 4];
         for (j, b) in w.iter_mut().enumerate() { *b = *bytes.get(i * 4 + j).unwrap_or(&0); }
@@ -189,6 +192,10 @@ impl Publisher {
 
     fn write(&self, f: impl FnOnce(&MmapMut, usize)) {
         let b = slot_base(self.slot);
+        // After a stall longer than STALE_MS (sleep/wake, a debugger) another
+        // instance may have taken this slot; writing on would interleave two
+        // spectra under its name. The slot is theirs now.
+        if atomic_u64(&self.map, b + O_OWNER).load(Ordering::Acquire) != self.id { return; }
         let seq = atomic_u32(&self.map, b + O_SEQ);
         let s = seq.load(Ordering::Relaxed);
         seq.store(s.wrapping_add(1) | 1, Ordering::Release); // odd: writing

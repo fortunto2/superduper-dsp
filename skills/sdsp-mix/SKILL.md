@@ -108,8 +108,10 @@ pitch survives through its harmonics): 69% → 0%, guitar −2.2 dB.
   `plugin_set` on the bus server. Wave's `wavetable` is read and written in
   harmonics — `{harmonics: [[1, 0.4, 0, 0.15, 0.1]]}` = fundamental, some 2nd,
   no 3rd, a little 4th/5th for audibility. `plugin_get` first and keep it:
-  that is the undo. Kubyz's `harmonics` doc is its 16 harmonic amplitudes
-  (0..1.5) plus 3 formant bandwidths/gains — a short list zeroes the rest.
+  that is the undo. Kubyz's `harmonics` doc: `harmonics` (16 amplitudes
+  0..1.5, a short list zeroes the rest), `formants: [{f, bw, gain}]` (1–6, the
+  list length sets the band count), `formant_bw` / `formant_gain` (exactly one
+  value per live band).
   WT Pos (a parameter) morphs between Wave's frames, so an
   automation envelope on it changes the timbre per section.
 
@@ -131,7 +133,7 @@ exact names; everything below is off by default):
 | one band of a part needs taming only while the key plays | EQ `Dyn Source`=Key, `Dyn Gain` (−dB) at Mid Freq, key = the lead; `Self` = classic dynamic EQ |
 | level jumps; transparent program control | Compressor `Detector`=Dual (RMS stage + peak stage above `Peak Crest`), `Release RMS`/`Release Peak`; read GR: `plugin_get(…, "Compressor", "meter")` |
 | slow ducking from another track, no routing | Compressor `Key` 0..1 with `Key Lo`/`Key Hi`; for kick pumping use the side-chain input instead |
-| one region too dynamic (mud, harshness, boom) | Multiband: 2–4 bands, transparent when idle (bit-exact), per-band `Key %`; presets De-Mud Low-Mid, Vocal De-Harsh, Bass Control, Mastering Glue |
+| one region too dynamic (mud, harshness, boom) | Multiband: 2–4 bands, transparent when idle (bit-exact), per-band `B<n> Key` (%); presets De-Mud Low-Mid, Vocal De-Harsh, Bass Control, Mastering Glue |
 | reverb/delay wash over the vocal | Reverb/Delay `Key Duck` (dB) + `Key Range`, key = the vocal |
 | pad/synth in the vocal's way | Filter `Key Mod` (octaves, negative closes) while the key plays |
 | vocal level vs the music | Vocal `Rider`, `Rider Target` (dB over the key), `Rider Max`; key = the instrumental bus, not the master |
@@ -148,7 +150,10 @@ Electronic producers use Pi for exactly this — to "pack" a beat: aligned
 kick/sub/bass layers hit harder at the same level. Ours, explicitly:
 1. a SuperDuper plugin on the master (first in its chain) and on every track
    that matters; loop the section;
-2. `mix_phase(seconds=10, fader_db=…)` — `cancelling` lists bands 2+ dB short
+2. `mix_phase(seconds=10, fader_db=…, master_plugin="EQ")` — name the *first*
+   plugin in the master chain; the default takes the loudest master instance,
+   which behind a mastering EQ and limiter reads their curve as "cancellation";
+   `cancelling` lists bands 2+ dB short
    of the tracks' sum, with the loudest tracks there as suspects;
    `not_on_bus_hz` warns where the master holds sources the bus cannot see;
 3. flip one suspect's polarity (REAPER `run_lua`:
@@ -186,7 +191,7 @@ transient. That is the compressor's side-chain input, routed in the DAW.
 - cut the other one **2–3 dB, Q ≈ 2, at the clash band's centre**
   (√(low·high)); a 20 dB gap is ownership, not masking — leave it;
 - if the clash only happens when both play (vocal over the beat), it is a job
-  for band-wise ducking (Soothe keyed from the bus — coming), not a static cut;
+  for band-wise ducking (`duck_under`, Soothe keyed from the bus), not a static cut;
 - re-run `mixmap.py`: the pair's share should drop well below 50 %. One change
   at a time, as everywhere here.
 
@@ -218,7 +223,9 @@ sits in the chain, so a fader move in the DAW is invisible to it (Sound Radix
 Pi asks to sit post-fader for the same reason). Before a mix_masking run read
 the faders — REAPER MCP `run_lua` with
 `local o={} for i=0,reaper.CountTracks(0)-1 do local t=reaper.GetTrack(0,i) local _,n=reaper.GetTrackName(t) o[n]=20*math.log(reaper.GetMediaTrackInfo_Value(t,"D_VOL"),10) end return o`
-— and pass the map as `fader_db`. Same map for runs you compare.
+— and pass the map as `fader_db`. Same map for runs you compare. Track names in
+`prefer` and `fader_db` match like everywhere else: exact, case-insensitive,
+or containment either way (the bus cuts names at 64 bytes).
 
 **Name effect returns so the map knows them.** A reverb or delay return holds
 its source's signal and clashes with it in every band; the bus cannot see
@@ -366,7 +373,8 @@ in — they take the dry signal as the key when no sidechain is routed.
 
 A static EQ cut that fixes the loud note ruins every other note. `soothe` cuts
 only when the band actually spikes. Amount 6–9 dB, Sens −9, bracket the range
-you care about (2.5–9 kHz for harsh vocals, 200–500 Hz for boxy).
+you care about (2.5–9 kHz for harsh vocals; `Hi` cannot go below 3 kHz, so a
+boxy 200–500 Hz region is EQ Dyn Source=Self or Multiband De-Mud instead).
 
 ## The channel chain — one order, only the numbers change
 
@@ -545,14 +553,13 @@ The ten that matter most (MS ch):
 9. Glue on the bus while mixing: ~2–3 dB at ≤ 2:1, no multiband on the master (19).
 10. Reference gain-matched, lossless, same genre and section, many rounds (4, 19).
 
-**Where our meters fall short of the book** (so do not claim these were
-checked): `mix_masking` only flags two tracks *within 6 dB* in a band — the
-book's other masking, a loud part burying a quiet one that must be heard, it
-reads as "ownership" and stays silent; no mono/correlation meter (proxy: mute
-Sides with Mid/Side on the master and compare per-track levels); `mixcheck.py`
-has no LUFS (peak/RMS/crest in 7 bands, nothing above 16 kHz) — LUFS is on the
-Spectrum and Limiter meters; compressor side-chain and gain-reduction readout
-unverified; no gate, transient shaper or de-esser (Soothe on the band stands in).
+**Where our meters still fall short of the book** (so do not claim these were
+checked): no live mono/correlation meter in the DAW (offline: `mixcheck`'s
+correlation and per-band mono loss on a render; live proxy: mute Sides with
+Mid/Side on the master and compare per-track levels); no gate or transient
+shaper (Vocal's de-esser and Soothe stand in for a de-esser); Soothe's band
+bank cannot end below 3 kHz (`Hi` ≥ 3000), so a boxy 200–500 Hz region is
+EQ `Dyn Source`=Self or Multiband De-Mud, not Soothe.
 
 The free companion site (3rd edition) is the useful part for agents:
 https://cambridge-mt.com/ms3/ — one page of resources per chapter, and the

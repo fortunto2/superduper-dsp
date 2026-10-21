@@ -408,11 +408,12 @@ pub fn key_picker(ui: &mut egui::Ui, scope: &crate::gui::LiveScope) {
                 if guard.is_none() { *guard = Reader::open(); }
                 let rows = guard.as_ref().map(|r| r.read_all()).unwrap_or_default();
                 let tracks = mixmap::loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)));
-                let mut tracks: Vec<&TrackSpectrum> = tracks.iter().filter(|t| !t.bus && t.name != own).collect();
+                // Buses stay pickable (a vocal rider keys from the instrumental bus).
+                let mut tracks: Vec<&TrackSpectrum> = tracks.iter().filter(|t| t.name != own && !t.name.is_empty()).collect();
                 tracks.sort_by(|a, b| b.rms_db.total_cmp(&a.rms_db));
                 for t in tracks {
                     let col = if t.rms_db > mixmap::LOUD_DB { GREEN } else { GREEN_DIM };
-                    let text = egui::RichText::new(format!("{}  {:.0} dB", t.name, t.rms_db)).color(col);
+                    let text = egui::RichText::new(format!("{}{}  {:.0} dB", t.name, if t.bus { " (bus)" } else { "" }, t.rms_db)).color(col);
                     if ui.selectable_label(current == t.name, text).clicked() { pick = Some(t.name.clone()); }
                 }
             });

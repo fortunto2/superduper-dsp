@@ -3,8 +3,9 @@
 //! Over stdio (`--stdio`, what the project's .mcp.json uses: the client
 //! starts it, nothing to keep running) or streamable HTTP on
 //! 127.0.0.1:7892/mcp. Not 7891: that is each plugin's own MCP server.
-//! Read-only on the plugins, plus the one thing an agent writes today: the
-//! song key Drum's Key = Auto follows.
+//! Reads the bus (levels, spectra, masking, phase) and writes into plugins
+//! through their mailboxes: parameters by name, documents (wavetables,
+//! harmonics, captured timbres), the bus key, the song key.
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -21,6 +22,19 @@ use superduper_synth_core::mixmap::{loudest_per_track, MaskingTracker, TrackSpec
 /// Track name → plugin that stands for the track's output.
 type Prefer = std::collections::HashMap<String, String>;
 
+/// A per-track map entry for `track`, matched like every other track input:
+/// exact, then case-insensitive, then containment either way (the bus cuts
+/// names at 64 bytes, so the DAW's full name may be longer than the bus's).
+fn lookup<'a, V>(map: &'a std::collections::HashMap<String, V>, track: &str) -> Option<&'a V> {
+    let t = track.to_lowercase();
+    map.get(track)
+        .or_else(|| map.iter().find(|(k, _)| k.to_lowercase() == t).map(|(_, v)| v))
+        .or_else(|| {
+            let hits: Vec<&V> = map.iter().filter(|(k, _)| { let k = k.to_lowercase(); t.contains(&k) || k.contains(&t) }).map(|(_, v)| v).collect();
+            if hits.len() == 1 { Some(hits[0]) } else { None }
+        })
+}
+
 /// One spectrum per track. The bus has no chain order, so by default a track
 /// is its loudest instance — wrong once a cut follows the instrument (the EQ
 /// after it is quieter than it). `prefer` names the instance that is last in
@@ -29,10 +43,7 @@ fn tracks(rows: &[Snapshot], prefer: &Prefer) -> Vec<TrackSpectrum> {
     // Track names in `prefer` match like everywhere else (case-insensitive,
     // substring); a preferred plugin that is not on the track falls back to
     // the loudest instance instead of silently dropping the track.
-    let pref_for = |track: &str| {
-        let t = track.to_lowercase();
-        prefer.iter().find(|(k, _)| k.to_lowercase() == t).or_else(|| prefer.iter().find(|(k, _)| t.contains(&k.to_lowercase()))).map(|(_, p)| p.to_lowercase())
-    };
+    let pref_for = |track: &str| lookup(prefer, track).map(|p| p.to_lowercase());
     // A bypassed plugin publishes nothing (its bypass path skips the scope),
     // so a preferred instance reading as bus silence is not the track's
     // output either: fall back to the loudest instance then.
@@ -349,7 +360,7 @@ impl BusServer {
             let mut tracks = tracks(&r.read_all(), prefer.as_ref().unwrap_or(&Prefer::new()));
             if let Some(f) = &fader_db {
                 for t in &mut tracks {
-                    if let Some(g) = f.get(&t.name) {
+                    if let Some(g) = lookup(f, &t.name) {
                         t.rms_db += g;
                         for b in t.bands_db.iter_mut() { *b += g; }
                     }
@@ -371,7 +382,10 @@ impl BusServer {
             let (louder, by) = if la >= lb { (c.a.clone(), la - lb) } else { (c.b.clone(), lb - la) };
             ClashOut { low_hz: edges[c.band], high_hz: edges[c.band + 1], share: c.share, louder, by_db: by, a: c.a, b: c.b }
         }).collect();
-        let names = last.into_iter().filter(|t| !t.bus).map(|t| t.name).collect();
+        let names: Vec<String> = last.into_iter().filter(|t| !t.bus).map(|t| t.name).collect();
+        if names.is_empty() {
+            return Err(McpError::invalid_params("nothing to measure: no named track on the bus (transport stopped, or no CLAP SuperDuper plugin on a track) — this is not 'no clashes'", None));
+        }
         let mut levels: Vec<TrackLevel> = power.into_iter()
             .map(|(track, p)| TrackLevel { track, rms_db: (10.0 * (p / frames as f64 + 1e-12).log10()) as f32 })
             .collect();
@@ -412,7 +426,7 @@ impl BusServer {
             master_name = m.plugin.clone();
             for (b, v) in m.bands_db.iter().enumerate() { mp[b] += 10f64.powf(*v as f64 / 10.0); }
             for t in tracks(&rows, &prefer).into_iter().filter(|t| !t.bus) {
-                let g = i.fader_db.as_ref().and_then(|f| f.get(&t.name)).copied().unwrap_or(0.0);
+                let g = i.fader_db.as_ref().and_then(|f| lookup(f, &t.name)).copied().unwrap_or(0.0);
                 let c = contrib.entry(t.name.clone()).or_insert([0.0; BANDS]);
                 for (b, v) in t.bands_db.iter().enumerate() {
                     let p = 10f64.powf((*v + g) as f64 / 10.0);

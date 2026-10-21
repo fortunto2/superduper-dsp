@@ -1,6 +1,6 @@
 ---
 name: sdsp-mix
-description: Mix and master a track with the SuperDuper plugins the way a professional engineer would — kick/bass sidechain ducking, a pocket for the vocal, mono low end, parallel drum compression, and a mastering chain aimed at a loudness target that keeps its dynamics. Includes tools/mixcheck.py for measuring a mix against a commercial reference. Use when a render sounds "flat", "muddy", "doesn't hit", "too quiet next to other tracks", or before delivering anything. Do NOT use for writing the arrangement (superduper-song) or building plugins (superduper-plugin).
+description: Mix and master a track with the SuperDuper plugins the way a professional engineer would — a live mix map of who masks whom (SuperDuper bus, mixmap.py, MCP mix_masking), kick/bass sidechain ducking, a pocket for the vocal, mono low end, parallel drum compression, and a mastering chain aimed at a loudness target that keeps its dynamics. Includes tools/mixcheck.py for measuring a mix against a commercial reference. Use when a render sounds "flat", "muddy", "doesn't hit", "too quiet next to other tracks", or before delivering anything. Do NOT use for writing the arrangement (superduper-song) or building plugins (superduper-plugin).
 ---
 
 # sdsp-mix — mixing and mastering that is measured, not guessed
@@ -31,6 +31,60 @@ What the numbers mean:
 
 Absolute band targets are a myth — genres differ by 10 dB. **Always pass `--ref`**
 with a commercial track in the same style. `~/Music/!electro/` has plenty.
+
+## Measure the live session — the bus and the mix map
+
+`mixcheck.py` measures a finished render. While the session is open in the DAW,
+every SuperDuper plugin is already publishing its track's level and a 32-band
+spectrum on the bus (`~/.superduper-dsp/bus`), so **who fights whom** can be
+seen while the song plays, without bouncing stems.
+
+**Before measuring:**
+- every track to judge has at least one SuperDuper plugin (any — a flat EQ or
+  Spectrum at the end of the chain will do; the bus reads where it sits);
+- tracks are named **before** the plugin is added (the name is read when the
+  plugin is instantiated; rename later → reopen the project);
+- **all mutes off** and a section where everything plays (the chorus) —
+  a muted or silent part hides every clash it causes.
+
+```bash
+~/.cargo-target/release/sdsp-bus                      # table: track, plugin, level, spectrum strip
+cd ~/Music/1music/superduper-dsp/tools/sdsp-bus
+uv run mixmap.py -s 30 -o ~/Desktop/mixmap.png        # record 30 s of playback → picture
+```
+
+Then **look at the PNG** (Read it). Three panels:
+
+1. **Track spectra** — each track's average band RMS, one colour each. Masters
+   and unnamed buses are drawn but never counted as clashing (they carry
+   everything).
+2. **Masking** — per pair of tracks, per band, the share of time both were loud
+   (> −50 dB) and **within 6 dB** of each other: neither owns the band. The
+   console also prints the worst pairs, e.g. measured 2026-10-20:
+   `Бас 808 × Гитара 2015: worst at 267-331 Hz (72% of the time)`.
+3. **Spectrograms** per track over time — a clash that only happens on the
+   chorus shows up here as two bright stripes at the same height.
+
+**Deciding the fix** — one band, one owner:
+- the part whose *job* is that band keeps it: kick and bass under ~150 Hz,
+  the vocal 1–4 kHz, the lead its own fundamental;
+- cut the other one **2–3 dB, Q ≈ 2, at the clash band's centre**
+  (√(low·high)); a 20 dB gap is ownership, not masking — leave it;
+- if the clash only happens when both play (vocal over the beat), it is a job
+  for band-wise ducking (Soothe keyed from the bus — coming), not a static cut;
+- re-run `mixmap.py`: the pair's share should drop well below 50 %. One change
+  at a time, as everywhere here.
+
+When `sdsp-bus serve` is running, the same data is on MCP (`superduper-dsp` in
+`.mcp.json`, port 7891): `bus_list`, `track_spectrum`, `mix_masking`
+(also says which track is louder in the band and by how much),
+`get_song_key` / `set_song_key`. Use `mix_masking` instead of the picture when
+only the numbers are needed.
+
+**Limits:** one curve per track = its loudest SuperDuper instance (the bus has
+no plugin order); bands are ~1/3 octave (32 over 20 Hz–20 kHz) from an 85 ms
+window — enough to find a fight, too coarse to place a surgical notch (use the
+plugin's own spectrum for that).
 
 ## The moves, in the order they matter
 
@@ -269,6 +323,7 @@ sources (hats, sparkle layers), the master EQ cannot invent it.
 |---|---|---|
 | dull, muffled | band delta in presence/air | synth hats and voices have no top of their own — add a bright source, don't just EQ air into nothing |
 | muddy, boxy | body vs reference, correlation | no high-passes; two parts sharing 200–400 Hz |
+| two parts blur into one | `mixmap.py` masking panel / `mix_masking` | a pair within 6 dB in one band most of the time — cut the one that doesn't need it 2–3 dB there |
 | doesn't hit | crest, section arc | limiter over-driven; or the build isn't below the drop |
 | bass disappears on small speakers | band balance, sub vs kick | all energy under 60 Hz; saturate the bass for harmonics |
 | kick and bass fight | peak vs rms in the low band | no sidechain — see move 1 |

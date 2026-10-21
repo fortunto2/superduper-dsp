@@ -561,25 +561,53 @@ in their display name. Released for macOS arm64 + Windows x64 via CI.
 pick a `Div` (1/1 ↔ 1/16t, dotted + triplet variants), rate computes
 from host BPM read out of `CoreEventSpace::Transport` events.
 
-## SuperDuper bus (2026-10-20)
+## SuperDuper bus (2026-10-20, grown 2026-10-21) — and the MCP-first rule
 
 Every plugin instance publishes what it hears — RMS, peak, a 32-band
 spectrum (20 Hz-20 kHz, band RMS so bands sum to the total), its host track
-name (CLAP track-info, read at instantiation) and optionally a key — into a
-memory-mapped file `~/.superduper-dsp/bus` (`SUPERDUPER_BUS` overrides).
-`sdk::bus` = layout + `Publisher` / `Reader` (128 slots, CAS-claimed, seqlock
-per slot, 3 s heartbeat → a crashed host's slot is reclaimed). A file because
-every plugin is its own dylib (no shared statics) and outside tools must see
-it too. Publishing is a background thread per instance
-(`synth_core::gui::spawn_bus_publisher`) reading the `LiveScope` every plugin
-already fills — nothing new on the audio thread. `tools/sdsp-bus` prints the
-live table (`--watch`, `--json` for agents). Verified by
-`superduper-eq/tests/bus.rs`: a 1 kHz tone lands in the 974-1209 Hz band at
-−9.0 dB (its RMS), neighbours ≤ −41 dB. That test found EQ, Ambient and
-Saturator pushing L then R blocks into one scope (seams → a −31 dB broadband
-skirt); they now push one channel. Scopes are 4096 samples (85 ms) so the
-low bands resolve. Next: control region (song key, track roles), MCP + OSC
-gateway, Soothe band-wise sidechain keyed from the bus.
+name **and kind** (CLAP track-info; `TRACK_MASTER/BUS/RETURN` bits in the
+slot, re-read on the host's `changed()` so renames and FX added by an agent
+show up at once) and optionally a key — into a memory-mapped file
+`~/.superduper-dsp/bus` (`SUPERDUPER_BUS` overrides). `sdk::bus` = layout +
+`Publisher` / `Reader` (128 slots, CAS-claimed, seqlock per slot, 3 s
+heartbeat → a crashed host's slot is reclaimed). A file because every plugin
+is its own dylib and outside tools must see it too. Publishing is a
+background thread per instance (`synth_core::gui::spawn_bus_publisher_mcp`)
+reading the `LiveScope` every plugin already fills — nothing new on the audio
+thread; a plugin with no new samples for 500 ms publishes silence (a bypassed
+Drum once sat on the bus with its last spectrum and invented a 71 % clash).
+Verified by `superduper-eq/tests/bus.rs`.
+
+**The way back in — the mailbox** (`synth_core::bus_mail`, files next to the
+bus, atomic rename, id-matched replies, one request at a time per instance):
+every plugin answers `params` (list/get/set every CLAP parameter by name,
+clamped, dirty-flagged so the host sees it) and `key` (which bus track it
+reacts to); plugins add their own documents in mix-decision terms — Wave
+`wavetable` (harmonics), Kubyz `harmonics` (+ 1–6 formants), Compressor /
+Multiband `meter` (gain reduction, read-only), Morph `target`.
+
+**The bus key** (`LiveScope::key_track` / `key_bands`, `synth_core::bus_key`):
+the publisher thread copies the key track's spectrum into atomics,
+`key_db_at(hz)` is audio-thread safe. Consumers: Soothe (Key Depth — spectral
+ducking, Trackspacer), Compressor (Key + band), EQ (dynamic Mid band),
+Multiband (per band), Reverb/Delay (Key Duck), Filter (Key Mod), Vocal
+(Rider), Double (Key Open). The bus lags 50–100 ms: slow ducking, never kick
+pumping — that stays the side-chain input.
+
+**`sdsp-bus serve`** (stdio, the `superduper-bus` entry in `.mcp.json`; HTTP on
+:7892 — 7891 is each plugin's own MCP) is what an agent mixes through:
+`bus_list`, `track_spectrum`, `mix_masking` (clashes = both loud within 6 dB,
+`buried` = 6–20 dB under; `prefer` names the chain's last plugin, `fader_db`
+because the bus hears pre-fader, `label` keeps a run), `mix_compare`,
+`mix_phase` (bands where parts cancel in the sum, after Sound Radix Pi),
+`plugin_docs/get/set`, `plugin_params/set_params`, `duck_under`,
+`get/set_song_key`. Masking math in `synth_core::mixmap`; the mix map in every
+plugin window (`[ ] mix` strip, `mix_view`) and full size in Spectrum.
+
+**MCP-first is the rule** (`skills/superduper-plugin` §1b): a feature an agent
+cannot reach over the bus does not exist; the same change updates
+`skills/sdsp-mix` ("Which plugin for what") and the chain registries.
+`tools/plugin_smoke.py` renders every effect headless as the CLI gate.
 
 ## Headless CLI tools (no REAPER required)
 
@@ -587,7 +615,7 @@ gateway, Soothe band-wise sidechain keyed from the bus.
   plays a WAV file through it to cpal output. Single-plugin testing.
   Effects only — synth/MIDI plugins won't make sound (no MIDI events).
 - **`tools/sdsp-chain`** — headless renderer for plugin chains, and the
-  intended engine under a future GUI app. Statically links **22 effects + 7
+  intended engine under a future GUI app. Statically links **25 effects + 7
   instruments**; instruments are PLAYABLE from the TOML (`instrument = "kubyz"`
   + `notes = [[start_s, dur_s, midi, vel], …]`, `preset = <index>` recalled via
   a main-thread setup pass — details in the `sdsp-chain` skill).
@@ -636,8 +664,12 @@ gateway, Soothe band-wise sidechain keyed from the bus.
   synthetic suite with known f0 (accuracy in cents, octave-error rate, CPU);
   a WAV = agreement between them plus the timestamps where they disagree by an
   octave. This is how the `Model` choice in Tune is meant to be settled.
-- **`tools/mixcheck.py`** — measure a finished mix: band balance against a
-  commercial reference, crest factor, channel correlation, per-section RMS arc.
+- **`tools/mixcheck.py`** — measure a finished mix: integrated / loudest-3 s
+  LUFS (BS.1770; the reference's LU gap printed, gain-match before judging),
+  band balance against a commercial reference, crest factor, correlation,
+  per-band mono loss, side/mid under 120 Hz, per-section RMS arc;
+  `--start/--end` + `--ref-start/--ref-end` compare chorus with chorus,
+  `--json` writes a section's profile. Known answers in `tools/test_mixcheck.py`.
   See the `sdsp-mix` skill for how to act on the numbers.
 - **`tools/wave-inspect`** — diagnostic CLI for Wave's WAV-to-wavetable
   pipeline. Pitch detection, single + multi-frame extraction,

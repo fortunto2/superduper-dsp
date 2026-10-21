@@ -136,10 +136,14 @@ macro_rules! simple_state_impl {
                     .shared
                     .active_preset
                     .load(::std::sync::atomic::Ordering::Relaxed);
-                $crate::clap_helpers::save_simple_state_with_preset(
+                // The bus key track rides along, so a keyed plugin (Soothe
+                // ducking under the vocal) still knows its key on reopen.
+                let key = self.shared.scope.key_track.lock().clone();
+                $crate::clap_helpers::save_simple_state_keyed(
                     &self.shared.params,
                     self.shared.bypass.load(::std::sync::atomic::Ordering::Relaxed),
                     preset,
+                    &key,
                     output,
                 )
             }
@@ -147,8 +151,9 @@ macro_rules! simple_state_impl {
                 &mut self,
                 input: &mut ::clack_common::stream::InputStream,
             ) -> Result<(), ::clack_plugin::prelude::PluginError> {
-                let (bypass, preset) =
-                    $crate::clap_helpers::load_simple_state_with_preset(&self.shared.params, input)?;
+                let (bypass, preset, key) =
+                    $crate::clap_helpers::load_simple_state_keyed(&self.shared.params, input)?;
+                *self.shared.scope.key_track.lock() = key;
                 self.shared
                     .bypass
                     .store(bypass, ::std::sync::atomic::Ordering::Relaxed);

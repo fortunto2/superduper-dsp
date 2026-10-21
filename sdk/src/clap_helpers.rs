@@ -159,6 +159,10 @@ pub struct SimpleState {
     /// reopen instead of resetting to "Init".
     #[serde(default)]
     pub active_preset: u32,
+    /// Bus key: the track this instance reacts to (`LiveScope::key_track`).
+    /// Empty and omitted when unset, so older builds read these states too.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_track: String,
 }
 
 pub const SIMPLE_STATE_VERSION: u32 = 1;
@@ -180,11 +184,23 @@ pub fn save_simple_state_with_preset(
     active_preset: u32,
     output: &mut clack_common::stream::OutputStream,
 ) -> Result<(), clack_plugin::plugin::PluginError> {
+    save_simple_state_keyed(params, bypass, active_preset, "", output)
+}
+
+/// `save_simple_state_with_preset` plus the bus key track.
+pub fn save_simple_state_keyed(
+    params: &[AtomicF32],
+    bypass: bool,
+    active_preset: u32,
+    key_track: &str,
+    output: &mut clack_common::stream::OutputStream,
+) -> Result<(), clack_plugin::plugin::PluginError> {
     let state = SimpleState {
         version: SIMPLE_STATE_VERSION,
         params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
         bypass,
         active_preset,
+        key_track: key_track.to_string(),
     };
     serde_json::to_writer(output, &state)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON write error"))
@@ -205,6 +221,14 @@ pub fn load_simple_state_with_preset(
     params: &[AtomicF32],
     input: &mut clack_common::stream::InputStream,
 ) -> Result<(bool, u32), clack_plugin::plugin::PluginError> {
+    load_simple_state_keyed(params, input).map(|(b, p, _)| (b, p))
+}
+
+/// `load_simple_state_with_preset` plus the bus key track ("" if none).
+pub fn load_simple_state_keyed(
+    params: &[AtomicF32],
+    input: &mut clack_common::stream::InputStream,
+) -> Result<(bool, u32, String), clack_plugin::plugin::PluginError> {
     let state: SimpleState = serde_json::from_reader(input)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON read error"))?;
     if state.version != SIMPLE_STATE_VERSION {
@@ -217,7 +241,7 @@ pub fn load_simple_state_with_preset(
             slot.store(*v, Ordering::Relaxed);
         }
     }
-    Ok((state.bypass, state.active_preset))
+    Ok((state.bypass, state.active_preset, state.key_track))
 }
 
 /// Push a `ParamValueEvent` into the host's output queue for every dirty

@@ -81,6 +81,20 @@ the map, then ask why before reaching for an EQ:
 - **EQ last**, and narrow: only when the register and the timing are right and
   two timbres still overlap.
 
+**Reading and moving notes (REAPER MCP, `dsl-production` profile):**
+- `midi_note_stats(track_index)` — range and pitch histogram with Hz: read
+  both parts of a clashing pair before touching an EQ;
+- `midi_transpose_notes(track_index, semitones, below_pitch=…, above_pitch=…,
+  drop_doubled=true, dry_run=true)` — dry run first, then for real; notes
+  whose target already sounds are dropped instead of doubled, pooled items
+  are edited once, one undo step (`dsl_undo`). The 2026-10-21 fix:
+  `track_index=2, semitones=12, below_pitch=48` → 51 up, 51 dropped,
+  91–112 Hz clash 75% → 0%;
+- `run_lua(code)` — anything else: the code runs inside REAPER with the full
+  `reaper.*` API and `return`s JSON. The bridge alone cannot hand a track or
+  take handle back in, so anything that walks items → takes → notes goes
+  here. Wrap edits in `Undo_BeginBlock2(0)` / `Undo_EndBlock2(0, "what", -1)`.
+
 **Deciding the fix** — one band, one owner:
 - the part whose *job* is that band keeps it: kick and bass under ~150 Hz,
   the vocal 1–4 kHz, the lead its own fundamental;
@@ -389,3 +403,31 @@ sources (hats, sparkle layers), the master EQ cannot invent it.
 - The reference is not a target to match exactly — it is a sanity check for how
   far off you are.
 - Loudness last, and lower than you think.
+
+## Reference: Mike Senior, *Mixing Secrets for the Small Studio*
+
+The book this skill leans on for method (Focal Press, 3rd ed.; no legal free
+PDF). Its free companion site is the useful part for agents:
+https://cambridge-mt.com/ms3/ — one page of resources per chapter, and the
+chapter order is a sane order for a mix: groundwork → timing & tuning →
+**comping & arrangement** (before any processing, which is this skill's
+"register first") → balance → compression → EQ → frequency-selective dynamics
+→ side-chains → reverb/delay → stereo → master buss & referencing →
+automation.
+
+**Multitrack library** — https://cambridge-mt.com/ms3/mtk/ (≈640 full
+multitracks, ≈550 short "Edited Excerpt" ones, usually the biggest chorus):
+- raw WAV, 24/16-bit, 44.1 kHz, every file starting at 0 — import all at the
+  same start; each song has a **preview mix** to compare against;
+- direct links: `https://multitracks.cambridge-mt.com/<Artist>_<Song>.zip`
+  (excerpt) and `…_Full.zip`; beginner picks at `/ms3/mtk-newbies/`, search by
+  instrument/track count at `multitracksearch.cambridge-mt.com`;
+- **educational use only, never commercial** (usage FAQ: `/ms3/mtk-faq/`) —
+  fine for testing our plugins and the agent loop, not for anything released;
+- the site sits behind a Cloudflare check: `curl` gets 403, a real browser
+  (Playwright) passes after a few seconds.
+
+Use it as the benchmark for agent mixing: load an excerpt, put a SuperDuper
+plugin on every track, run the measure → change → compare loop, then measure
+our render against the preview mix (`tools/mixcheck.py`). An improvement is a
+number, not a feeling.

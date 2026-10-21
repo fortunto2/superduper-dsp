@@ -9,7 +9,10 @@
 
 pub mod plate;
 pub mod gui;
+pub mod key;
 pub mod presets;
+#[cfg(test)]
+mod key_tests;
 pub use plate::{PlateParams, PlateState};
 
 use atomic_float::AtomicF32;
@@ -65,6 +68,14 @@ pub const PARAMS: &[ParamDef] = &[
     // Freeze toggle — when on, decay → ∞ and input is muted into the tank.
     // The existing tail keeps recirculating with no damping loss.
     ParamDef { id: 12, name: b"Freeze",       min: 0.0, max: 1.0,  default: 0.0, unit: "" },
+    // Bus key (Mixing Secrets ch17: duck long effect returns from the lead
+    // vocal): with a key track picked, the wet tail drops by up to Key Duck
+    // while the key plays. Slow by nature (the key is 50–100 ms late), dry
+    // untouched. 0 = off. Separate from Duck Amount, which keys off the
+    // sidechain port or the dry input sample by sample.
+    ParamDef { id: 13, name: b"Key Duck",     min: 0.0, max: 24.0, default: 0.0, unit: "dB" },
+    // How far above −50 dB the key must be for the full duck.
+    ParamDef { id: 14, name: b"Key Range",    min: 6.0, max: 40.0, default: 24.0, unit: "dB" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -86,6 +97,8 @@ pub const P_DUCK_RELEASE: usize = 9;
 pub const P_PD_SYNC: usize = 10;
 pub const P_PD_DIV: usize = 11;
 pub const P_FREEZE: usize = 12;
+pub const P_KEY_DUCK: usize = 13;
+pub const P_KEY_RANGE: usize = 14;
 
 
 // ===========================================================================
@@ -189,10 +202,34 @@ pub struct PluginAudioProcessor<'a> {
     smooth_damp: SmoothedParam,
     smooth_predelay: SmoothedParam,
     smooth_mod: SmoothedParam,
+    /// Bus-key duck of the wet signal (`Key Duck`), smoothed 20/250 ms.
+    key: key::KeyEnvelope,
     // Sidechain scratch + routed latch (port index 1). Pre-allocated at
     // `activate` so the audio thread never touches the allocator.
     sc: SidechainSnapshot,
     sample_rate: f32,
+}
+
+// Resolve each channel into (read_slice, write_slice). For InPlace we
+// reuse the same buffer for both. OutputOnly clears, InputOnly is a no-op.
+fn split<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32])> {
+    match c {
+        ChannelPair::InputOutput(i, o) => Some((i, o)),
+        ChannelPair::InPlace(buf) => {
+            // SAFETY: aliasing read+write is fine here because we only read
+            // a sample before overwriting that same index.
+            let ptr = buf.as_mut_ptr();
+            let len = buf.len();
+            let read = unsafe { core::slice::from_raw_parts(ptr, len) };
+            let write = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+            Some((read, write))
+        }
+        ChannelPair::OutputOnly(buf) => {
+            buf.fill(0.0);
+            None
+        }
+        ChannelPair::InputOnly(_) => None,
+    }
 }
 
 /// Walk left & right channel buffers in lockstep, feeding each (L,R) sample
@@ -232,29 +269,8 @@ fn stereo_process(
     bypassed: bool,
     freeze: bool,
     scope: &superduper_synth_core::gui::LiveScope,
+    (key, key_duck_db): (&mut key::KeyEnvelope, f32),
 ) {
-    // Resolve each channel into (read_slice, write_slice). For InPlace we
-    // reuse the same buffer for both. OutputOnly clears, InputOnly is a no-op.
-    fn split<'b>(c: ChannelPair<'b, f32>) -> Option<(&'b [f32], &'b mut [f32])> {
-        match c {
-            ChannelPair::InputOutput(i, o) => Some((i, o)),
-            ChannelPair::InPlace(buf) => {
-                // SAFETY: aliasing read+write is fine here because we only read
-                // a sample before overwriting that same index.
-                let ptr = buf.as_mut_ptr();
-                let len = buf.len();
-                let read = unsafe { core::slice::from_raw_parts(ptr, len) };
-                let write = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-                Some((read, write))
-            }
-            ChannelPair::OutputOnly(buf) => {
-                buf.fill(0.0);
-                None
-            }
-            ChannelPair::InputOnly(_) => None,
-        }
-    }
-
     let l = split(ch_l);
     let r = ch_r.and_then(split);
 
@@ -293,7 +309,7 @@ fn stereo_process(
             let duck_gain = ducker.process(
                 key_l, key_l, sr,
                 duck_amount_db, duck_attack_ms, duck_release_ms,
-            );
+            ) * key::duck_gain(key.tick(), key_duck_db);
             // Freeze: mute dry → tank so the existing tail recirculates
             // without being overwritten by new input. The dry-blend in
             // the output mix still uses the live dry sample so the user
@@ -347,7 +363,7 @@ fn stereo_process(
         let duck_gain = ducker.process(
             key_l, key_r, sr,
             duck_amount_db, duck_attack_ms, duck_release_ms,
-        );
+        ) * key::duck_gain(key.tick(), key_duck_db);
 
         let (tank_in_l, tank_in_r) = if freeze { (0.0, 0.0) } else { (dl, dr) };
         let (wl, wr) = state.process_sample(tank_in_l, tank_in_r, p);
@@ -411,6 +427,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_damp: SmoothedParam::new(init_damp),
             smooth_predelay: SmoothedParam::new(init_predelay),
             smooth_mod: SmoothedParam::new(init_mod),
+            key: key::KeyEnvelope::default(),
             sc: SidechainSnapshot::new(max_frames),
             sample_rate: audio_config.sample_rate as f32,
         })
@@ -476,6 +493,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let duck_attack = self.shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
         let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
         let bypassed = self.shared.bypass.load(Ordering::Relaxed);
+        let key_duck = self.shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
+        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
+        self.key.update(&self.shared.scope, key_duck, key_range, self.sample_rate);
 
         // ---- Step 1: snapshot sidechain (port 1). Never routed → fall back
         // to dry input as the key further down; once routed, silence in the
@@ -527,6 +547,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                 bypassed,
                 freeze_on,
                 &self.shared.scope,
+                (&mut self.key, key_duck),
             );
         }
 

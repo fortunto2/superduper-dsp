@@ -42,7 +42,9 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod key;
 pub mod presets;
+pub mod rider;
 
 use atomic_float::AtomicF32;
 use clack_common::utils::ClapId;
@@ -133,6 +135,14 @@ pub const PARAMS: &[ParamDef] = &[
     // instance as a "Sib 2" band so it doesn't double-process the
     // shared cleanup stages above it.
     ParamDef { id: 22, name: b"Sub Mode", min: 0.0,    max: 1.0,     default: 0.0,   unit: ""   },
+    // Vocal rider (Mixing Secrets ch19), keyed by the bus key = the backing
+    // (instrumental bus or the master; see rider.rs for keying the master).
+    // Rider = how much of the ride to apply (0 = off); Rider Target = the
+    // vocal's level over the key's; Rider Max = the most it may move either
+    // way. Slow: the key is 50–100 ms late, the gain glides over ~300 ms.
+    ParamDef { id: 23, name: b"Rider",        min: 0.0,   max: 1.0,  default: 0.0, unit: ""   },
+    ParamDef { id: 24, name: b"Rider Target", min: -12.0, max: 12.0, default: 3.0, unit: "dB" },
+    ParamDef { id: 25, name: b"Rider Max",    min: 0.0,   max: 12.0, default: 6.0, unit: "dB" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -164,6 +174,9 @@ pub const P_HUM_STR: usize = 19;
 pub const P_ESS_TRACK: usize = 20;
 pub const P_ESS_LISTEN: usize = 21;
 pub const P_SUB_MODE: usize = 22;
+pub const P_RIDER: usize = 23;
+pub const P_RIDER_TARGET: usize = 24;
+pub const P_RIDER_MAX: usize = 25;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -191,6 +204,8 @@ pub struct SharedParamsInner {
     /// on it follows the 5/7.5 kHz energy ratio. GUI reads this to
     /// paint a vertical pointer over the spectrum strip.
     pub tracked_freq_hz: AtomicF32,
+    /// The rider's gain now (dB), block-rate, for the GUI.
+    pub rider_gain_db: AtomicF32,
 }
 
 pub struct PluginShared {
@@ -212,6 +227,7 @@ impl PluginShared {
                 ess_gr_db: AtomicF32::new(0.0),
                 click_gr_db: AtomicF32::new(0.0),
                 tracked_freq_hz: AtomicF32::new(6000.0),
+                rider_gain_db: AtomicF32::new(0.0),
             }),
         }
     }
@@ -332,6 +348,8 @@ pub struct PluginAudioProcessor<'a> {
     /// a small threshold — saves ~10 trig calls per sample.
     ess_cut_gain_db: f32,
     lo_cut_gain_db: f32,
+    /// Vocal rider against the bus key (rider.rs).
+    rider: rider::Rider,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -441,6 +459,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             lo_cut_r: { let mut b = Biquad::default(); b.set_peaking(sr, load(P_LO_FREQ), 2.0, 0.0); b },
             ess_cut_gain_db: 0.0,
             lo_cut_gain_db: 0.0,
+            rider: rider::Rider::default(),
         })
     }
 
@@ -509,6 +528,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             self.sc.routed()
         };
         let use_ext = ext_key_on && sc_present;
+        self.update_rider(sr);
 
         let mut max_ess_gr_db: f32 = 0.0;
         let mut max_click_gr_db: f32 = 0.0;
@@ -588,8 +608,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         self.shared
             .tracked_freq_hz
             .store(self.track_freq_smoothed, Ordering::Relaxed);
+        self.shared.rider_gain_db.store(self.rider.gain_db(), Ordering::Relaxed);
 
         Ok(ProcessStatus::Continue)
+    }
+}
+
+impl PluginAudioProcessor<'_> {
+    /// Once per block: the rider's knobs and the bus key's level.
+    fn update_rider(&mut self, sr: f32) {
+        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let (ride, target, max) = (load(P_RIDER), load(P_RIDER_TARGET), load(P_RIDER_MAX));
+        self.rider.update(&self.shared.scope, ride, target, max, sr);
     }
 }
 
@@ -886,6 +916,9 @@ fn process_stereo(
             hum_on, hum_freq_t, hum_str_t,
             ess_track, ess_listen,
         );
+        // The rider listens to the input, before any processing.
+        let ride = p.rider.step(l_read[i], r_read[i]);
+        let (fl, fr) = (fl * ride, fr * ride);
         l_write[i] = fl;
         r_write[i] = fr;
         p.shared.scope.push((fl + fr) * 0.5);
@@ -922,6 +955,7 @@ fn process_mono(
             hum_on, hum_freq_t, hum_str_t,
             ess_track, ess_listen,
         );
+        let fl = fl * p.rider.step(s, s);
         l_write[i] = fl;
         p.shared.scope.push(fl);
         if ess_gr < *max_ess_gr_db { *max_ess_gr_db = ess_gr; }

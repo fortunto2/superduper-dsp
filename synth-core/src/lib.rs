@@ -39,4 +39,6 @@ pub mod kubyz; // Bashkir jaw-harp additive model (extracted from superduper-kub
 #[cfg(feature = "gui")]
 pub mod gui;
 #[cfg(feature = "gui")]
+pub mod bus_key; // reacting to the bus key: span level, factor, duck gain, smoothed envelope (Reverb/Delay/Filter/Vocal)
+#[cfg(feature = "gui")]
 pub mod mix_view; // the mix map any plugin window can open (Spectrum full size, others from the top bar)

@@ -6,10 +6,10 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DRIVE, P_FEEDBACK, P_MIX, P_MODE, P_TIME, P_TIME_DIV, P_TIME_SYNC, P_TONE, P_WIDTH, PARAMS, SharedParams};
+use crate::{P_DRIVE, P_FEEDBACK, P_KEY_DUCK, P_KEY_RANGE, P_MIX, P_MODE, P_TIME, P_TIME_DIV, P_TIME_SYNC, P_TONE, P_WIDTH, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 460;
-pub const DEFAULT_HEIGHT: u32 = 380;
+pub const DEFAULT_HEIGHT: u32 = 460;
 pub const MIN_WIDTH: u32 = 360;
 pub const MIN_HEIGHT: u32 = 320;
 pub const MAX_WIDTH: u32 = 1200;
@@ -126,6 +126,13 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
 
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
+            });
+            // Bus key: duck the echoes while another track (the lead vocal)
+            // plays. Slow — the key arrives 50–100 ms late.
+            core_gui::section(ui, "Key (duck the echoes under another track)", |ui| {
+                superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_DUCK], &PARAMS[P_KEY_DUCK], &state.shared.dirty_params[P_KEY_DUCK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_DUCK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_RANGE], &PARAMS[P_KEY_RANGE], &state.shared.dirty_params[P_KEY_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_RANGE);
             });
         });
     });

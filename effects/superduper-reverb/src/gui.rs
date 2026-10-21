@@ -11,7 +11,7 @@ use raw_window_handle::HasRawWindowHandle;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{P_DAMP, P_DECAY, P_DUCK_AMOUNT, P_DUCK_ATTACK, P_DUCK_RELEASE, P_FREEZE, P_MIX,
+use crate::{P_DAMP, P_DECAY, P_DUCK_AMOUNT, P_DUCK_ATTACK, P_DUCK_RELEASE, P_FREEZE, P_KEY_DUCK, P_KEY_RANGE, P_MIX,
             P_MOD, P_PD_DIV, P_PD_SYNC, P_PREDELAY, P_SIZE, P_WIDTH, PARAMS, SharedParams};
 
 // Compact-by-default. Fits REAPER's FX window without forcing the user to
@@ -125,6 +125,13 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_AMOUNT], &PARAMS[P_DUCK_AMOUNT], &state.shared.dirty_params[P_DUCK_AMOUNT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_AMOUNT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_ATTACK], &PARAMS[P_DUCK_ATTACK], &state.shared.dirty_params[P_DUCK_ATTACK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_ATTACK);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_DUCK_RELEASE], &PARAMS[P_DUCK_RELEASE], &state.shared.dirty_params[P_DUCK_RELEASE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_DUCK_RELEASE);
+            });
+            // Bus key: duck the tail while another track (the lead vocal)
+            // plays. Slow — the key arrives 50–100 ms late.
+            core_gui::section(ui, "Key (duck the tail under another track)", |ui| {
+                superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_DUCK], &PARAMS[P_KEY_DUCK], &state.shared.dirty_params[P_KEY_DUCK], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_DUCK);
+                core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_RANGE], &PARAMS[P_KEY_RANGE], &state.shared.dirty_params[P_KEY_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_RANGE);
             });
         });
     });

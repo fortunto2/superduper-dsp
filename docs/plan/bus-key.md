@@ -14,8 +14,8 @@ the real side-chain input stays for that.
 - [x] Soothe: keyed spectral ducking (Trackspacer) — per band cut grows with
       the key's level in that band; params Key Depth / Key Range; mix with the
       resonance mode
-- [ ] Compressor: detector from the key track in a band (lo/hi Hz)
-- [ ] EQ: dynamic band keyed by the bus (cut only while the key plays there)
+- [ ] Compressor: detector from the key track in a band (lo/hi Hz) + dual detector mode (peak + RMS stages, Peak Crest) — agent running
+- [ ] EQ: dynamic band keyed by the bus (cut only while the key plays there) — agent running
 - [ ] Reverb / Delay: duck the tail while the key plays (MS ch17)
 - [ ] Vocal: rider — hold the vocal a set dB over the mix (MS ch19)
 - [ ] Filter: key-driven cutoff — close/move while the key plays (pad out of the vocal's way)
@@ -28,5 +28,9 @@ the real side-chain input stays for that.
       publishes a short low-band (<~800 Hz) audio window; the bus computes per
       pair how much energy the sum loses (kick vs bass, layered kicks, mics);
       fix with polarity / allpass rotation. Needs a bigger slot → bus VERSION 2
+
+- [ ] Reverb/Delay duck, Filter key mod, Vocal rider — agent running
+- [ ] NEW SuperDuper Multiband (Pro-MB style: dynamic phase, bands on the spectrum, per-band bus key) — agent running
+- [x] Saturator Inflate (Oxford Inflator curve)
 
 ## Done

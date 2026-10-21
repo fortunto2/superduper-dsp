@@ -41,7 +41,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod key;
 pub mod presets;
+#[cfg(test)]
+mod key_tests;
 
 use atomic_float::AtomicF32;
 use clack_common::utils::ClapId;
@@ -100,6 +103,14 @@ pub const PARAMS: &[ParamDef] = &[
     // 7 = 1/8, 8 = 1/8d, 9 = 1/8t, 10 = 1/16, 11 = 1/16t — same enum
     // shape as Wave LFO Div / Kubyz Mouth Div for consistency.
     ParamDef { id: 11, name: b"Time Div",  min: 0.0, max: 11.0, default: 7.0, unit: "" },
+    // Bus key (Mixing Secrets ch17: duck long effect returns from the lead
+    // vocal): with a key track picked, the echoes drop by up to Key Duck
+    // while the key plays and come back between phrases. Slow by nature
+    // (the key is 50–100 ms late); dry untouched; 0 = off. Separate from
+    // Duck Amount, which keys off the sidechain port or the dry input.
+    ParamDef { id: 12, name: b"Key Duck",  min: 0.0, max: 24.0, default: 0.0, unit: "dB" },
+    // How far above −50 dB the key must be for the full duck.
+    ParamDef { id: 13, name: b"Key Range", min: 6.0, max: 40.0, default: 24.0, unit: "dB" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -120,6 +131,8 @@ pub const P_DUCK_ATTACK: usize = 8;
 pub const P_DUCK_RELEASE: usize = 9;
 pub const P_TIME_SYNC: usize = 10;
 pub const P_TIME_DIV: usize = 11;
+pub const P_KEY_DUCK: usize = 12;
+pub const P_KEY_RANGE: usize = 13;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -208,6 +221,9 @@ pub struct PluginAudioProcessor<'a> {
     smooth_mix: SmoothedParam,
     smooth_duck: SmoothedParam,
     ducker: Ducker,
+    /// Bus-key duck of the wet signal: smoothed factor, and this block's depth.
+    key: key::KeyEnvelope,
+    key_duck: f32,
     /// Sidechain scratch + routed latch (port 1). Never routed → fall back
     /// to dry as the ducking key (works on plain insert use); once routed,
     /// silence in the key means "no duck", never "re-key off dry".
@@ -228,26 +244,17 @@ fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
     }
 }
 
-impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
-    for PluginAudioProcessor<'a>
-{
-    fn activate(
-        _host: HostAudioProcessorHandle<'a>,
-        _main_thread: &mut PluginMainThread<'a>,
-        shared: &'a PluginShared,
-        audio_config: PluginAudioConfiguration,
-    ) -> Result<Self, PluginError> {
-        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
-        slog!("activate sr={}", audio_config.sample_rate);
-        let sr = audio_config.sample_rate as f32;
+impl<'a> PluginAudioProcessor<'a> {
+    /// Fresh state at `sr`, smoothers snapped to the current params (also the
+    /// tests' way in, without a host).
+    fn new(shared: &'a PluginShared, sr: f32, max_frames: usize) -> Self {
         let max_samples = (sr * MAX_DELAY_SECONDS) as usize;
 
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         let time_l = load(P_TIME) * 0.001 * sr;
         let time_r = (load(P_TIME) + load(P_WIDTH)).max(1.0) * 0.001 * sr;
 
-        let max_frames = audio_config.max_frames_count as usize;
-        Ok(Self {
+        Self {
             shared,
             delay_l: DelayLine::new(max_samples),
             delay_r: DelayLine::new(max_samples),
@@ -265,9 +272,27 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             smooth_mix: SmoothedParam::new(load(P_MIX)),
             smooth_duck: SmoothedParam::new(load(P_DUCK_AMOUNT)),
             ducker: Ducker::default(),
+            key: key::KeyEnvelope::default(),
+            key_duck: 0.0,
             sc: SidechainSnapshot::new(max_frames),
             sample_rate: sr,
-        })
+        }
+    }
+}
+
+impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMainThread<'a>>
+    for PluginAudioProcessor<'a>
+{
+    fn activate(
+        _host: HostAudioProcessorHandle<'a>,
+        _main_thread: &mut PluginMainThread<'a>,
+        shared: &'a PluginShared,
+        audio_config: PluginAudioConfiguration,
+    ) -> Result<Self, PluginError> {
+        shared.scope.set_sample_rate(audio_config.sample_rate as f32);
+        slog!("activate sr={}", audio_config.sample_rate);
+        let sr = audio_config.sample_rate as f32;
+        Ok(Self::new(shared, sr, audio_config.max_frames_count as usize))
     }
 
     fn process(
@@ -319,6 +344,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let duck_amount_target = self.shared.params[P_DUCK_AMOUNT].load(Ordering::Relaxed);
         let duck_attack = self.shared.params[P_DUCK_ATTACK].load(Ordering::Relaxed);
         let duck_release = self.shared.params[P_DUCK_RELEASE].load(Ordering::Relaxed);
+        self.key_duck = self.shared.params[P_KEY_DUCK].load(Ordering::Relaxed);
+        let key_range = self.shared.params[P_KEY_RANGE].load(Ordering::Relaxed);
+        self.key.update(&self.shared.scope, self.key_duck, key_range, sr);
 
         // ---- Snapshot the sidechain (port 1) ----
         let sc_present = self.sc.capture(&mut audio, 1)?;
@@ -393,7 +421,8 @@ fn stereo_process(
             let key = if sc_present {
                 p.sc.l.get(i).copied().unwrap_or(0.0)
             } else { dry };
-            let duck_gain = p.ducker.process(key, key, sr, duck_amount, duck_attack, duck_release);
+            let duck_gain = p.ducker.process(key, key, sr, duck_amount, duck_attack, duck_release)
+                * key::duck_gain(p.key.tick(), p.key_duck);
 
             let time_l = p.slew_time_l.step(target_l, sr, 30.0);
             let cleaned = p.dc_l.process(dry);
@@ -436,7 +465,7 @@ fn stereo_process(
         };
         let duck_gain = p.ducker.process(
             key_l, key_r, sr, duck_amount, duck_attack, duck_release,
-        );
+        ) * key::duck_gain(p.key.tick(), p.key_duck);
 
         // Time slew — gives tape pitch sweep on knob movement.
         let time_l = p.slew_time_l.step(target_l, sr, 30.0);

@@ -8,7 +8,8 @@ use crate::presets::PRESETS;
 use crate::{
     PARAMS, P_CLK_AMT, P_CLK_FLOOR, P_CLK_SENS, P_ESS_AMT, P_ESS_FREQ, P_ESS_LISTEN, P_ESS_RANGE,
     P_ESS_THR, P_ESS_TRACK, P_EXT_KEY, P_HUM_FREQ, P_HUM_ON, P_HUM_STR, P_LO_AMT, P_LO_FREQ,
-    P_LO_THR, P_MIX, P_OUTPUT, P_PLOS_AMT, P_PLOS_FREQ, P_PLOS_ON, P_PLOS_THR, P_SUB_MODE,
+    P_LO_THR, P_MIX, P_OUTPUT, P_PLOS_AMT, P_PLOS_FREQ, P_PLOS_ON, P_PLOS_THR, P_RIDER, P_RIDER_MAX,
+    P_RIDER_TARGET, P_SUB_MODE,
     SharedParams,
 };
 
@@ -258,6 +259,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_OUTPUT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
             });
+            rider_section(ui, state);
 
             core_gui::help_block(
                 ui,
@@ -302,5 +304,20 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 ],
             );
         });
+    });
+}
+
+/// The rider section: key picker, Rider / Target / Max, live ride gain.
+fn rider_section(ui: &mut egui::Ui, state: &GuiState) {
+    // Rider: hold the vocal Target dB over the key (the backing). The
+    // picker lists ordinary tracks; the master is keyed through the
+    // bus mailbox: plugin_set(track, "Vocal", "key", {track: "Master"}).
+    core_gui::section(ui, "Rider (hold the vocal over the key)", |ui| {
+        superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+        core_gui::dirty_param_row_g(ui, &state.shared.params[P_RIDER], &PARAMS[P_RIDER], &state.shared.dirty_params[P_RIDER], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RIDER);
+        core_gui::dirty_param_row_g(ui, &state.shared.params[P_RIDER_TARGET], &PARAMS[P_RIDER_TARGET], &state.shared.dirty_params[P_RIDER_TARGET], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RIDER_TARGET);
+        core_gui::dirty_param_row_g(ui, &state.shared.params[P_RIDER_MAX], &PARAMS[P_RIDER_MAX], &state.shared.dirty_params[P_RIDER_MAX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_RIDER_MAX);
+        let g = state.shared.rider_gain_db.load(std::sync::atomic::Ordering::Relaxed);
+        ui.label(egui::RichText::new(format!("ride {g:+.1} dB · key = instrumental bus, or Master (agent: key doc)")).color(core_gui::GREEN_DIM).monospace().small());
     });
 }

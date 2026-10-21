@@ -21,7 +21,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod gui;
+pub mod key;
 pub mod presets;
+#[cfg(test)]
+mod key_tests;
 
 use atomic_float::AtomicF32;
 use clack_common::utils::ClapId;
@@ -86,6 +89,12 @@ pub const PARAMS: &[ParamDef] = &[
     // Dry/wet mix
     ParamDef { id: 13, name: b"Mix",       min: 0.0,    max: 1.0,    default: 1.0,   unit: ""   },
     ParamDef { id: 14, name: b"Output",    min: -24.0,  max: 12.0,   default: 0.0,   unit: "dB" },
+    // Bus key: with a key track picked, the cutoff moves by up to Key Mod
+    // octaves while the key plays (a pad's low-pass closes under the vocal:
+    // set −2). Slow by nature — the key is 50–100 ms late. 0 = off.
+    ParamDef { id: 15, name: b"Key Mod",   min: -4.0,   max: 4.0,    default: 0.0,   unit: "oct" },
+    // How far above −50 dB the key must be for the full move.
+    ParamDef { id: 16, name: b"Key Range", min: 6.0,    max: 40.0,   default: 24.0,  unit: "dB" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
@@ -109,6 +118,8 @@ pub const P_ENV_ATK: usize = 11;
 pub const P_ENV_REL: usize = 12;
 pub const P_MIX: usize = 13;
 pub const P_OUTPUT: usize = 14;
+pub const P_KEY_MOD: usize = 15;
+pub const P_KEY_RANGE: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Shared params
@@ -232,7 +243,47 @@ pub struct PluginAudioProcessor<'a> {
     smooth_env_dpt: SmoothedParam,
     smooth_mix: SmoothedParam,
     smooth_output: SmoothedParam,
+    /// Bus key: smoothed 0..1 factor, and Key Mod in semitones (set per
+    /// block, smoothed per sample so automating it does not zipper).
+    key: key::KeyEnvelope,
+    key_mod_st: f32,
+    smooth_key_mod: SmoothedParam,
     sample_rate: f32,
+}
+
+impl<'a> PluginAudioProcessor<'a> {
+    /// Fresh state at `sr`, smoothers snapped to the current params (also the
+    /// tests' way in, without a host).
+    fn new(shared: &'a PluginShared, sr: f32) -> Self {
+        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
+        Self {
+            shared,
+            filter_l: SvfFilter::default(),
+            filter_r: SvfFilter::default(),
+            env: EnvelopeDetector::default(),
+            lfo_phase: 0.0,
+            smooth_cutoff: SmoothedParam::new(load(P_CUTOFF)),
+            smooth_reso: SmoothedParam::new(load(P_RESO)),
+            smooth_drive: SmoothedParam::new(load(P_DRIVE)),
+            smooth_lfo_rate: SmoothedParam::new(load(P_LFO_RATE)),
+            smooth_lfo_dpt: SmoothedParam::new(load(P_LFO_DPT)),
+            smooth_env_dpt: SmoothedParam::new(load(P_ENV_DPT)),
+            smooth_mix: SmoothedParam::new(load(P_MIX)),
+            smooth_output: SmoothedParam::new(load(P_OUTPUT)),
+            key: key::KeyEnvelope::default(),
+            key_mod_st: 12.0 * load(P_KEY_MOD),
+            smooth_key_mod: SmoothedParam::new(12.0 * load(P_KEY_MOD)),
+            sample_rate: sr,
+        }
+    }
+
+    /// Cutoff (Hz) after LFO + envelope (`mod_st`, semitones) and the bus
+    /// key's move. One step of the key smoothers per call: once per sample.
+    #[inline]
+    fn modulated_cutoff_hz(&mut self, cutoff_u: f32, mod_st: f32, sr: f32) -> f32 {
+        let key_st = self.key.tick() * self.smooth_key_mod.step(self.key_mod_st, sr);
+        (cutoff_units_to_hz(cutoff_u) * 2f32.powf((mod_st + key_st) / 12.0)).clamp(20.0, sr * 0.49)
+    }
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -251,23 +302,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         shared.scope.set_sample_rate(cfg.sample_rate as f32);
         let sr = cfg.sample_rate as f32;
         slog!("activate sr={}", sr);
-        let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
-        Ok(Self {
-            shared,
-            filter_l: SvfFilter::default(),
-            filter_r: SvfFilter::default(),
-            env: EnvelopeDetector::default(),
-            lfo_phase: 0.0,
-            smooth_cutoff: SmoothedParam::new(load(P_CUTOFF)),
-            smooth_reso: SmoothedParam::new(load(P_RESO)),
-            smooth_drive: SmoothedParam::new(load(P_DRIVE)),
-            smooth_lfo_rate: SmoothedParam::new(load(P_LFO_RATE)),
-            smooth_lfo_dpt: SmoothedParam::new(load(P_LFO_DPT)),
-            smooth_env_dpt: SmoothedParam::new(load(P_ENV_DPT)),
-            smooth_mix: SmoothedParam::new(load(P_MIX)),
-            smooth_output: SmoothedParam::new(load(P_OUTPUT)),
-            sample_rate: sr,
-        })
+        Ok(Self::new(shared, sr))
     }
 
     fn process(
@@ -315,6 +350,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let env_dpt_t = load(P_ENV_DPT);
         let mix_t = load(P_MIX);
         let output_t = load(P_OUTPUT);
+        let key_mod = load(P_KEY_MOD);
+        self.key.update(&self.shared.scope, key_mod, load(P_KEY_RANGE), sr);
+        self.key_mod_st = 12.0 * key_mod;
 
         for mut port_pair in &mut audio {
             let Some(channel_pairs) = port_pair.channels()?.into_f32() else { continue };
@@ -362,9 +400,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let env_lvl = self.env.process(sc, sr, env_atk_ms, env_rel_ms);
                         let env_st = env_lvl.clamp(0.0, 1.0) * env_dpt;
 
-                        let base_hz = cutoff_units_to_hz(cutoff_u);
-                        let mod_hz = base_hz * 2f32.powf((lfo_st + env_st) / 12.0);
-                        let cutoff_hz = mod_hz.clamp(20.0, sr * 0.49);
+                        let cutoff_hz = self.modulated_cutoff_hz(cutoff_u, lfo_st + env_st, sr);
 
                         let pre_l = apply_drive(drv_type, dry_l, drive);
                         let pre_r = apply_drive(drv_type, dry_r, drive);
@@ -397,9 +433,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                         let dry = l_read[i];
                         let env_lvl = self.env.process(dry.abs(), sr, env_atk_ms, env_rel_ms);
                         let env_st = env_lvl.clamp(0.0, 1.0) * env_dpt;
-                        let base_hz = cutoff_units_to_hz(cutoff_u);
-                        let cutoff_hz = (base_hz * 2f32.powf((lfo_st + env_st) / 12.0))
-                            .clamp(20.0, sr * 0.49);
+                        let cutoff_hz = self.modulated_cutoff_hz(cutoff_u, lfo_st + env_st, sr);
                         let pre = apply_drive(drv_type, dry, drive);
                         let wet = self.filter_l.process(pre, mode, cutoff_hz, reso, sr);
                         let out = (dry * (1.0 - mix) + wet * mix) * out_lin;

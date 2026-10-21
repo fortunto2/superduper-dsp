@@ -10,7 +10,8 @@ use superduper_synth_core::gui as core_gui;
 use crate::presets::PRESETS;
 use crate::{
     cutoff_units_to_hz, PARAMS, P_CUTOFF, P_DRIVE, P_DRV_TYPE, P_ENV_ATK, P_ENV_DPT, P_ENV_REL,
-    P_LFO_DIV, P_LFO_DPT, P_LFO_RATE, P_LFO_SHP, P_LFO_SYNC, P_MIX, P_OUTPUT, P_RESO, P_TYPE,
+    P_KEY_MOD, P_KEY_RANGE, P_LFO_DIV, P_LFO_DPT, P_LFO_RATE, P_LFO_SHP, P_LFO_SYNC, P_MIX, P_OUTPUT,
+    P_RESO, P_TYPE,
     SharedParams,
 };
 
@@ -182,6 +183,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_ENV_REL], &PARAMS[P_ENV_REL], &state.shared.dirty_params[P_ENV_REL], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_ENV_REL);
             });
 
+            key_section(ui, state);
+
             core_gui::section(ui, "Output", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_OUTPUT], &PARAMS[P_OUTPUT], &state.shared.dirty_params[P_OUTPUT], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_OUTPUT);
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_MIX], &PARAMS[P_MIX], &state.shared.dirty_params[P_MIX], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MIX);
@@ -220,5 +223,16 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 ],
             );
         });
+    });
+}
+
+/// The bus-key section: picker + Key Mod / Key Range.
+fn key_section(ui: &mut egui::Ui, state: &GuiState) {
+    // Bus key: move the cutoff while another track plays (a pad's
+    // low-pass closes under the vocal). Slow — the key is 50–100 ms late.
+    core_gui::section(ui, "Key (move the cutoff with another track)", |ui| {
+        superduper_synth_core::mix_view::key_picker(ui, &state.shared.scope);
+        core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_MOD], &PARAMS[P_KEY_MOD], &state.shared.dirty_params[P_KEY_MOD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_MOD);
+        core_gui::dirty_param_row_g(ui, &state.shared.params[P_KEY_RANGE], &PARAMS[P_KEY_RANGE], &state.shared.dirty_params[P_KEY_RANGE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_KEY_RANGE);
     });
 }

@@ -45,6 +45,7 @@ members = [
     "effects/superduper-granular",
     "effects/superduper-stretch",
     "effects/superduper-multiband",
+    "effects/superduper-morph",
     "tools/sdsp-runner",
     "tools/wave-inspect",
     "tools/vocal-inspect",

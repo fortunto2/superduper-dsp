@@ -78,7 +78,7 @@ fn open_in_finder(path: &std::path::Path) {
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     let s = state.shared.clone();
     egui::CentralPanel::default().show(ctx, |ui| {
-        core_gui::top_bar(
+        core_gui::top_bar_mix(&state.shared.scope, 
             ui, "SuperDuper Piano", env!("SDSP_BUILD_NUM"), env!("SDSP_BUILD_DATE"),
             &s.bypass, "piano_preset_combo", &[], &mut state.selected_preset,
         );

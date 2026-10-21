@@ -59,7 +59,7 @@ pub fn open_window<P: HasRawWindowHandle>(
 
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
-        let _ = core_gui::top_bar(
+        let _ = core_gui::top_bar_mix(&state.shared.scope, 
             ui, "SuperDuper Looper",
             env!("SDSP_BUILD_NUM"), env!("SDSP_BUILD_DATE"),
             &state.shared.bypass,

@@ -132,6 +132,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut b = s.bypass.load(Ordering::Relaxed);
                 if ui.checkbox(&mut b, "bypass").changed() { s.bypass.store(b, Ordering::Relaxed); }
+                superduper_synth_core::mix_view::mix_toggle(ui, &s.scope);
             });
         });
         draw_kit_bar(ui, state);

@@ -110,7 +110,7 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
         // Factory presets = playback character; the sample itself keeps its
         // own dropdown below (a preset never swaps the loaded sample).
-        if let Some(i) = core_gui::top_bar(
+        if let Some(i) = core_gui::top_bar_mix(&state.shared.scope, 
             ui, "SuperDuper Sampler",
             env!("SDSP_BUILD_NUM"), env!("SDSP_BUILD_DATE"),
             &state.shared.bypass,

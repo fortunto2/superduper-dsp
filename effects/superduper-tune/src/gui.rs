@@ -76,7 +76,7 @@ pub fn open_window<P: HasRawWindowHandle>(
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     let scale_names: Vec<&str> = scale::SCALES.iter().map(|s| s.0).collect();
     egui::CentralPanel::default().show(ctx, |ui| {
-        if let Some(i) = core_gui::top_bar(
+        if let Some(i) = core_gui::top_bar_mix(&state.shared.scope, 
             ui,
             "SuperDuper Tune",
             env!("SDSP_BUILD_NUM"),

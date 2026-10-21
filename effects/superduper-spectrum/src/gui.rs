@@ -27,7 +27,7 @@ use superduper_synth_core::gui as core_gui;
 
 use crate::palette::{db_to_color, Palette};
 use crate::ring::SlidingHistory;
-use superduper_synth_core::mixmap::{self, MaskingTracker, TrackSpectrum, BANDS};
+use superduper_synth_core::mix_view::{tilt_db, MixOpts, MixView};
 use crate::{P_FFT_SIZE, P_MODE, P_PALETTE, P_SMOOTHING, P_TILT, P_WINDOW, PARAMS, SharedParams};
 
 pub const DEFAULT_WIDTH: u32 = 760;
@@ -94,19 +94,10 @@ struct GuiState {
     waterfall_capacity: usize,
     waterfall_tex: Option<TextureHandle>,
 
-    /// Mix view: every SuperDuper plugin's track spectrum from the bus.
+    /// Mix view: every SuperDuper plugin's track from the bus, full size —
+    /// the same view other plugins open from their top bar.
     mix: bool,
-    bus: Option<superduper_dsp_sdk::bus::Reader>,
-    bus_tracks: Vec<TrackSpectrum>,
-    masking: MaskingTracker,
-    /// Refreshed with the masking (10 Hz), not every frame.
-    clashes: Vec<mixmap::Clash>,
-    bus_polled: std::time::Instant,
-    focus: Option<String>,
-    /// A clash picked from the list: its two curves lit, the gap between them
-    /// filled where they fight (Pro-Q's collision view).
-    focus_pair: Option<(String, String)>,
-    mask_window_s: f32,
+    mix_view: MixView,
 }
 
 /// The audio → GUI ring's receiving end; replaced on every activate.
@@ -142,16 +133,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         waterfall_capacity,
         waterfall_tex: None,
         mix: false,
-        bus: None,
-        bus_tracks: Vec::new(),
-        // 10 updates a second, an ~8 s memory: a clash on every chorus hit
-        // stays lit, one stray transient does not.
-        masking: MaskingTracker::new(80.0),
-        clashes: Vec::new(),
-        mask_window_s: 0.0, // rebuilt from the Window param on first draw
-        focus_pair: None,
-        bus_polled: std::time::Instant::now(),
-        focus: None,
+        mix_view: MixView::new(),
     };
 
     EguiWindow::open_parented(
@@ -597,194 +579,16 @@ fn draw_spectrogram_panel(
     );
 }
 
-const TRACK_COLORS: [Color32; 10] = [
-    Color32::from_rgb(90, 200, 255), Color32::from_rgb(255, 150, 70), Color32::from_rgb(120, 230, 120),
-    Color32::from_rgb(240, 90, 120), Color32::from_rgb(200, 140, 255), Color32::from_rgb(250, 220, 80),
-    Color32::from_rgb(80, 220, 200), Color32::from_rgb(255, 120, 220), Color32::from_rgb(170, 190, 90),
-    Color32::from_rgb(160, 170, 255),
-];
-
-/// Without a focus the graph shows only this many of the loudest tracks: a
-/// session of 40-100 tracks would otherwise be a tangle.
-const MAX_CURVES: usize = 8;
-
-/// dB a tilt of `db_per_oct` adds at `hz`, pivoting at 1 kHz (both views).
-fn tilt_db(hz: f32, db_per_oct: f32) -> f32 {
-    (hz.max(20.0) / 1000.0).log2() * db_per_oct
-}
-
-/// Mix view: the tracks on the bus as curves, conflict heat per band, and the
-/// most persistent clashes. A focus (dropdown) narrows everything to one
-/// track and the tracks it fights; a clash from the list narrows it to that
-/// pair and fills the gap between their curves where they fight.
+/// Mix view: the shared `MixView`, with this plugin's top row as its knobs —
+/// Window = how long masking remembers, Smoothing, Tilt, freeze.
 fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
-    if state.bus.is_none() { state.bus = superduper_dsp_sdk::bus::Reader::open(); }
-    // The top row applies here too: Window = how long masking remembers,
-    // Smoothing = one-pole on each track's curve, Tilt = the same dB/oct as
-    // the Spectrum view, freeze = hold the picture.
-    let window_s = state.shared.params[P_WINDOW].load(Ordering::Relaxed).max(1.0);
-    if (window_s - state.mask_window_s).abs() > 0.05 {
-        state.masking = MaskingTracker::new(window_s * 10.0);
-        state.mask_window_s = window_s;
-    }
-    let frozen = state.shared.bypass.load(Ordering::Relaxed);
-    // Read the bus every frame so the curves move at the window's frame
-    // rate; masking counts 10 frames a second, so its shares do not depend
-    // on how fast the GUI repaints.
-    if let (false, Some(r)) = (frozen, &state.bus) {
-        let rows = r.read_all();
-        let fresh = mixmap::loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.is_bus(), s.rms_db, &s.bands_db)));
-        if state.bus_polled.elapsed().as_millis() >= 100 {
-            state.bus_polled = std::time::Instant::now();
-            // Masking judges the raw frames; only the drawing is smoothed.
-            state.masking.update(&fresh);
-            state.clashes = state.masking.top(64);
-        }
-        let k = state.shared.params[P_SMOOTHING].load(Ordering::Relaxed).clamp(0.0, 0.98);
-        state.bus_tracks = fresh.into_iter().map(|mut t| {
-            if let Some(old) = state.bus_tracks.iter().find(|o| o.name == t.name) {
-                for (b, o) in t.bands_db.iter_mut().zip(old.bands_db.iter()) { *b = *o * k + *b * (1.0 - k); }
-            }
-            t
-        }).collect();
-    }
-
-    let tilt = state.shared.params[P_TILT].load(Ordering::Relaxed);
-    let edges = superduper_dsp_sdk::bus::band_edges();
-    let centers: [f32; BANDS] = std::array::from_fn(|b| (edges[b] * edges[b + 1]).sqrt());
-    let audible = |t: &TrackSpectrum| t.rms_db > mixmap::LOUD_DB;
-    // Colours follow name order, so a track keeps its colour as others come
-    // and go or fall silent.
-    let mut names: Vec<String> = state.bus_tracks.iter().filter(|t| !t.bus).map(|t| t.name.clone()).collect();
-    names.sort();
-    let color_of = |t: &TrackSpectrum| if t.bus {
-        Color32::from_gray(150)
-    } else {
-        TRACK_COLORS[names.binary_search(&t.name).unwrap_or(0) % TRACK_COLORS.len()]
+    let p = |i: usize| state.shared.params[i].load(Ordering::Relaxed);
+    let opts = MixOpts {
+        tilt: p(P_TILT),
+        smoothing: p(P_SMOOTHING),
+        window_s: p(P_WINDOW).max(1.0),
+        frozen: state.shared.bypass.load(Ordering::Relaxed),
     };
-    let label_of = |t: &TrackSpectrum| match (t.bus, t.name.is_empty()) {
-        (true, true) => "unnamed (bus)".to_string(),
-        (true, false) => format!("{} (bus)", t.name),
-        _ => t.name.clone(),
-    };
-
-    // ── Focus dropdown: scrolls, loudest first, so 100 tracks stay usable ──
-    let mut by_level: Vec<&TrackSpectrum> = state.bus_tracks.iter().collect();
-    by_level.sort_by(|a, b| b.rms_db.total_cmp(&a.rms_db));
-    let playing = by_level.iter().filter(|t| audible(t) && !t.bus).count();
-    let mut new_focus: Option<Option<String>> = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("focus:").color(core_gui::GREEN).monospace());
-        egui::ComboBox::from_id_salt("mix_focus")
-            .selected_text(state.focus.as_deref().unwrap_or("all tracks"))
-            .width(280.0)
-            .height(420.0)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(state.focus.is_none(), "all tracks").clicked() { new_focus = Some(None); }
-                for t in &by_level {
-                    let col = if audible(t) { color_of(t) } else { color_of(t).gamma_multiply(0.4) };
-                    let text = egui::RichText::new(format!("● {}  {:.0} dB", label_of(t), t.rms_db)).color(col);
-                    if ui.selectable_label(state.focus.as_deref() == Some(t.name.as_str()), text).clicked() {
-                        new_focus = Some(Some(t.name.clone()));
-                    }
-                }
-            });
-        ui.label(egui::RichText::new(format!("{} tracks, {playing} playing", names.len())).color(core_gui::GREEN_DIM).small());
-    });
-    if let Some(f) = new_focus {
-        state.focus = f;
-        state.focus_pair = None;
-    }
-
-    // ── Clash list: the focused track's conflicts, or everyone's ──
-    let clashes: Vec<&mixmap::Clash> = state.clashes.iter()
-        .filter(|c| state.focus.as_deref().is_none_or(|f| c.a == f || c.b == f))
-        .take(4).collect();
-    ui.label(egui::RichText::new(format!("masking — both loud and within 6 dB, share of the last ~{window_s:.0} s (Window); click one to see it:")).color(core_gui::GREEN_DIM).small());
-    if clashes.is_empty() {
-        ui.label(egui::RichText::new("no clashes (or nothing playing)").color(core_gui::GREEN_DIM).monospace());
-    }
-    let mut new_pair: Option<Option<(String, String)>> = None;
-    for c in &clashes {
-        let f = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
-        let key = (c.a.clone(), c.b.clone());
-        let on = state.focus_pair.as_ref() == Some(&key);
-        let text = egui::RichText::new(format!("{} × {}   {}–{} Hz   {:.0}%", c.a, c.b, f(edges[c.band]), f(edges[c.band + 1]), c.share * 100.0))
-            .color(if c.share > 0.5 { Color32::from_rgb(255, 120, 110) } else { core_gui::GREEN })
-            .monospace();
-        if ui.selectable_label(on, text).clicked() { new_pair = Some((!on).then_some(key)); }
-    }
-    if let Some(p) = new_pair { state.focus_pair = p; }
-
-    // ── Which curves: the pair, or the focus and its opponents, or the
-    // loudest few; buses always, in grey ──
-    let lit = |t: &TrackSpectrum| match (&state.focus_pair, &state.focus) {
-        (Some((a, b)), _) => t.name == *a || t.name == *b,
-        (None, Some(f)) => t.name == *f,
-        _ => false,
-    };
-    let shown: Vec<&TrackSpectrum> = match (&state.focus_pair, &state.focus) {
-        (Some(_), _) => by_level.iter().copied().filter(|t| t.bus || lit(t)).collect(),
-        (None, Some(f)) => by_level.iter().copied().filter(|t| {
-            t.bus || t.name == *f || clashes.iter().any(|c| (c.a == t.name || c.b == t.name) && (c.a == *f || c.b == *f))
-        }).collect(),
-        _ => {
-            let loud: Vec<&TrackSpectrum> = by_level.iter().copied().filter(|t| !t.bus && audible(t)).take(MAX_CURVES).collect();
-            by_level.iter().copied().filter(|t| t.bus || loud.iter().any(|l| std::ptr::eq(*l, *t))).collect()
-        }
-    };
-    let hidden = playing.saturating_sub(shown.iter().filter(|t| !t.bus && audible(t)).count());
-    if hidden > 0 {
-        ui.label(egui::RichText::new(format!("drawing the {MAX_CURVES} loudest; {hidden} more playing — focus one to see it")).color(core_gui::GREEN_DIM).small());
-    }
-
-    let avail = ui.available_rect_before_wrap();
-    let rect = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), avail.height().max(140.0)));
-    ui.allocate_rect(rect, egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let plot = plot_inset(rect);
-    draw_axes(&painter, rect, plot);
-    let log_min = MIN_HZ.ln();
-    let log_max = MAX_HZ.ln();
-    let fx = |hz: f32| plot.left() + (hz.clamp(MIN_HZ, MAX_HZ).ln() - log_min) / (log_max - log_min) * plot.width();
-    let fy = |db: f32| plot.top() + (MAX_DB - db.clamp(MIN_DB, MAX_DB)) / (MAX_DB - MIN_DB) * plot.height();
-    let y_of = |t: &TrackSpectrum, b: usize| fy(t.bands_db[b] + tilt_db(centers[b], tilt));
-
-    // Conflict heat: every band tinted by how much of the time it is fought
-    // over, and a solid strip along the bottom (Neutron's masking meter).
-    let heat = match &state.focus_pair {
-        Some((a, b)) => state.masking.pair(a, b).unwrap_or([0.0; BANDS]),
-        None => state.masking.band_heat(state.focus.as_deref()),
-    };
-    for (b, h) in heat.iter().enumerate() {
-        if *h < 0.05 { continue; }
-        let xs = fx(edges[b])..=fx(edges[b + 1]);
-        let a = (h.min(1.0) * 255.0) as u8;
-        painter.rect_filled(egui::Rect::from_x_y_ranges(xs.clone(), plot.top()..=plot.bottom()), 0.0, Color32::from_rgba_unmultiplied(255, 60, 60, a / 5));
-        painter.rect_filled(egui::Rect::from_x_y_ranges(xs, (plot.bottom() - 10.0)..=plot.bottom()), 0.0, Color32::from_rgba_unmultiplied(255, 60, 60, a));
-    }
-    // Pair view: fill the gap between the two curves where they fight.
-    if let Some((a, b)) = &state.focus_pair {
-        let find = |n: &str| state.bus_tracks.iter().find(|t| t.name == n);
-        if let (Some(ta), Some(tb)) = (find(a), find(b)) {
-            for (i, h) in heat.iter().enumerate() {
-                if *h < 0.1 { continue; }
-                let (ya, yb) = (y_of(ta, i), y_of(tb, i));
-                let r = egui::Rect::from_x_y_ranges(fx(edges[i])..=fx(edges[i + 1]), (ya.min(yb) - 3.0)..=(ya.max(yb) + 3.0));
-                painter.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(255, 70, 70, (h.min(1.0) * 200.0) as u8));
-            }
-        }
-    }
-
-    let any_focus = state.focus.is_some() || state.focus_pair.is_some();
-    let mut order = shown;
-    order.sort_by_key(|t| lit(t)); // lit last = drawn on top
-    for t in order {
-        let pts: Vec<egui::Pos2> = (0..BANDS).map(|b| egui::pos2(fx(centers[b]), y_of(t, b))).collect();
-        let on = lit(t);
-        let dim = any_focus && !on;
-        let c = color_of(t);
-        let width = if t.bus { 1.0 } else if on { 2.6 } else { 1.6 };
-        painter.add(egui::Shape::line(pts, egui::Stroke::new(width, if dim { c.gamma_multiply(0.3) } else { c })));
-    }
+    // On the master: no track of its own to focus.
+    state.mix_view.ui(ui, None, opts);
 }

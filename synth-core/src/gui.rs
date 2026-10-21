@@ -1460,7 +1460,40 @@ pub fn preset_combo(
 
 /// Title bar: `sdsp> TITLE  v0.X.NNNNN  ──────  [preset] [bypass]`.
 /// Returns the newly selected preset index, if any.
+#[allow(clippy::too_many_arguments)]
 pub fn top_bar(
+    ui: &mut egui::Ui,
+    title: &str,
+    build_num: &str,
+    build_date: &str,
+    bypass: &AtomicBool,
+    combo_id: &str,
+    preset_names: &[&'static str],
+    selected_preset: &mut Option<usize>,
+) -> Option<usize> {
+    top_bar_inner(None, ui, title, build_num, build_date, bypass, combo_id, preset_names, selected_preset)
+}
+
+/// `top_bar` plus the `[ ] mix` toggle: the whole mix from the bus in a
+/// floating window, focused on this plugin's own track (`scope`).
+#[allow(clippy::too_many_arguments)]
+pub fn top_bar_mix(
+    scope: &LiveScope,
+    ui: &mut egui::Ui,
+    title: &str,
+    build_num: &str,
+    build_date: &str,
+    bypass: &AtomicBool,
+    combo_id: &str,
+    preset_names: &[&'static str],
+    selected_preset: &mut Option<usize>,
+) -> Option<usize> {
+    top_bar_inner(Some(scope), ui, title, build_num, build_date, bypass, combo_id, preset_names, selected_preset)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn top_bar_inner(
+    scope: Option<&LiveScope>,
     ui: &mut egui::Ui,
     title: &str,
     build_num: &str,
@@ -1499,6 +1532,10 @@ pub fn top_bar(
         {
             bypassed = !bypassed;
             bypass.store(bypassed, Ordering::Relaxed);
+        }
+        if let Some(scope) = scope {
+            ui.add_space(12.0);
+            crate::mix_view::mix_toggle(ui, scope);
         }
     });
     // Full-width separator line in green dim.

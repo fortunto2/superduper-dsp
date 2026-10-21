@@ -635,7 +635,7 @@ impl DefaultPluginFactory for SuperDuperStretch {
     }
 
     fn new_main_thread<'a>(
-        mut host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
         let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);

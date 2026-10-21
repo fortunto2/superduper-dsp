@@ -128,7 +128,7 @@ fn draw_readout(ui: &mut egui::Ui, state: &GuiState) {
 
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     egui::CentralPanel::default().show(ctx, |ui| {
-        if let Some(i) = core_gui::top_bar(
+        if let Some(i) = core_gui::top_bar_mix(&state.shared.scope, 
             ui,
             "SuperDuper Harmonic",
             env!("SDSP_BUILD_NUM"),

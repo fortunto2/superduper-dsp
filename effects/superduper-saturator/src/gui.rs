@@ -73,7 +73,7 @@ pub fn open_window<P: HasRawWindowHandle>(
 fn draw(ctx: &egui::Context, state: &mut GuiState) {
     use std::sync::atomic::Ordering;
     egui::CentralPanel::default().show(ctx, |ui| {
-        if let Some(i) = core_gui::top_bar(
+        if let Some(i) = core_gui::top_bar_mix(&state.shared.scope, 
             ui,
             "SuperDuper Saturator",
             env!("SDSP_BUILD_NUM"),

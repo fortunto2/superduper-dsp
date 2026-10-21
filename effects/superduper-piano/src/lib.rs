@@ -767,7 +767,7 @@ impl DefaultPluginFactory for SuperDuperPiano {
         superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Piano", &shared.inner, |s| &s.scope);
         Ok(shared)
     }
-    fn new_main_thread<'a>(mut host: HostMainThreadHandle<'a>, shared: &'a PluginShared) -> Result<PluginMainThread<'a>, PluginError> {
+    fn new_main_thread<'a>(host: HostMainThreadHandle<'a>, shared: &'a PluginShared) -> Result<PluginMainThread<'a>, PluginError> {
         let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
             track_watch, shared, gui_handle: None, gui_resize: gui::new_resize_bridge() })

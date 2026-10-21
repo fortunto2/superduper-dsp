@@ -100,6 +100,9 @@ struct GuiState {
     masking: superduper_synth_core::mixmap::MaskingTracker,
     bus_polled: std::time::Instant,
     focus: Option<String>,
+    /// A clash picked from the list: its two curves lit, the gap between them
+    /// filled where they fight (Pro-Q's collision view).
+    focus_pair: Option<(String, String)>,
     mask_window_s: f32,
 }
 
@@ -142,6 +145,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         // stays lit, one stray transient does not.
         masking: superduper_synth_core::mixmap::MaskingTracker::new(80.0),
         mask_window_s: 0.0, // rebuilt from the Window param on first draw
+        focus_pair: None,
         bus_polled: std::time::Instant::now(),
         focus: None,
     };
@@ -611,13 +615,19 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
         state.mask_window_s = window_s;
     }
     let frozen = state.shared.bypass.load(Ordering::Relaxed);
-    if !frozen && state.bus_polled.elapsed().as_millis() >= 100 {
-        state.bus_polled = std::time::Instant::now();
+    // Read the bus every frame so the curves move at the window's frame
+    // rate; masking still counts 10 frames a second, so its shares do not
+    // depend on how fast the GUI repaints.
+    if !frozen {
         if let Some(r) = &state.bus {
             let rows = r.read_all();
             let fresh = loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.rms_db, &s.bands_db)));
-            // Masking judges the raw frames; only the drawing is smoothed.
-            state.masking.update(&fresh);
+            if state.bus_polled.elapsed().as_millis() >= 100 {
+                state.bus_polled = std::time::Instant::now();
+                // Masking judges the raw frames; only the drawing is smoothed.
+                state.masking.update(&fresh);
+            }
+            // Smoothing is per 1/30 s frame, as in the Spectrum view.
             let k = state.shared.params[P_SMOOTHING].load(Ordering::Relaxed).clamp(0.0, 0.98);
             state.bus_tracks = fresh.into_iter().map(|mut t| {
                 if let Some(old) = state.bus_tracks.iter().find(|o| o.name == t.name) {
@@ -629,7 +639,10 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
     }
     let tilt = state.shared.params[P_TILT].load(Ordering::Relaxed);
     let edges = superduper_dsp_sdk::bus::band_edges();
-    let clashes = state.masking.top(4);
+    // A focused track narrows the list and the heat to its own conflicts.
+    let clashes: Vec<_> = state.masking.top(64).into_iter()
+        .filter(|c| state.focus.as_deref().is_none_or(|f| c.a == f || c.b == f))
+        .take(4).collect();
     // Silent tracks (stopped, muted, not playing in this section) only crowd
     // the legend; count them instead.
     let audible = |t: &superduper_synth_core::mixmap::TrackSpectrum| t.rms_db > superduper_synth_core::mixmap::LOUD_DB;
@@ -645,6 +658,7 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
             let on = state.focus.as_deref() == Some(t.name.as_str());
             if ui.selectable_label(on, egui::RichText::new(format!("● {label}  {:.0} dB", t.rms_db)).color(col)).clicked() {
                 state.focus = if on { None } else { Some(t.name.clone()) };
+                state.focus_pair = None;
             }
         }
         let silent = state.bus_tracks.iter().filter(|t| !audible(t)).count();
@@ -660,9 +674,14 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
         let lo = edges[c.band];
         let hi = edges[c.band + 1];
         let f = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
-        ui.label(egui::RichText::new(format!("{} × {}   {}–{} Hz   {:.0}%", c.a, c.b, f(lo), f(hi), c.share * 100.0))
+        let key = (c.a.clone(), c.b.clone());
+        let on = state.focus_pair.as_ref() == Some(&key);
+        let text = egui::RichText::new(format!("{} × {}   {}–{} Hz   {:.0}%", c.a, c.b, f(lo), f(hi), c.share * 100.0))
             .color(if c.share > 0.5 { Color32::from_rgb(255, 120, 110) } else { core_gui::GREEN })
-            .monospace());
+            .monospace();
+        if ui.selectable_label(on, text).on_hover_text("click: show where these two fight").clicked() {
+            state.focus_pair = if on { None } else { Some(key) };
+        }
     }
 
     let avail = ui.available_rect_before_wrap();
@@ -676,22 +695,48 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
     let fx = |hz: f32| plot.left() + (hz.clamp(MIN_HZ, MAX_HZ).ln() - log_min) / (log_max - log_min) * plot.width();
     let fy = |db: f32| plot.top() + (MAX_DB - db.clamp(MIN_DB, MAX_DB)) / (MAX_DB - MIN_DB) * plot.height();
 
-    if let Some(c) = clashes.first() {
-        let band = egui::Rect::from_x_y_ranges(fx(edges[c.band])..=fx(edges[c.band + 1]), plot.top()..=plot.bottom());
-        painter.rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(255, 80, 80, 40));
+    // Conflict heat: every band tinted by how much of the time it is fought
+    // over, and a solid strip along the bottom (Neutron's masking meter).
+    let heat = match &state.focus_pair {
+        Some((a, b)) => state.masking.pair(a, b).unwrap_or([0.0; superduper_synth_core::mixmap::BANDS]),
+        None => state.masking.band_heat(state.focus.as_deref()),
+    };
+    let strip_h = 10.0;
+    for (b, h) in heat.iter().enumerate() {
+        if *h < 0.05 { continue; }
+        let xs = fx(edges[b])..=fx(edges[b + 1]);
+        let a = (h.min(1.0) * 255.0) as u8;
+        painter.rect_filled(egui::Rect::from_x_y_ranges(xs.clone(), plot.top()..=plot.bottom()), 0.0, Color32::from_rgba_unmultiplied(255, 60, 60, a / 5));
+        painter.rect_filled(egui::Rect::from_x_y_ranges(xs, (plot.bottom() - strip_h)..=plot.bottom()), 0.0, Color32::from_rgba_unmultiplied(255, 60, 60, a));
+    }
+    let tilted = |t: &superduper_synth_core::mixmap::TrackSpectrum, b: usize| {
+        let hz = (edges[b] * edges[b + 1]).sqrt();
+        fy(t.bands_db[b] + (hz / 1000.0).log2() * tilt)
+    };
+    // Pair view: fill the gap between the two curves where they fight.
+    if let Some((a, b)) = &state.focus_pair {
+        let ta = state.bus_tracks.iter().find(|t| &t.name == a);
+        let tb = state.bus_tracks.iter().find(|t| &t.name == b);
+        if let (Some(ta), Some(tb)) = (ta, tb) {
+            for (i, h) in heat.iter().enumerate() {
+                if *h < 0.1 { continue; }
+                let (ya, yb) = (tilted(ta, i), tilted(tb, i));
+                let (y0, y1) = (ya.min(yb) - 3.0, ya.max(yb) + 3.0);
+                let r = egui::Rect::from_x_y_ranges(fx(edges[i])..=fx(edges[i + 1]), y0..=y1);
+                painter.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(255, 70, 70, (h.min(1.0) * 200.0) as u8));
+            }
+        }
     }
     let mut order: Vec<&superduper_synth_core::mixmap::TrackSpectrum> = state.bus_tracks.iter().filter(|t| audible(t)).collect();
     // Focused track last = drawn on top.
-    order.sort_by_key(|t| state.focus.as_deref() == Some(t.name.as_str()));
+    order.sort_by_key(|t| state.focus.as_deref() == Some(t.name.as_str()) || state.focus_pair.as_ref().is_some_and(|(a, b)| *a == t.name || *b == t.name));
     for t in order {
         let pts: Vec<egui::Pos2> = (0..edges.len() - 1)
-            .map(|b| {
-                let hz = (edges[b] * edges[b + 1]).sqrt();
-                egui::pos2(fx(hz), fy(t.bands_db[b] + (hz / 1000.0).log2() * tilt))
-            })
+            .map(|b| egui::pos2(fx((edges[b] * edges[b + 1]).sqrt()), tilted(t, b)))
             .collect();
-        let focused = state.focus.as_deref() == Some(t.name.as_str());
-        let dim = state.focus.is_some() && !focused;
+        let in_pair = state.focus_pair.as_ref().is_some_and(|(a, b)| *a == t.name || *b == t.name);
+        let focused = in_pair || state.focus.as_deref() == Some(t.name.as_str());
+        let dim = (state.focus.is_some() || state.focus_pair.is_some()) && !focused;
         let stroke = if is_bus_name(&t.name) {
             egui::Stroke::new(1.0, Color32::from_gray(if dim { 60 } else { 130 }))
         } else {

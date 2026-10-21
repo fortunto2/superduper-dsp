@@ -115,6 +115,17 @@ impl MaskingTracker {
         v
     }
 
+    /// Per band, the worst share over all pairs — or only the pairs that
+    /// involve `track`. The conflict heat a display paints under the curves.
+    pub fn band_heat(&self, track: Option<&str>) -> [f32; BANDS] {
+        let mut heat = [0.0f32; BANDS];
+        for ((a, b), s) in &self.pairs {
+            if track.is_some_and(|t| t != a && t != b) { continue; }
+            for (h, v) in heat.iter_mut().zip(s.iter()) { *h = h.max(*v); }
+        }
+        heat
+    }
+
     /// Per-band share for one pair (for drawing), if tracked.
     pub fn pair(&self, a: &str, b: &str) -> Option<[f32; BANDS]> {
         let key = if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
@@ -158,6 +169,18 @@ mod tests {
         for _ in 0..30 { m.update(&[t("A", &[(5, -20.0)]), t("B", &[(5, -60.0)])]); }
         let after = m.top(1).first().map_or(0.0, |c| c.share);
         assert!(before > 0.9 && after < 0.1, "{before} → {after}");
+    }
+
+    #[test]
+    fn heat_is_the_worst_pair_per_band_and_filters_by_track() {
+        let mut m = MaskingTracker::mean();
+        for _ in 0..10 {
+            m.update(&[t("A", &[(3, -20.0), (9, -20.0)]), t("B", &[(3, -21.0)]), t("C", &[(9, -22.0)])]);
+        }
+        let all = m.band_heat(None);
+        assert!(all[3] > 0.99 && all[9] > 0.99 && all[0] == 0.0);
+        let b = m.band_heat(Some("B"));
+        assert!(b[3] > 0.99 && b[9] == 0.0, "C's clash with A is not B's business");
     }
 
     #[test]

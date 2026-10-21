@@ -13,6 +13,9 @@ use rmcp::{
     transport::streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpServerConfig, StreamableHttpService},
     ErrorData as McpError, ServerHandler,
 };
+// Names the prompt_handler macro expands to.
+use rmcp::model::{GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams};
+use rmcp::{service::RequestContext, RoleServer};
 use serde::{Deserialize, Serialize};
 use superduper_dsp_sdk::bus::{band_edges, Reader, Snapshot, BANDS, TRACK_MASTER};
 use superduper_synth_core::drumlib::{parse_key_name, song_key_path};
@@ -471,13 +474,16 @@ pub struct PhaseOut {
 }
 
 #[derive(Clone)]
-pub struct BusServer { tool_router: ToolRouter<Self> }
+pub struct BusServer {
+    tool_router: ToolRouter<Self>,
+    prompt_router: rmcp::handler::server::router::prompt::PromptRouter<Self>,
+}
 
 #[rmcp::tool_router]
 impl BusServer {
-    pub fn new() -> Self { Self { tool_router: Self::tool_router() } }
+    pub fn new() -> Self { Self { tool_router: Self::tool_router(), prompt_router: Self::prompt_router() } }
 
-    #[rmcp::tool(description = "Every running SuperDuper plugin instance: track, plugin, level, peak, detected key. Empty when no host is running our plugins.")]
+    #[rmcp::tool(description = "Every running SuperDuper plugin instance: track, plugin, level, peak, detected key. Empty when no host is running our plugins.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn bus_list(&self) -> Result<rmcp::Json<BusList>, McpError> {
         let rows = reader()?.read_all();
         let mut tracks: Vec<String> = rows.iter().map(|r| r.track.clone()).collect();
@@ -489,7 +495,7 @@ impl BusServer {
         Ok(rmcp::Json(BusList { instances, tracks }))
     }
 
-    #[rmcp::tool(description = "Current 32-band spectrum of one track (its loudest SuperDuper instance).")]
+    #[rmcp::tool(description = "Current 32-band spectrum of one track (its loudest SuperDuper instance).", annotations(read_only_hint = true, open_world_hint = false))]
     async fn track_spectrum(&self, Parameters(TrackInput { track }): Parameters<TrackInput>) -> Result<rmcp::Json<TrackSpectrumOut>, McpError> {
         let all = tracks(&reader()?.read_all(), &Prefer::new());
         let q = track.to_lowercase();
@@ -498,7 +504,7 @@ impl BusServer {
         Ok(rmcp::Json(TrackSpectrumOut { track: t.name.clone(), rms_db: t.rms_db, band_edges_hz: band_edges().to_vec(), bands_db: t.bands_db.to_vec() }))
     }
 
-    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first (clashes: both loud and within 6 dB), and which parts are buried 6-20 dB under a louder one (buried — a problem only for a part that must be heard there). Masters, group buses and returns excluded. Use it to decide EQ cuts.")]
+    #[rmcp::tool(description = "Listen to the bus for a few seconds of playback and report which track pairs mask each other in which band, most persistent first (clashes: both loud and within 6 dB), and which parts are buried 6-20 dB under a louder one (buried — a problem only for a part that must be heard there). Masters, group buses and returns excluded. Use it to decide EQ cuts.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn mix_masking(&self, Parameters(MaskingInput { seconds, label, prefer, fader_db }): Parameters<MaskingInput>) -> Result<rmcp::Json<MaskingOut>, McpError> {
         let secs = seconds.unwrap_or(6.0).clamp(1.0, 60.0);
         let frames = listen(&reader()?, (secs * 10.0) as usize).await;
@@ -516,7 +522,7 @@ impl BusServer {
         Ok(rmcp::Json(out))
     }
 
-    #[rmcp::tool(description = "Where parts cancel when summed (Sound Radix Pi's question): listens to the master and every track, and per band compares the master's energy with the sum of the tracks' — the broadband part (master limiter, fader offsets) removed. A band 2+ dB short is cancellation; its loudest tracks are the suspects (kick vs bass, layered kicks, two mics). Fix by flipping one suspect's polarity in the DAW (REAPER run_lua: SetMediaTrackInfo_Value(track, \"B_PHASE\", 1)) or nudging it a few ms, then run again and keep only what shrinks the deficit. Needs a SuperDuper plugin on the master and on every track that matters.")]
+    #[rmcp::tool(description = "Where parts cancel when summed (Sound Radix Pi's question): listens to the master and every track, and per band compares the master's energy with the sum of the tracks' — the broadband part (master limiter, fader offsets) removed. A band 2+ dB short is cancellation; its loudest tracks are the suspects (kick vs bass, layered kicks, two mics). Fix by flipping one suspect's polarity in the DAW (REAPER run_lua: SetMediaTrackInfo_Value(track, \"B_PHASE\", 1)) or nudging it a few ms, then run again and keep only what shrinks the deficit. Needs a SuperDuper plugin on the master and on every track that matters.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn mix_phase(&self, Parameters(i): Parameters<PhaseInput>) -> Result<rmcp::Json<PhaseOut>, McpError> {
         let secs = i.seconds.unwrap_or(10.0).clamp(2.0, 60.0);
         let r = reader()?;
@@ -538,7 +544,7 @@ impl BusServer {
         Ok(rmcp::Json(out))
     }
 
-    #[rmcp::tool(description = "Compare two labelled mix_masking runs (same section of the song): each clash's share before and after, and each track's level. Use after a change to see whether it helped; undo it in the DAW if it did not.")]
+    #[rmcp::tool(description = "Compare two labelled mix_masking runs (same section of the song): each clash's share before and after, and each track's level. Use after a change to see whether it helped; undo it in the DAW if it did not.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn mix_compare(&self, Parameters(CompareInput { before, after }): Parameters<CompareInput>) -> Result<rmcp::Json<CompareOut>, McpError> {
         let (b, a) = (load_run(&before)?, load_run(&after)?);
         let mut clashes: Vec<ClashDelta> = Vec::new();
@@ -558,32 +564,32 @@ impl BusServer {
         Ok(rmcp::Json(CompareOut { clashes, levels }))
     }
 
-    #[rmcp::tool(description = "Which documents a plugin instance exposes beyond its parameters (Wave: \"wavetable\"), with the shape plugin_get returns and plugin_set takes.")]
+    #[rmcp::tool(description = "Which documents a plugin instance exposes beyond its parameters (Wave: \"wavetable\"), with the shape plugin_get returns and plugin_set takes.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn plugin_docs(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, "", "list", serde_json::Value::Null).await
     }
 
-    #[rmcp::tool(description = "Read a plugin document (e.g. Wave's wavetable as harmonic amplitudes per frame) from the running instance on a track.")]
+    #[rmcp::tool(description = "Read a plugin document (e.g. Wave's wavetable as harmonic amplitudes per frame) from the running instance on a track.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn plugin_get(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, &i.doc, "get", serde_json::Value::Null).await
     }
 
-    #[rmcp::tool(description = "Replace a plugin document in the running instance (e.g. Wave wavetable {harmonics: [[1, 0.3, 0, 0.1]]} — fundamental, some 2nd, no 3rd). Read it first with plugin_get to keep the old one for undo; measure with mix_masking before and after.")]
+    #[rmcp::tool(description = "Replace a plugin document in the running instance (e.g. Wave wavetable {harmonics: [[1, 0.3, 0, 0.1]]} — fundamental, some 2nd, no 3rd). Read it first with plugin_get to keep the old one for undo; measure with mix_masking before and after.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn plugin_set(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, &i.doc, "set", i.value).await
     }
 
-    #[rmcp::tool(description = "Every parameter of a running SuperDuper plugin (name, value, min, max, default, unit) — read before setting.")]
+    #[rmcp::tool(description = "Every parameter of a running SuperDuper plugin (name, value, min, max, default, unit) — read before setting.", annotations(read_only_hint = true, open_world_hint = false))]
     async fn plugin_params(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, "params", "get", serde_json::Value::Null).await
     }
 
-    #[rmcp::tool(description = "Set parameters of a running SuperDuper plugin by name, without the DAW: clamped to range, and the host sees the change (automation, project save). Read plugin_params first and keep the old values — that is the undo.")]
+    #[rmcp::tool(description = "Set parameters of a running SuperDuper plugin by name, without the DAW: clamped to range, and the host sees the change (automation, project save). Read plugin_params first and keep the old values — that is the undo.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn plugin_set_params(&self, Parameters(i): Parameters<SetParamsInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         mail(&i.track, &i.plugin, "params", "set", serde_json::Value::Object(i.values)).await
     }
 
-    #[rmcp::tool(description = "Duck one track under another in the bands where they fight, only while the key plays (Trackspacer, no routing): sets the bus key and Key Depth/Range of the SuperDuper Soothe on `track`. Use for a part that must stay but yields to a more important one (guitar/pad under the vocal, synth under the lead); not for kick-bass pumping (the bus lags 50-100 ms — use the compressor side-chain). Soothe must be the last enabled plugin on that track: add it with REAPER MCP track_fx_add_by_name \"CLAP: SuperDuper Soothe\" and pass amount_db: 0 if it is only there to duck. Measure mix_masking (prefer {track: \"Soothe\"}) before and after and mix_compare.")]
+    #[rmcp::tool(description = "Duck one track under another in the bands where they fight, only while the key plays (Trackspacer, no routing): sets the bus key and Key Depth/Range of the SuperDuper Soothe on `track`. Use for a part that must stay but yields to a more important one (guitar/pad under the vocal, synth under the lead); not for kick-bass pumping (the bus lags 50-100 ms — use the compressor side-chain). Soothe must be the last enabled plugin on that track: add it with REAPER MCP track_fx_add_by_name \"CLAP: SuperDuper Soothe\" and pass amount_db: 0 if it is only there to duck. Measure mix_masking (prefer {track: \"Soothe\"}) before and after and mix_compare.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn duck_under(&self, Parameters(i): Parameters<DuckInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         let key = mail(&i.track, "Soothe", "key", "set", serde_json::json!({"track": i.key})).await?;
         let mut v = serde_json::Map::new();
@@ -594,14 +600,14 @@ impl BusServer {
         Ok(rmcp::Json(DocOut { value: serde_json::json!({"key": key.0.value, "params": params.0.value}) }))
     }
 
-    #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).")]
+    #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).", annotations(read_only_hint = true, open_world_hint = false))]
     async fn get_song_key(&self) -> Result<rmcp::Json<KeyOut>, McpError> {
         let p = song_key_path();
         let key = std::fs::read_to_string(&p).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
         Ok(key_out(&p, key))
     }
 
-    #[rmcp::tool(description = "Set the song key every SuperDuper plugin can follow (Drum Key=Auto retunes kick/808/toms to it). Accepts 'A', 'F#m', 'Bb major'; empty clears it.")]
+    #[rmcp::tool(description = "Set the song key every SuperDuper plugin can follow (Drum Key=Auto retunes kick/808/toms to it). Accepts 'A', 'F#m', 'Bb major'; empty clears it.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn set_song_key(&self, Parameters(KeyInput { key }): Parameters<KeyInput>) -> Result<rmcp::Json<KeyOut>, McpError> {
         let p = song_key_path();
         let k = key.trim();
@@ -620,12 +626,31 @@ impl BusServer {
 
 impl Default for BusServer { fn default() -> Self { Self::new() } }
 
+/// The `sdsp://bus/snapshot` resource: every instance with its spectrum.
+pub(crate) fn snapshot_json() -> Result<String, McpError> {
+    let rows: Vec<_> = reader()?.read_all().into_iter().map(|s| serde_json::json!({
+        "track": s.track, "plugin": s.plugin, "bus": s.is_bus(), "rms_db": s.rms_db, "peak_db": s.peak_db,
+        "key": s.key.map(|k| NOTE_NAMES[k as usize]), "bands_db": s.bands_db.to_vec(),
+    })).collect();
+    serde_json::to_string_pretty(&serde_json::json!({"band_edges_hz": band_edges().to_vec(), "instances": rows}))
+        .map_err(|e| McpError::internal_error(e.to_string(), None))
+}
+
 #[rmcp::tool_handler]
+#[rmcp::prompt_handler(router = self.prompt_router)]
 impl ServerHandler for BusServer {
+    async fn list_resources(&self, _r: Option<rmcp::model::PaginatedRequestParams>, _c: rmcp::service::RequestContext<rmcp::RoleServer>) -> Result<rmcp::model::ListResourcesResult, McpError> {
+        Ok(rmcp::model::ListResourcesResult::with_all_items(crate::guide::resources()))
+    }
+
+    async fn read_resource(&self, r: rmcp::model::ReadResourceRequestParams, _c: rmcp::service::RequestContext<rmcp::RoleServer>) -> Result<rmcp::model::ReadResourceResult, McpError> {
+        crate::guide::read(&r.uri)
+    }
+
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let info = rmcp::model::Implementation::new("superduper-bus", env!("CARGO_PKG_VERSION")).with_title("SuperDuper bus");
-        rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
+        rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().enable_prompts().enable_resources().build())
+            .with_protocol_version(rmcp::model::ProtocolVersion::LATEST)
             .with_server_info(info)
             .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), mix_phase (bands where parts cancel in the sum), plugin_params/plugin_set_params (any SuperDuper plugin's parameters, no DAW needed), duck_under (Soothe keyed ducking), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics; every plugin also has \"key\"), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
     }

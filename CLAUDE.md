@@ -603,7 +603,7 @@ pumping — that stays the side-chain input.
 because the bus hears pre-fader, `label` keeps a run), `mix_compare`,
 `mix_phase` (bands where parts cancel in the sum, after Sound Radix Pi),
 `plugin_docs/get/set`, `plugin_params/set_params`, `duck_under`,
-`get/set_song_key`. Masking math in `synth_core::mixmap`; the mix map in every
+`get/set_song_key` — every tool annotated (readOnlyHint on the nine that measure). Protocol 2025-11-25. **Prompts** (`tools/sdsp-bus/src/guide.rs`): `mix-check`, `make-room-for-vocal`, `duck-under`, `fix-mud`, `master-to-target` — the sdsp-mix method as one command (a slash command in Claude Code); prompt arguments arrive as strings, so no numeric fields. **Resources**: `sdsp://method/mixing`, `sdsp://method/verify`, `sdsp://bus/snapshot`. `sdsp-bus setup` registers the gateway in Claude Code / Desktop, Cursor, Windsurf, Codex (the .pkg's Agent tools run it); `tests/mcp_stdio.rs` is the session a client sees. Masking math in `synth_core::mixmap`; the mix map in every
 plugin window (`[ ] mix` strip, `mix_view`) and full size in Spectrum.
 
 **MCP-first is the rule** (`skills/superduper-plugin` §1b): a feature an agent

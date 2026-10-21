@@ -42,8 +42,6 @@ seen while the song plays, without bouncing stems.
 **Before measuring:**
 - every track to judge has at least one SuperDuper plugin (any — a flat EQ or
   Spectrum at the end of the chain will do; the bus reads where it sits);
-- tracks are named **before** the plugin is added (the name is read when the
-  plugin is instantiated; rename later → reopen the project);
 - **all mutes off** and a section where everything plays (the chorus) —
   a muted or silent part hides every clash it causes.
 
@@ -133,9 +131,12 @@ song moves on and every level shifts — a bass that nobody touched dropped 6 dB
 between two runs); pass `prefer={"<track>": "EQ"}` naming the last enabled
 SuperDuper plugin in the chain, or a cut placed after the instrument is
 invisible (the track defaults to its loudest instance, the instrument before
-the cut). A SuperDuper plugin added through the API publishes with an empty
-track name until the project is reopened (the name is read at creation; no
-track-info `changed()` yet) — add measuring plugins by hand, or reopen.
+the cut). Track names follow the host (CLAP track-info `changed()`, since
+2026-10-21): a plugin added through the API or a renamed track shows up under
+its real name without reopening the project. **Use the CLAP versions for
+measuring:** the AU/VST3 wrappers carry no track-info, so a wrapped instance
+publishes an empty name, reads as a bus and is left out of masking (measured:
+the three `AU: SuperDuper…` FX on both vocal tracks).
 
 A plugin that is bypassed publishes silence (since 2026-10-21); before that a
 disabled plugin kept its last spectrum on the bus and produced clashes that

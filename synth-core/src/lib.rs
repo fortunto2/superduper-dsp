@@ -24,6 +24,7 @@ pub mod pitch_engine; // picks PSOLA or the phase vocoder by measuring the mater
 pub mod pvoc; // STFT phase vocoder — the polyphony-capable engine, and PSOLA's fallback on material with no glottal epoch
 pub mod psola; // TD-PSOLA pitch/formant shifter (extracted from superduper-pitch; shared with superduper-tune + iOS)
 pub mod drumlib; // drum one-shot library: class from name or sound, pad mapping (+ folder scan behind `sfz-load`)
+pub mod bus_mail; // the way back in: per-instance mailbox next to the bus (agents read and set non-param state)
 pub mod mixmap; // who fights whom in which band, from bus spectra (Spectrum Mix view, bus gateway)
 pub mod sfz; // SFZ multisample engine: parser, regions, voices (+ loader behind `sfz-load`) — SuperDuper Piano
 pub mod spectral;

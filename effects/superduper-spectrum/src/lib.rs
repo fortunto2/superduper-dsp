@@ -133,6 +133,7 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 // ---------------------------------------------------------------------------
 
 pub struct PluginMainThread<'a> {
+    track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     /// Receiver half of the audio → GUI ring buffer, shared with the open
     /// window. Every `activate` puts a fresh one here and the window reads
@@ -427,7 +428,8 @@ impl Plugin for SuperDuperSpectrum {
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
-            .register::<clack_extensions::gui::PluginGui>();
+            .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::track_info::PluginTrackInfo>();
     }
 }
 
@@ -455,8 +457,9 @@ impl DefaultPluginFactory for SuperDuperSpectrum {
         mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
+        let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
+            track_watch,
             shared,
             consumer: Default::default(),
             gui_handle: None,
@@ -466,3 +469,9 @@ impl DefaultPluginFactory for SuperDuperSpectrum {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperSpectrum>);
+
+impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
+    fn changed(&self) {
+        self.track_watch.refresh();
+    }
+}

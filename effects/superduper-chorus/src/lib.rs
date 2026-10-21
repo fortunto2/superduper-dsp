@@ -140,6 +140,7 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 // ---------------------------------------------------------------------------
 
 pub struct PluginMainThread<'a> {
+    track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
@@ -512,7 +513,8 @@ impl Plugin for SuperDuperChorus {
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
-            .register::<clack_extensions::gui::PluginGui>();
+            .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::track_info::PluginTrackInfo>();
     }
 }
 
@@ -537,8 +539,9 @@ impl DefaultPluginFactory for SuperDuperChorus {
         mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
+        let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
+            track_watch,
             shared,
             gui_handle: None,
             gui_resize: gui::new_resize_bridge(),
@@ -547,3 +550,9 @@ impl DefaultPluginFactory for SuperDuperChorus {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperChorus>);
+
+impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
+    fn changed(&self) {
+        self.track_watch.refresh();
+    }
+}

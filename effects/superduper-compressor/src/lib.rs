@@ -284,6 +284,7 @@ const MAX_LOOKAHEAD_MS: f32 = 15.0;
 const SCOPE_HOP: usize = 32;
 
 pub struct PluginMainThread<'a> {
+    track_watch: superduper_synth_core::gui::TrackInfoWatch<'a>,
     shared: &'a PluginShared,
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
@@ -990,6 +991,7 @@ impl Plugin for SuperDuperCompressor {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::gui::PluginGui>()
+            .register::<clack_extensions::track_info::PluginTrackInfo>()
             .register::<clack_extensions::latency::PluginLatency>();
     }
 }
@@ -1024,8 +1026,9 @@ impl DefaultPluginFactory for SuperDuperCompressor {
         mut host: HostMainThreadHandle<'a>,
         shared: &'a PluginShared,
     ) -> Result<PluginMainThread<'a>, PluginError> {
-        superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
+        let track_watch = superduper_synth_core::gui::TrackInfoWatch::new(host, &shared.scope);
         Ok(PluginMainThread {
+            track_watch,
             shared,
             gui_handle: None,
             gui_resize: gui::new_resize_bridge(),
@@ -1034,3 +1037,9 @@ impl DefaultPluginFactory for SuperDuperCompressor {
 }
 
 clack_export_entry!(SinglePluginEntry<SuperDuperCompressor>);
+
+impl clack_extensions::track_info::PluginTrackInfoImpl for PluginMainThread<'_> {
+    fn changed(&self) {
+        self.track_watch.refresh();
+    }
+}

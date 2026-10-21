@@ -319,7 +319,27 @@ impl LiveScope {
 /// Ask the host for this instance's track name (CLAP track-info) and keep it
 /// on the scope for the bus. Main thread; hosts without track-info leave it
 /// empty.
-// AI-TODO: also call this from a CLAP track-info `changed()` in every plugin — FX added via the API or tracks renamed later keep an empty/stale name.
+/// Keeps the host handle so the CLAP track-info `changed()` can re-read the
+/// track name and kind. Reading them once at creation left an FX added through
+/// the API (REAPER creates it before it sits on a track) and every renamed
+/// track publishing an empty or stale name on the bus.
+pub struct TrackInfoWatch<'a> {
+    host: std::cell::RefCell<clack_plugin::host::HostMainThreadHandle<'a>>,
+    scope: &'a LiveScope,
+}
+
+impl<'a> TrackInfoWatch<'a> {
+    pub fn new(mut host: clack_plugin::host::HostMainThreadHandle<'a>, scope: &'a LiveScope) -> Self {
+        bus_track_from_host(&mut host, scope);
+        Self { host: std::cell::RefCell::new(host), scope }
+    }
+
+    /// Main thread, from `PluginTrackInfoImpl::changed`.
+    pub fn refresh(&self) {
+        if let Ok(mut host) = self.host.try_borrow_mut() { bus_track_from_host(&mut host, self.scope); }
+    }
+}
+
 pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'_>, scope: &LiveScope) {
     use clack_extensions::track_info::{HostTrackInfo, TrackInfoBuffer};
     let Some(ext) = host.get_extension::<HostTrackInfo>() else { return };
@@ -386,6 +406,7 @@ pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, share
         let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
         let mut track = (String::new(), 0);
         let mut last_head = usize::MAX;
+        let mut last_moved = std::time::Instant::now();
         loop {
             let Some(inner) = weak.upgrade() else { break };
             let sc = scope(&inner);
@@ -393,10 +414,13 @@ pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, share
             if t != track { publisher.set_track(&t.0, t.1); track = t; }
             // A bypassed or stopped plugin is not called, so its scope keeps
             // the last audio it heard; publishing that froze a disabled Drum
-            // on the bus as its track's loudest instance. No new samples since
-            // the last publish = silence.
+            // on the bus as its track's loudest instance. No new samples for
+            // half a second = silence. Not one publish period: a host that
+            // stalls a block (or the bus test, holding the audio thread 200 ms)
+            // is still playing.
             let head = sc.head.load(Ordering::Relaxed);
-            let (rms, peak, bands) = if head == last_head {
+            if head != last_head { last_moved = std::time::Instant::now(); }
+            let (rms, peak, bands) = if last_moved.elapsed() > std::time::Duration::from_millis(500) {
                 (-120.0, -120.0, [-120.0; superduper_dsp_sdk::bus::BANDS])
             } else {
                 scope_spectrum(sc, 4096)

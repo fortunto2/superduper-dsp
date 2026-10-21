@@ -93,6 +93,24 @@ the map, then ask why before reaching for an EQ:
   take handle back in, so anything that walks items → takes → notes goes
   here. Wrap edits in `Undo_BeginBlock2(0)` / `Undo_EndBlock2(0, "what", -1)`.
 
+**Fix at the source, not after it.** When an instrument is ours, change the
+sound it makes before EQing it. Measured 2026-10-21, 808 (Wave) vs the guitar:
+Pulse 25% with the filter at 4 kHz put the 808's 6th harmonic on the guitar
+(267–331 Hz, 59%); preset "808 Sub" + LP 120 Hz + resonance 0 cleared it and
+the bass got 1.3 dB *louder* (energy moved into the fundamental) — but a pure
+sine vanishes on laptop speakers. Audibility needs harmonics, and the 808's
+3rd (131–156 Hz) sat on the guitar's commonest note, D#3: no free band, so one
+owner — 808 kept LP 300 + Drive 0.25, the guitar got HP 260 after Piano (its
+pitch survives through its harmonics): 69% → 0%, guitar −2.2 dB.
+- the resonance of a low-pass is a bump at the cutoff: a clash cleared above
+  can reappear *at* the cutoff (seen: LP 180, res 0.2 → new 40% at 173–215 Hz);
+- non-parameter state is reachable too: `plugin_docs` / `plugin_get` /
+  `plugin_set` on the bus server. Wave's `wavetable` is read and written in
+  harmonics — `{harmonics: [[1, 0.4, 0, 0.15, 0.1]]}` = fundamental, some 2nd,
+  no 3rd, a little 4th/5th for audibility. `plugin_get` first and keep it:
+  that is the undo. WT Pos (a parameter) morphs between frames, so an
+  automation envelope on it changes the timbre per section.
+
 **Deciding the fix** — one band, one owner:
 - the part whose *job* is that band keeps it: kick and bass under ~150 Hz,
   the vocal 1–4 kHz, the lead its own fundamental;

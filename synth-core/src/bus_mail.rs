@@ -11,6 +11,12 @@
 //! A plugin names its documents ("wavetable", "harmonics") and answers
 //! `op` = "list" | "get" | "set" for each; `doc` = "" with "list" asks which
 //! documents it has.
+//!
+//! Files, not a socket or an IPC crate, on purpose: agent calls come about
+//! once a second, and this survives a crashed host, needs no extra thread in
+//! the DAW and nothing to install. If the bus ever has to carry a stream of
+//! events (renames, notes, hundreds a second), move both it and this mailbox
+//! to iceoryx2 (cross-process pub/sub + request/response over shared memory).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

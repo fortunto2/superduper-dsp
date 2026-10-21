@@ -14,6 +14,7 @@
 // — Kubyz uses it directly. Wave dropped its formant stage after user
 // feedback (too subtle on bass voices).
 pub mod gui;
+pub mod mail; // the wavetable as a bus-mailbox document: agents read/set it in harmonics
 // The wavetable DSP moved to synth-core (so iOS/live2play reuses it). Re-export under the old
 // `osc` path so every `crate::osc::…` / `osc::…` reference keeps working unchanged. The old
 // src/osc.rs is now dead (left in place; delete on request).
@@ -1450,7 +1451,7 @@ impl DefaultPluginFactory for SuperDuperWave {
             let mips: Vec<_> = frames.iter().map(|f| osc::mip_from_table(f)).collect();
             push_custom_frames(&shared, mips);
         }
-        superduper_synth_core::gui::spawn_bus_publisher("SuperDuper Wave", &shared.inner, |s| &s.scope);
+        superduper_synth_core::gui::spawn_bus_publisher_with_mail("SuperDuper Wave", &shared.inner, |s| &s.scope, Some(mail::handle));
         Ok(shared)
     }
     fn new_main_thread<'a>(

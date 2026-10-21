@@ -401,6 +401,22 @@ pub fn scope_spectrum(scope: &LiveScope, n: usize) -> (f32, f32, [f32; superdupe
 /// itself when the plugin instance (`shared`) is dropped. No-op if the bus
 /// cannot be opened (read-only home, every slot taken).
 pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, shared: &std::sync::Arc<T>, scope: fn(&T) -> &LiveScope) {
+    spawn_bus_publisher_with_mail(plugin, shared, scope, None);
+}
+
+/// Answers an agent's request for one of the plugin's documents
+/// (`crate::bus_mail`): `(state, doc, op, value)`, with op "list"/"get"/"set".
+/// Runs on the publisher thread, never the audio thread.
+pub type MailHandler<T> = fn(&T, &str, &str, serde_json::Value) -> Result<serde_json::Value, String>;
+
+/// `spawn_bus_publisher` plus a mailbox: requests addressed to this
+/// instance's bus slot are answered by `mail` between publishes.
+pub fn spawn_bus_publisher_with_mail<T: Send + Sync + 'static>(
+    plugin: &'static str,
+    shared: &std::sync::Arc<T>,
+    scope: fn(&T) -> &LiveScope,
+    mail: Option<MailHandler<T>>,
+) {
     let weak = std::sync::Arc::downgrade(shared);
     let _ = std::thread::Builder::new().name("sdsp-bus".into()).spawn(move || {
         let Some(publisher) = superduper_dsp_sdk::bus::Publisher::open(plugin) else { return };
@@ -427,6 +443,12 @@ pub fn spawn_bus_publisher<T: Send + Sync + 'static>(plugin: &'static str, share
             };
             last_head = head;
             publisher.publish(sc.sample_rate.load(Ordering::Relaxed), rms, peak, &bands);
+            if let Some(handle) = mail {
+                if let Some(req) = crate::bus_mail::take_request(publisher.instance()) {
+                    let out = handle(&inner, &req.doc, &req.op, req.value);
+                    crate::bus_mail::reply(publisher.instance(), req.id, out);
+                }
+            }
             drop(inner);
             std::thread::sleep(std::time::Duration::from_millis(50));
         }

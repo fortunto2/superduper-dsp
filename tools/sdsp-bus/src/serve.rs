@@ -159,6 +159,46 @@ pub struct KeyInput {
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct KeyOut { pub key: Option<String>, pub file: String }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DocInput {
+    /// Track name as bus_list shows it (case-insensitive, substring ok).
+    pub track: String,
+    /// Plugin name or part of it ("Wave", "Kubyz").
+    pub plugin: String,
+    /// Document name from plugin_docs ("wavetable"); empty for plugin_docs.
+    #[serde(default)]
+    pub doc: String,
+    /// For plugin_set: the new document, in the shape plugin_docs describes.
+    #[serde(default)]
+    pub value: serde_json::Value,
+}
+
+/// The one live instance of `plugin` on `track`, by its bus id.
+fn find_instance(track: &str, plugin: &str) -> Result<u64, McpError> {
+    let rows = reader()?.read_all();
+    let (t, p) = (track.to_lowercase(), plugin.to_lowercase());
+    let on_track = |s: &&Snapshot| s.track.to_lowercase() == t || s.track.to_lowercase().contains(&t);
+    let hits: Vec<&Snapshot> = rows.iter().filter(on_track).filter(|s| s.plugin.to_lowercase().contains(&p)).collect();
+    match hits.as_slice() {
+        [one] => Ok(one.instance),
+        [] => Err(McpError::invalid_params(format!("no '{plugin}' on a track matching '{track}'"), None)),
+        many => Err(McpError::invalid_params(format!(
+            "{} instances match: {} — name the track exactly",
+            many.len(),
+            many.iter().map(|s| format!("{} / {}", s.track, s.plugin)).collect::<Vec<_>>().join("; ")
+        ), None)),
+    }
+}
+
+async fn mail(track: &str, plugin: &str, doc: &str, op: &str, value: serde_json::Value) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+    let id = find_instance(track, plugin)?;
+    let (doc, op) = (doc.to_string(), op.to_string());
+    let out = tokio::task::spawn_blocking(move || {
+        superduper_synth_core::bus_mail::call(id, &doc, &op, value, std::time::Duration::from_secs(3))
+    }).await.map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    out.map(rmcp::Json).map_err(|e| McpError::invalid_params(e, None))
+}
+
 #[derive(Clone)]
 pub struct BusServer { tool_router: ToolRouter<Self> }
 
@@ -250,6 +290,21 @@ impl BusServer {
         Ok(rmcp::Json(CompareOut { clashes, levels }))
     }
 
+    #[rmcp::tool(description = "Which documents a plugin instance exposes beyond its parameters (Wave: \"wavetable\"), with the shape plugin_get returns and plugin_set takes.")]
+    async fn plugin_docs(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+        mail(&i.track, &i.plugin, "", "list", serde_json::Value::Null).await
+    }
+
+    #[rmcp::tool(description = "Read a plugin document (e.g. Wave's wavetable as harmonic amplitudes per frame) from the running instance on a track.")]
+    async fn plugin_get(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+        mail(&i.track, &i.plugin, &i.doc, "get", serde_json::Value::Null).await
+    }
+
+    #[rmcp::tool(description = "Replace a plugin document in the running instance (e.g. Wave wavetable {harmonics: [[1, 0.3, 0, 0.1]]} — fundamental, some 2nd, no 3rd). Read it first with plugin_get to keep the old one for undo; measure with mix_masking before and after.")]
+    async fn plugin_set(&self, Parameters(i): Parameters<DocInput>) -> Result<rmcp::Json<serde_json::Value>, McpError> {
+        mail(&i.track, &i.plugin, &i.doc, "set", i.value).await
+    }
+
     #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).")]
     async fn get_song_key(&self) -> Result<rmcp::Json<KeyOut>, McpError> {
         let p = song_key_path();
@@ -283,7 +338,7 @@ impl ServerHandler for BusServer {
         rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_03_26)
             .with_server_info(info)
-            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
+            .with_instructions("Live view of every SuperDuper plugin running in the DAW: bus_list, track_spectrum, mix_masking (who masks whom, while the song plays; label a run to keep it), mix_compare (two labelled runs: what a change did), plugin_docs/get/set (state that is not a parameter, e.g. Wave's wavetable in harmonics), get/set_song_key. Changes and undo happen in the DAW (REAPER MCP); this server measures.")
     }
 }
 

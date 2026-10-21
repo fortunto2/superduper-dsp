@@ -22,6 +22,7 @@ use crate::presets::PRESETS;
 use crate::{
     PARAMS, P_ATTACK, P_AUTO_REL, P_CEILING, P_CURVE, P_HOLD, P_KNEE, P_LINK, P_LOOKAHEAD, P_MS_MODE,
     P_MAKEUP, P_MIX, P_OS, P_RANGE, P_RATIO, P_RELEASE, P_SC_HPF, P_THRESHOLD, SCOPE_LEN,
+    P_DETECTOR, P_KEY, P_KEY_HI, P_KEY_LO, P_PEAK_CREST, P_RELEASE_PEAK, P_RELEASE_RMS,
     SharedParams,
 };
 
@@ -40,6 +41,7 @@ pub fn new_resize_bridge() -> ResizeBridge {
 const HPF_NAMES: [&str; 4] = ["Off", "80 Hz", "150 Hz", "300 Hz"];
 const OS_NAMES: [&str; 3] = ["Off", "2×", "4×"];
 const CURVE_NAMES: [&str; 3] = ["Clean", "Pump", "Smooth"];
+const DETECTOR_NAMES: [&str; 2] = ["Classic", "Dual"];
 
 /// Scope display range (dB). Anything below this floor is clipped to it.
 const SCOPE_DB_FLOOR: f32 = -60.0;
@@ -260,6 +262,8 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                 core_gui::dirty_toggle_row_g(ui, &state.shared.params[P_MS_MODE], &PARAMS[P_MS_MODE], &state.shared.dirty_params[P_MS_MODE], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_MS_MODE);
             });
 
+            draw_dual_and_key(ui, state);
+
             core_gui::section(ui, "Lookahead", |ui| {
                 core_gui::dirty_param_row_g(ui, &state.shared.params[P_LOOKAHEAD], &PARAMS[P_LOOKAHEAD], &state.shared.dirty_params[P_LOOKAHEAD], core_gui::GestureBridge { begin: &state.shared.gesture_begin, end: &state.shared.gesture_end }, P_LOOKAHEAD);
             });
@@ -311,6 +315,60 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             );
         });
     });
+}
+
+/// Dual detector (RMS program stage + peak stage) and the bus key.
+fn draw_dual_and_key(ui: &mut egui::Ui, state: &mut GuiState) {
+    let sh = &state.shared;
+    let g = || core_gui::GestureBridge { begin: &sh.gesture_begin, end: &sh.gesture_end };
+    let row = |ui: &mut egui::Ui, i: usize| {
+        core_gui::dirty_param_row_g(ui, &sh.params[i], &PARAMS[i], &sh.dirty_params[i], g(), i);
+    };
+    core_gui::section(ui, "Dual detector", |ui| {
+        core_gui::dirty_choice_row_g(
+            ui, &sh.params[P_DETECTOR], &PARAMS[P_DETECTOR], &DETECTOR_NAMES,
+            &sh.dirty_params[P_DETECTOR], g(), P_DETECTOR,
+        );
+        if sh.params[P_DETECTOR].load(Ordering::Relaxed) >= 0.5 {
+            row(ui, P_PEAK_CREST);
+            row(ui, P_RELEASE_PEAK);
+            row(ui, P_RELEASE_RMS);
+            let (r, pk) = (sh.gr_rms_db.load(Ordering::Relaxed), sh.gr_peak_db.load(Ordering::Relaxed));
+            ui.label(
+                egui::RichText::new(format!("RMS {r:>5.1} dB   peak {pk:>5.1} dB"))
+                    .color(core_gui::GREEN_BRIGHT)
+                    .monospace(),
+            );
+        }
+    });
+    core_gui::section(ui, "Bus key (slow duck)", |ui| {
+        superduper_synth_core::mix_view::key_picker(ui, &sh.scope);
+        row(ui, P_KEY);
+        row(ui, P_KEY_LO);
+        row(ui, P_KEY_HI);
+    });
+    core_gui::help_block(
+        ui,
+        "comp_help_dual",
+        &[
+            (
+                "Dual detector",
+                "Classic follows one envelope. Dual splits it: an RMS stage \
+                 handles the program level (Threshold is an RMS level, Release \
+                 RMS sets recovery), and a peak stage only acts on transients \
+                 that rise more than Peak Crest above that level (Release Peak). \
+                 A steady tone never wakes the peak stage.",
+            ),
+            (
+                "Bus key",
+                "Pick another track on the SuperDuper bus; Key blends the \
+                 detector from this input (0) to that track's level between Key \
+                 Lo and Key Hi (1). The bus lags 50-100 ms, so use it for slow \
+                 ducking (music under a voice). For kick pumping route the real \
+                 sidechain input instead.",
+            ),
+        ],
+    );
 }
 
 // ---------------------------------------------------------------------------

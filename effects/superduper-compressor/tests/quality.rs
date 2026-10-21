@@ -50,8 +50,29 @@ fn quality_snapshot() {
     s.record("impulse_rms_db", db(probes::rms(&iout)));
     s.record("impulse_peak_db", db(probes::peak(&iout)));
 
+    // Detector = Dual through the real plugin. The same tone: the program
+    // (RMS) stage does the work; a burst on noise shows the peak stage.
+    let (dout, _) = render_dual(&tone);
+    s.record("dual_tone_gain_db", probes::gain_db(&tone, &dout));
+    s.record("dual_tone_thd_db", probes::thd_at(&dout, 1000.0, SR as f32));
+    let (dnout, _) = render_dual(&noise);
+    s.record("dual_noise_gain_db", probes::gain_db(&noise, &dnout));
+    s.record("dual_noise_max_step", probes::max_step(&dnout));
+
     sdsp_test_kit::params::record_table(&mut s, superduper_compressor::PARAMS);
     s.finish();
+}
+
+/// Render with Detector = Dual (every other param at its default).
+fn render_dual(x: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    use clack_common::events::{event_types::ParamValueEvent, Pckn};
+    use clack_common::utils::{ClapId, Cookie};
+    let id = ClapId::new(superduper_compressor::P_DETECTOR as u32);
+    sdsp_test_kit::host::render_with::<Target>(SR, 512, x, x, move |pos, buf| {
+        if pos == 0 {
+            buf.push(&ParamValueEvent::new(0, id, Pckn::match_all(), 1.0, Cookie::empty()));
+        }
+    })
 }
 
 #[test]
@@ -59,7 +80,7 @@ fn parameter_table_is_consistent() {
     // Ids dense and ordered, defaults inside range, names unique, stepped
     // params actually discrete. The table is hand-maintained and its indices
     // are duplicated into P_* constants, presets and the GUI.
-    sdsp_test_kit::params::check_table("superduper-compressor", superduper_compressor::PARAMS, &[]);
+    sdsp_test_kit::params::check_table("superduper-compressor", superduper_compressor::PARAMS, &[12, 13, 17]);
 }
 
 #[global_allocator]

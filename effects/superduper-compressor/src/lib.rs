@@ -28,6 +28,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod detector; // Classic / Dual (RMS + peak) detector, bus key level
 pub mod gui;
 pub mod mail; // gain-reduction meter as a read-only bus-mailbox document
 pub mod presets;
@@ -52,8 +53,8 @@ use std::sync::atomic::Ordering;
 use superduper_dsp_sdk::clap_helpers::{ParamDef, SidechainSnapshot};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_synth_core::dsp_blocks::{
-    compressor_gain_db, compressor_gain_db_curve, oversample_apply, CompressorCurve, DelayLine,
-    EnvelopeDetector, Oversampler2x, SmoothedParam, OVERSAMPLE_LATENCY,
+    oversample_apply, CompressorCurve, DelayLine, Oversampler2x, SmoothedParam,
+    OVERSAMPLE_LATENCY,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,13 +117,32 @@ pub const PARAMS: &[ParamDef] = &[
     // side independently → decode). Useful for mastering — keeps the
     // centred lead un-compressed while sides duck, or vice versa.
     ParamDef { id: 16, name: b"M/S",       min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    // Detector topology: 0 = Classic (one peak-ish envelope, everything
+    // above), 1 = Dual (RMS program stage + peak stage, see detector.rs).
+    // Default Classic so old projects and presets sound identical.
+    ParamDef { id: 17, name: b"Detector",  min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    // Dual only: how far peaks may rise above the RMS-controlled level
+    // before the peak stage acts. 0 = both stages share one threshold.
+    ParamDef { id: 18, name: b"Peak Crest", min: 0.0,  max: 18.0,   default: 9.0,   unit: "dB" },
+    // Dual only: recovery after short overloads (peak stage)…
+    ParamDef { id: 19, name: b"Release Peak", min: 5.0, max: 500.0, default: 40.0,  unit: "ms" },
+    // …and after sustained reduction (RMS stage). Classic uses "Release".
+    ParamDef { id: 20, name: b"Release RMS", min: 20.0, max: 3000.0, default: 400.0, unit: "ms" },
+    // Bus key: 0 = off (the detector hears the input / sidechain port),
+    // 1 = the detector follows the bus key track's level only. The bus lags
+    // 50–100 ms, so this is for slow ducking (music under a voice); the real
+    // sidechain input stays the tool for kick pumping.
+    ParamDef { id: 21, name: b"Key",       min: 0.0,   max: 1.0,    default: 0.0,   unit: ""   },
+    // The band of the key track that counts (e.g. 200–4000 Hz = voice).
+    ParamDef { id: 22, name: b"Key Lo",    min: 20.0,  max: 20000.0, default: 150.0, unit: "Hz" },
+    ParamDef { id: 23, name: b"Key Hi",    min: 20.0,  max: 20000.0, default: 5000.0, unit: "Hz" },
 ];
 
 /// Params that are discrete: enums, booleans, the preset selector. Declared to
 /// the host with IS_STEPPED so it quantises automation instead of sweeping
 /// through the intermediate values — a ramp across a preset selector otherwise
 /// recalls every kit between the two endpoints.
-const STEPPED_PARAMS: &[u32] = &[12, 13];
+const STEPPED_PARAMS: &[u32] = &[12, 13, 17];
 
 pub const P_THRESHOLD: usize = 0;
 pub const P_RATIO: usize = 1;
@@ -141,6 +161,13 @@ pub const P_CURVE: usize = 13;
 pub const P_RANGE: usize = 14;
 pub const P_HOLD: usize = 15;
 pub const P_MS_MODE: usize = 16;
+pub const P_DETECTOR: usize = 17;
+pub const P_PEAK_CREST: usize = 18;
+pub const P_RELEASE_PEAK: usize = 19;
+pub const P_RELEASE_RMS: usize = 20;
+pub const P_KEY: usize = 21;
+pub const P_KEY_LO: usize = 22;
+pub const P_KEY_HI: usize = 23;
 
 fn sc_hpf_hz(idx: u32) -> Option<f32> {
     match idx {
@@ -226,6 +253,12 @@ pub struct SharedParamsInner {
     pub active_preset: std::sync::atomic::AtomicU32,
     /// Current gain reduction in dB (always <= 0). Updated each block.
     pub gain_reduction_db: AtomicF32,
+    /// Dual detector: deepest GR of each stage in the last block (dB ≤ 0).
+    /// Classic reports its whole GR as the RMS ("program") stage.
+    pub gr_rms_db: AtomicF32,
+    pub gr_peak_db: AtomicF32,
+    /// Bus key level over Key Lo..Hi (dBFS RMS), −120 when no key is set.
+    pub key_level_db: AtomicF32,
     /// Plugin latency in samples — written by `activate()` whenever the
     /// lookahead knob changes during the session, read by the CLAP
     /// latency extension's `get()` impl.
@@ -254,6 +287,9 @@ impl PluginShared {
                 active_preset: std::sync::atomic::AtomicU32::new(0),
                 ab_snapshot: superduper_synth_core::gui::AbSnapshot::new(PARAMS.len()),
                 gain_reduction_db: AtomicF32::new(0.0),
+                gr_rms_db: AtomicF32::new(0.0),
+                gr_peak_db: AtomicF32::new(0.0),
+                key_level_db: AtomicF32::new(-120.0),
                 latency_samples: std::sync::atomic::AtomicU32::new(0),
                 meter: ScopeBuf::new(SCOPE_LEN),
                 scope: superduper_synth_core::gui::LiveScope::new(4096),
@@ -294,7 +330,7 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
-    detector: EnvelopeDetector,
+    detector: detector::Detector,
     /// HPF on the **raw signed** sidechain audio so low-end (kick / boomy
     /// fundamentals) doesn't pump the comp. One state per channel; the
     /// filter has to sit BEFORE rectification — applying it to `|x|`
@@ -358,6 +394,22 @@ pub struct PluginAudioProcessor<'a> {
     os2_l: Oversampler2x,
     os2_r: Oversampler2x,
     sample_rate: f32,
+    /// Deepest RMS-stage / peak-stage GR of the current block (meter doc).
+    blk_gr_rms: f32,
+    blk_gr_peak: f32,
+}
+
+/// Per-block settings of the Dual detector and the bus key, read once in
+/// `process()` and passed to the sample loop as one value.
+#[derive(Clone, Copy)]
+struct DualBlock {
+    dual: bool,
+    crest_db: f32,
+    release_peak_ms: f32,
+    release_rms_ms: f32,
+    /// Key blend 0..1 and the key level as a linear detector value.
+    key_amt: f32,
+    key_lin: f32,
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -391,7 +443,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
         Ok(Self {
             shared,
-            detector: EnvelopeDetector::default(),
+            detector: detector::Detector::default(),
             sc_hpf_state_l: 0.0,
             sc_hpf_state_r: 0.0,
             look_l: DelayLine::new(cap),
@@ -427,6 +479,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
             hold_remaining_samples: 0.0,
             hold_gr_db: 0.0,
             sample_rate: sr,
+            blk_gr_rms: 0.0,
+            blk_gr_peak: 0.0,
         })
     }
 
@@ -479,6 +533,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let sc_hpf_freq = sc_hpf_hz(sc_hpf_idx);
         let auto_rel = self.shared.params[P_AUTO_REL].load(Ordering::Relaxed) > 0.5;
         let ms_mode = self.shared.params[P_MS_MODE].load(Ordering::Relaxed) >= 0.5;
+        let dual = self.dual_block();
+        self.blk_gr_rms = 0.0;
+        self.blk_gr_peak = 0.0;
 
         // Lookahead drives CLAP latency directly. Hosts only re-do PDC
         // when this value changes; a Relaxed store on a clamped knob is
@@ -533,7 +590,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     lookahead_ms_target, ceiling_target, link_target,
                     os_mode, curve, range_target, hold_target,
                     sc_hpf_freq, sc_present, auto_rel,
-                    ms_mode,
+                    ms_mode, dual,
                     &mut max_gr_db,
                 );
             } else {
@@ -552,7 +609,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
                     lookahead_ms_target, ceiling_target, link_target,
                     os_mode, curve, range_target, hold_target,
                     sc_hpf_freq, sc_present, auto_rel,
-                    ms_mode,
+                    ms_mode, dual,
                     &mut max_gr_db,
                 );
                 self.mono_r_in = Some(r_in);
@@ -572,8 +629,29 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         self.shared
             .gain_reduction_db
             .store(self.meter_smooth, Ordering::Relaxed);
+        self.shared.gr_rms_db.store(self.blk_gr_rms, Ordering::Relaxed);
+        self.shared.gr_peak_db.store(self.blk_gr_peak, Ordering::Relaxed);
 
         Ok(ProcessStatus::Continue)
+    }
+}
+
+impl PluginAudioProcessor<'_> {
+    /// Read the Dual-detector and bus-key params, and the key level once per
+    /// block (the bus updates ~20×/s and lags 50–100 ms, so per-sample reads
+    /// would buy nothing).
+    fn dual_block(&self) -> DualBlock {
+        let load = |i: usize| self.shared.params[i].load(Ordering::Relaxed);
+        let key_db = detector::key_level_db(&self.shared.scope, load(P_KEY_LO), load(P_KEY_HI));
+        self.shared.key_level_db.store(key_db, Ordering::Relaxed);
+        DualBlock {
+            dual: load(P_DETECTOR) >= 0.5,
+            crest_db: load(P_PEAK_CREST).max(0.0),
+            release_peak_ms: load(P_RELEASE_PEAK).max(1.0),
+            release_rms_ms: load(P_RELEASE_RMS).max(1.0),
+            key_amt: load(P_KEY).clamp(0.0, 1.0),
+            key_lin: 10f32.powf((key_db + detector::KEY_CREST_DB) / 20.0),
+        }
     }
 }
 
@@ -592,6 +670,7 @@ fn process_stereo_block(
     range_target: f32, hold_target: f32,
     sc_hpf_freq: Option<f32>, sc_present: bool, auto_rel: bool,
     ms_mode: bool,
+    d: DualBlock,
     max_gr_db: &mut f32,
 ) {
     let n = l_read.len().min(r_read.len());
@@ -623,75 +702,30 @@ fn process_stereo_block(
         let look_samples = (sr * 0.001 * lookahead_ms).min(look_max_samples);
         p.lookahead_samples = look_samples;
 
+        let mut release_rms = d.release_rms_ms;
         if auto_rel {
-            release *= 1.0 + 3.0 * p.sustained_gr_env.min(1.0);
+            let stretch = 1.0 + 3.0 * p.sustained_gr_env.min(1.0);
+            release *= stretch;
+            release_rms *= stretch;
         }
 
-        let (mut key_l, mut key_r) = if sc_present {
-            (
-                p.sc.l.get(i).copied().unwrap_or(0.0),
-                p.sc.r.get(i).copied().unwrap_or(0.0),
-            )
-        } else {
-            (dry_l, dry_r)
+        let sc = detector_input(p, i, dry_l, dry_r, sc_present, sc_hpf_freq, link, sr);
+        let sc = detector::blend_key(sc, d.key_lin, d.key_amt);
+        let cfg = detector::DetCfg {
+            threshold, ratio, knee, curve, attack_ms: attack, release_ms: release,
+            dual: d.dual, crest_db: d.crest_db,
+            release_peak_ms: d.release_peak_ms, release_rms_ms: release_rms,
         };
-        // SC HPF on raw signed audio — see sc_hpf_repro.rs for the
-        // rationale (must precede rectification or it crushes detection).
-        if let Some(hp_hz) = sc_hpf_freq {
-            let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
-            p.sc_hpf_state_l = key_l * (1.0 - coef) + p.sc_hpf_state_l * coef;
-            key_l -= p.sc_hpf_state_l;
-            p.sc_hpf_state_r = key_r * (1.0 - coef) + p.sc_hpf_state_r * coef;
-            key_r -= p.sc_hpf_state_r;
-        }
-        // Stereo coupling — `link=1` follows the louder channel (fully
-        // linked), `link=0` would feed each channel its own detector
-        // value (independent). With a single shared detector here we
-        // blend max(|L|,|R|) toward mean(|L|,|R|) as link decreases.
-        // Fully independent per-channel detectors would need two
-        // EnvelopeDetector instances — kept simple for now.
-        let abs_l = key_l.abs();
-        let abs_r = key_r.abs();
-        let max_lr = abs_l.max(abs_r);
-        let mean_lr = (abs_l + abs_r) * 0.5;
-        let sc = max_lr * link + mean_lr * (1.0 - link);
-
-        let env = p.detector.process(sc, sr, attack, release);
-        let env_db = 20.0 * env.max(1e-9).log10();
-        let mut gr_db = compressor_gain_db_curve(env_db, threshold, ratio, knee, curve);
+        let det = p.detector.process(sc, &cfg, sr);
+        p.blk_gr_rms = p.blk_gr_rms.min(det.rms_gr_db);
+        p.blk_gr_peak = p.blk_gr_peak.min(det.peak_gr_db);
+        let mut gr_db = det.gr_db;
 
         // Range — hard floor on GR. Single source of the rule (incl. the
         // 0.05 dB deadband): synth_core::dsp_blocks::apply_range.
         gr_db = superduper_synth_core::dsp_blocks::apply_range(gr_db, range_target);
 
-        // Hold — when the static curve has stopped asking for more GR
-        // (compressing → released stage), keep the previous GR latched
-        // for hold_target ms. The detector's own release still ticks down
-        // behind the scenes; we just delay the moment the GR follows it.
-        // Active hold extends only when the GR is currently below the
-        // latched value (i.e. the detector is recovering, not still
-        // attacking deeper).
-        if hold_target > 0.05 {
-            let hold_samples = hold_target * 0.001 * sr;
-            if gr_db < p.hold_gr_db - 0.05 {
-                // Going deeper — restart hold window with the new lower
-                // GR. (gr_db is negative; "lower" means more reduction.)
-                p.hold_gr_db = gr_db;
-                p.hold_remaining_samples = hold_samples;
-            } else if gr_db > p.hold_gr_db + 0.05 && p.hold_remaining_samples > 0.0 {
-                // Recovery requested but hold timer still running — latch
-                // GR at the held value.
-                gr_db = p.hold_gr_db;
-                p.hold_remaining_samples -= 1.0;
-            } else {
-                // Either GR matches the held value (stable compression) or
-                // the hold timer expired. Either way the latch follows the
-                // detector again; clear the countdown so it doesn't tick
-                // past zero pointlessly.
-                p.hold_gr_db = gr_db;
-                p.hold_remaining_samples = 0.0;
-            }
-        }
+        gr_db = apply_hold(p, gr_db, hold_target, sr);
 
         if gr_db < *max_gr_db { *max_gr_db = gr_db; }
 
@@ -753,6 +787,78 @@ fn process_stereo_block(
     }
 }
 
+/// Hold stage on the per-sample GR. Returns the GR to apply.
+#[inline]
+fn apply_hold(p: &mut PluginAudioProcessor<'_>, mut gr_db: f32, hold_target: f32, sr: f32) -> f32 {
+    // Hold — when the static curve has stopped asking for more GR
+    // (compressing → released stage), keep the previous GR latched
+    // for hold_target ms. The detector's own release still ticks down
+    // behind the scenes; we just delay the moment the GR follows it.
+    // Active hold extends only when the GR is currently below the
+    // latched value (i.e. the detector is recovering, not still
+    // attacking deeper).
+    if hold_target > 0.05 {
+        let hold_samples = hold_target * 0.001 * sr;
+        if gr_db < p.hold_gr_db - 0.05 {
+            // Going deeper — restart hold window with the new lower
+            // GR. (gr_db is negative; "lower" means more reduction.)
+            p.hold_gr_db = gr_db;
+            p.hold_remaining_samples = hold_samples;
+        } else if gr_db > p.hold_gr_db + 0.05 && p.hold_remaining_samples > 0.0 {
+            // Recovery requested but hold timer still running — latch
+            // GR at the held value.
+            gr_db = p.hold_gr_db;
+            p.hold_remaining_samples -= 1.0;
+        } else {
+            // Either GR matches the held value (stable compression) or
+            // the hold timer expired. Either way the latch follows the
+            // detector again; clear the countdown so it doesn't tick
+            // past zero pointlessly.
+            p.hold_gr_db = gr_db;
+            p.hold_remaining_samples = 0.0;
+        }
+    }
+    gr_db
+}
+
+/// The detector's input for sample `i`: sidechain port (when routed) or the
+/// dry signal, SC HPF on the signed audio, then rectified and stereo-linked.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn detector_input(
+    p: &mut PluginAudioProcessor<'_>, i: usize, dry_l: f32, dry_r: f32,
+    sc_present: bool, sc_hpf_freq: Option<f32>, link: f32, sr: f32,
+) -> f32 {
+    let (mut key_l, mut key_r) = if sc_present {
+        (
+            p.sc.l.get(i).copied().unwrap_or(0.0),
+            p.sc.r.get(i).copied().unwrap_or(0.0),
+        )
+    } else {
+        (dry_l, dry_r)
+    };
+    // SC HPF on raw signed audio — see sc_hpf_repro.rs for the
+    // rationale (must precede rectification or it crushes detection).
+    if let Some(hp_hz) = sc_hpf_freq {
+        let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
+        p.sc_hpf_state_l = key_l * (1.0 - coef) + p.sc_hpf_state_l * coef;
+        key_l -= p.sc_hpf_state_l;
+        p.sc_hpf_state_r = key_r * (1.0 - coef) + p.sc_hpf_state_r * coef;
+        key_r -= p.sc_hpf_state_r;
+    }
+    // Stereo coupling — `link=1` follows the louder channel (fully
+    // linked), `link=0` would feed each channel its own detector
+    // value (independent). With a single shared detector here we
+    // blend max(|L|,|R|) toward mean(|L|,|R|) as link decreases.
+    // Fully independent per-channel detectors would need two
+    // EnvelopeDetector instances — kept simple for now.
+    let abs_l = key_l.abs();
+    let abs_r = key_r.abs();
+    let max_lr = abs_l.max(abs_r);
+    let mean_lr = (abs_l + abs_r) * 0.5;
+    max_lr * link + mean_lr * (1.0 - link)
+}
+
 /// Decimating push to the scope ring buffer. Aggregates SCOPE_HOP samples
 /// (taking the peak |x| in / out and the most-negative GR in dB) before
 /// emitting one frame. dB conversions happen here so the GUI just reads
@@ -775,65 +881,6 @@ fn push_scope(p: &mut PluginAudioProcessor<'_>, in_lin: f32, out_lin: f32, gr_db
 }
 
 
-
-fn process_sample_mono(
-    detector: &mut EnvelopeDetector,
-    sc_hpf_state: &mut f32,
-    sc_hpf_freq: Option<f32>,
-    look: &mut DelayLine,
-    sm_thr: &mut SmoothedParam,
-    sm_rat: &mut SmoothedParam,
-    sm_atk: &mut SmoothedParam,
-    sm_rel: &mut SmoothedParam,
-    sm_knee: &mut SmoothedParam,
-    sm_makeup: &mut SmoothedParam,
-    sm_mix: &mut SmoothedParam,
-    sm_look: &mut SmoothedParam,
-    sm_ceil: &mut SmoothedParam,
-    dry: f32, sr: f32,
-    threshold_target: f32, ratio_target: f32, attack_target: f32, release_target: f32,
-    knee_target: f32, makeup_target: f32, mix_target: f32,
-    lookahead_ms_target: f32, ceiling_target: f32,
-    range_target: f32,
-) -> (f32, f32) {
-    let threshold = sm_thr.step(threshold_target, sr);
-    let ratio = sm_rat.step(ratio_target, sr);
-    let attack = sm_atk.step(attack_target, sr);
-    let release = sm_rel.step(release_target, sr);
-    let knee = sm_knee.step(knee_target, sr);
-    let makeup = sm_makeup.step(makeup_target, sr);
-    let mix = sm_mix.step(mix_target, sr);
-    let lookahead_ms = sm_look.step(lookahead_ms_target, sr).max(0.0);
-    let ceiling_db = sm_ceil.step(ceiling_target, sr);
-    let look_samples = (sr * 0.001 * lookahead_ms).min(sr * 0.001 * MAX_LOOKAHEAD_MS);
-
-    let mut key = dry;
-    if let Some(hp_hz) = sc_hpf_freq {
-        let coef = (-core::f32::consts::TAU * hp_hz / sr).exp();
-        *sc_hpf_state = key * (1.0 - coef) + *sc_hpf_state * coef;
-        key -= *sc_hpf_state;
-    }
-    let env = detector.process(key.abs(), sr, attack, release);
-    let env_db = 20.0 * env.max(1e-9).log10();
-    let mut gr_db = compressor_gain_db(env_db, threshold, ratio, knee);
-    // Range applies on the mono path too. It didn't until 2026-09-20: a mono
-    // track showed -23.9 dB GR with Range at 6.2, because only the stereo
-    // block clamped — the knob silently meant nothing in mono.
-    if range_target > 0.05 {
-        gr_db = gr_db.max(-range_target);
-    }
-    let total_db = gr_db + makeup;
-    let gain_lin = 10f32.powf(total_db / 20.0);
-
-    look.write(dry);
-    let delayed = look.read_lagrange3(look_samples);
-    let mut wet = delayed * gain_lin;
-    if ceiling_db < -0.05 {
-        let ceil_lin = 10f32.powf(ceiling_db / 20.0).max(1e-4);
-        wet = ceil_lin * (wet / ceil_lin).tanh();
-    }
-    (delayed * (1.0 - mix) + wet * mix, gr_db)
-}
 
 // ---------------------------------------------------------------------------
 // CLAP extensions
@@ -887,6 +934,9 @@ impl PluginMainThreadParams for PluginMainThread<'_> {
         let pid = id.get() as usize;
         if pid == P_MS_MODE {
             return write!(w, "{}", if v >= 0.5 { "M/S" } else { "L/R" });
+        }
+        if pid == P_DETECTOR {
+            return write!(w, "{}", if v >= 0.5 { "Dual" } else { "Classic" });
         }
         if pid == P_AUTO_REL {
             return write!(w, "{}", if v >= 0.5 { "On" } else { "Off" });

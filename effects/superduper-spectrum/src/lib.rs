@@ -134,10 +134,11 @@ impl<'a> clack_plugin::plugin::PluginShared<'a> for PluginShared {}
 
 pub struct PluginMainThread<'a> {
     shared: &'a PluginShared,
-    /// Receiver half of the audio → GUI ring buffer. Stored here so the GUI
-    /// thread can pick it up at `set_parent` time without needing access to
-    /// the audio processor.
-    consumer: parking_lot::Mutex<Option<rtrb::Consumer<f32>>>,
+    /// Receiver half of the audio → GUI ring buffer, shared with the open
+    /// window. Every `activate` puts a fresh one here and the window reads
+    /// whatever is here each frame: taking it once at `set_parent` left the
+    /// window on a dead ring after REAPER re-activated the plugin.
+    consumer: gui::ConsumerSlot,
     gui_handle: Option<baseview::WindowHandle>,
     gui_resize: gui::ResizeBridge,
 }
@@ -401,8 +402,7 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     fn set_parent(&mut self, window: ClapGuiWindow) -> Result<(), PluginError> {
         slog!("gui::set_parent");
         let shared = self.shared.shared_handle();
-        let consumer = self.consumer.lock().take();
-        let handle = gui::open_window(&window, shared, consumer, self.gui_resize.clone());
+        let handle = gui::open_window(&window, shared, self.consumer.clone(), self.gui_resize.clone());
         self.gui_handle = Some(handle);
         Ok(())
     }
@@ -458,7 +458,7 @@ impl DefaultPluginFactory for SuperDuperSpectrum {
         superduper_synth_core::gui::bus_track_from_host(&mut host, &shared.scope);
         Ok(PluginMainThread {
             shared,
-            consumer: parking_lot::Mutex::new(None),
+            consumer: Default::default(),
             gui_handle: None,
             gui_resize: gui::new_resize_bridge(),
         })

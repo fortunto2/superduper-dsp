@@ -81,7 +81,7 @@ struct GuiState {
     resize: ResizeBridge,
     applied_size: (u32, u32),
 
-    consumer: Consumer<f32>,
+    consumer: ConsumerSlot,
     history: SlidingHistory,
     linear_scratch: Vec<f32>,
     smoothed: Vec<f32>,
@@ -100,12 +100,16 @@ struct GuiState {
     masking: superduper_synth_core::mixmap::MaskingTracker,
     bus_polled: std::time::Instant,
     focus: Option<String>,
+    mask_window_s: f32,
 }
+
+/// The audio → GUI ring's receiving end; replaced on every activate.
+pub type ConsumerSlot = std::sync::Arc<parking_lot::Mutex<Option<Consumer<f32>>>>;
 
 pub fn open_window<P: HasRawWindowHandle>(
     parent: &P,
     shared: SharedParams,
-    consumer: Option<Consumer<f32>>,
+    consumer: ConsumerSlot,
     resize: ResizeBridge,
 ) -> WindowHandle {
     let (initial_w, initial_h) = core_gui::read_bridge(&resize);
@@ -115,11 +119,6 @@ pub fn open_window<P: HasRawWindowHandle>(
         scale: WindowScalePolicy::SystemScaleFactor,
         gl_config: Some(Default::default()),
     };
-    let consumer = consumer.unwrap_or_else(|| {
-        let (_p, c) = rtrb::RingBuffer::<f32>::new(64);
-        c
-    });
-
     let fft_size = clamp_fft(shared.params[P_FFT_SIZE].load(Ordering::Relaxed) as usize);
     let waterfall_capacity = (shared.params[P_WINDOW].load(Ordering::Relaxed) * REFRESH_HZ) as usize;
     let waterfall_capacity = waterfall_capacity.clamp(32, 1200);
@@ -142,6 +141,7 @@ pub fn open_window<P: HasRawWindowHandle>(
         // 10 updates a second, an ~8 s memory: a clash on every chorus hit
         // stays lit, one stray transient does not.
         masking: superduper_synth_core::mixmap::MaskingTracker::new(80.0),
+        mask_window_s: 0.0, // rebuilt from the Window param on first draw
         bus_polled: std::time::Instant::now(),
         focus: None,
     };
@@ -207,42 +207,49 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
         );
 
         // ── Mode + Palette + Freeze + FFT/Smoothing/Tilt/Window ──
+        let mix = state.mix;
         ui.horizontal(|ui| {
             let raw_mode = state.shared.params[P_MODE].load(Ordering::Relaxed);
             let mut mode = Mode::from_param(raw_mode);
             ui.label(egui::RichText::new("mode:").color(core_gui::GREEN).monospace());
-            egui::ComboBox::from_id_salt("spec_mode")
-                .selected_text(mode.name())
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    for (i, m) in [Mode::Spectrum, Mode::Spectrogram, Mode::Split].iter().enumerate() {
-                        if ui
-                            .selectable_label(matches!(mode, _x if std::mem::discriminant(&mode) == std::mem::discriminant(m)), m.name())
-                            .clicked()
-                        {
-                            mode = *m;
-                            state.shared.params[P_MODE].store(i as f32, Ordering::Relaxed);
+            // The bus arrives as 32 ready bands: no mode, palette or FFT size in Mix.
+            ui.add_enabled_ui(!mix, |ui| {
+                egui::ComboBox::from_id_salt("spec_mode")
+                    .selected_text(mode.name())
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for (i, m) in [Mode::Spectrum, Mode::Spectrogram, Mode::Split].iter().enumerate() {
+                            if ui
+                                .selectable_label(matches!(mode, _x if std::mem::discriminant(&mode) == std::mem::discriminant(m)), m.name())
+                                .clicked()
+                            {
+                                mode = *m;
+                                state.shared.params[P_MODE].store(i as f32, Ordering::Relaxed);
+                            }
                         }
-                    }
-                });
+                    });
+            });
 
             ui.add_space(10.0);
             ui.label(egui::RichText::new("palette:").color(core_gui::GREEN).monospace());
             let palette_idx = state.shared.params[P_PALETTE].load(Ordering::Relaxed) as u32;
             let palette = Palette::from_index(palette_idx);
-            egui::ComboBox::from_id_salt("spec_palette")
-                .selected_text(palette.name())
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    for (i, p) in [Palette::Phosphor, Palette::Heat, Palette::Mono].iter().enumerate() {
-                        if ui
-                            .selectable_label(palette_idx as usize == i, p.name())
-                            .clicked()
-                        {
-                            state.shared.params[P_PALETTE].store(i as f32, Ordering::Relaxed);
+            // The bus arrives as 32 ready bands: no mode, palette or FFT size in Mix.
+            ui.add_enabled_ui(!mix, |ui| {
+                egui::ComboBox::from_id_salt("spec_palette")
+                    .selected_text(palette.name())
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        for (i, p) in [Palette::Phosphor, Palette::Heat, Palette::Mono].iter().enumerate() {
+                            if ui
+                                .selectable_label(palette_idx as usize == i, p.name())
+                                .clicked()
+                            {
+                                state.shared.params[P_PALETTE].store(i as f32, Ordering::Relaxed);
+                            }
                         }
-                    }
-                });
+                    });
+            });
 
             ui.add_space(10.0);
             let mut frozen = state.shared.bypass.load(Ordering::Relaxed);
@@ -267,16 +274,19 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
             ui.label(egui::RichText::new("fft:").color(core_gui::GREEN).monospace());
             let raw = state.shared.params[P_FFT_SIZE].load(Ordering::Relaxed) as usize;
             let fft_size = clamp_fft(raw);
-            egui::ComboBox::from_id_salt("fft_size_combo")
-                .selected_text(format!("{}", fft_size))
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    for opt in [1024_usize, 2048, 4096, 8192] {
-                        if ui.selectable_label(fft_size == opt, format!("{}", opt)).clicked() {
-                            state.shared.params[P_FFT_SIZE].store(opt as f32, Ordering::Relaxed);
+            // The bus arrives as 32 ready bands: no mode, palette or FFT size in Mix.
+            ui.add_enabled_ui(!mix, |ui| {
+                egui::ComboBox::from_id_salt("fft_size_combo")
+                    .selected_text(format!("{}", fft_size))
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        for opt in [1024_usize, 2048, 4096, 8192] {
+                            if ui.selectable_label(fft_size == opt, format!("{}", opt)).clicked() {
+                                state.shared.params[P_FFT_SIZE].store(opt as f32, Ordering::Relaxed);
+                            }
                         }
-                    }
-                });
+                    });
+            });
             ui.add_space(6.0);
             core_gui::param_row(ui, &state.shared.params[P_SMOOTHING], &PARAMS[P_SMOOTHING]);
         });
@@ -353,7 +363,9 @@ fn update_analysis(state: &mut GuiState) {
         return;
     }
 
-    state.history.drain_from(&mut state.consumer);
+    if let Some(c) = state.consumer.lock().as_mut() {
+        state.history.drain_from(c);
+    }
     state.history.linear(&mut state.linear_scratch);
     let spec = magnitude_spectrum_db(&state.linear_scratch);
 
@@ -590,14 +602,32 @@ const TRACK_COLORS: [Color32; 10] = [
 fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
     use superduper_synth_core::mixmap::{is_bus_name, loudest_per_track};
     if state.bus.is_none() { state.bus = superduper_dsp_sdk::bus::Reader::open(); }
-    if state.bus_polled.elapsed().as_millis() >= 100 {
+    // The top row applies here too: Window = how long masking remembers,
+    // Smoothing = one-pole on each track's curve, Tilt = the same dB/oct as
+    // the Spectrum view, freeze = hold the picture.
+    let window_s = state.shared.params[P_WINDOW].load(Ordering::Relaxed).max(1.0);
+    if (window_s - state.mask_window_s).abs() > 0.05 {
+        state.masking = superduper_synth_core::mixmap::MaskingTracker::new(window_s * 10.0);
+        state.mask_window_s = window_s;
+    }
+    let frozen = state.shared.bypass.load(Ordering::Relaxed);
+    if !frozen && state.bus_polled.elapsed().as_millis() >= 100 {
         state.bus_polled = std::time::Instant::now();
         if let Some(r) = &state.bus {
             let rows = r.read_all();
-            state.bus_tracks = loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.rms_db, &s.bands_db)));
-            state.masking.update(&state.bus_tracks);
+            let fresh = loudest_per_track(rows.iter().map(|s| (s.track.as_str(), s.rms_db, &s.bands_db)));
+            // Masking judges the raw frames; only the drawing is smoothed.
+            state.masking.update(&fresh);
+            let k = state.shared.params[P_SMOOTHING].load(Ordering::Relaxed).clamp(0.0, 0.98);
+            state.bus_tracks = fresh.into_iter().map(|mut t| {
+                if let Some(old) = state.bus_tracks.iter().find(|o| o.name == t.name) {
+                    for (b, o) in t.bands_db.iter_mut().zip(old.bands_db.iter()) { *b = *o * k + *b * (1.0 - k); }
+                }
+                t
+            }).collect();
         }
     }
+    let tilt = state.shared.params[P_TILT].load(Ordering::Relaxed);
     let edges = superduper_dsp_sdk::bus::band_edges();
     let clashes = state.masking.top(4);
     // Silent tracks (stopped, muted, not playing in this section) only crowd
@@ -622,7 +652,7 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
             ui.label(egui::RichText::new(format!("+{silent} silent")).color(core_gui::GREEN_DIM).small());
         }
     });
-    ui.label(egui::RichText::new("masking — both loud and within 6 dB, share of the last ~8 s:").color(core_gui::GREEN_DIM).small());
+    ui.label(egui::RichText::new(format!("masking — both loud and within 6 dB, share of the last ~{window_s:.0} s (Window):")).color(core_gui::GREEN_DIM).small());
     if clashes.is_empty() {
         ui.label(egui::RichText::new("no clashes (or nothing playing)").color(core_gui::GREEN_DIM).monospace());
     }
@@ -655,7 +685,10 @@ fn draw_mix_panel(ui: &mut egui::Ui, state: &mut GuiState) {
     order.sort_by_key(|t| state.focus.as_deref() == Some(t.name.as_str()));
     for t in order {
         let pts: Vec<egui::Pos2> = (0..edges.len() - 1)
-            .map(|b| egui::pos2(fx((edges[b] * edges[b + 1]).sqrt()), fy(t.bands_db[b])))
+            .map(|b| {
+                let hz = (edges[b] * edges[b + 1]).sqrt();
+                egui::pos2(fx(hz), fy(t.bands_db[b] + (hz / 1000.0).log2() * tilt))
+            })
             .collect();
         let focused = state.focus.as_deref() == Some(t.name.as_str());
         let dim = state.focus.is_some() && !focused;

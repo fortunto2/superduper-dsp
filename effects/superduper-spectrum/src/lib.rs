@@ -203,7 +203,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
@@ -212,7 +212,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // bypassed Spectrum still shows its track on the bus), the analysis
         // below is skipped when bypassed.
         let shared = self.shared;
-        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &process, &mut events);
         let (true_peak, loudness, producer) = (&mut self.true_peak, &mut self.loudness, &mut self.producer);
         superduper_synth_core::effect::run_ports_with(&**shared, &mut audio, |bypassed, left, l_out, r| {
             l_out.copy_from_slice(left);

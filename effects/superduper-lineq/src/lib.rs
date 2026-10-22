@@ -256,14 +256,14 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         // Events, dirty/gesture flags, bypass (which still feeds the bus
         // scope) and the port walk live in synth-core::effect.
         let shared = self.shared;
-        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &process, &mut events);
 
         // Designing the FIR means an FFT plan, three Vec allocations and two
         // deallocations — ~30 ms by this crate's own estimate, against a 2.7 ms

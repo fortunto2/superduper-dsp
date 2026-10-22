@@ -276,10 +276,22 @@ pub struct LiveScope {
     /// audio thread reads only the atomics (`key_db_at`).
     pub key_track: parking_lot::Mutex<String>,
     pub key_bands: [AtomicF32; superduper_dsp_sdk::bus::BANDS],
+    /// The same spectrum on the song timeline, for keys that must hold in a
+    /// faster-than-real-time render (`crate::bus_timeline`).
+    pub timeline: crate::bus_timeline::Timeline,
+}
+
+/// Ends a scope block on drop (`LiveScope::block`).
+pub struct BlockEnd<'a>(&'a LiveScope);
+
+impl Drop for BlockEnd<'_> {
+    fn drop(&mut self) { self.0.end_block(); }
 }
 
 impl LiveScope {
     pub fn new(capacity: usize) -> Self {
+        // Room for every key-frame window of a large render block.
+        let capacity = capacity.max(crate::bus_timeline::MIN_RING);
         let buf: Vec<AtomicF32> = (0..capacity).map(|_| AtomicF32::new(0.0)).collect();
         Self {
             buf: buf.into_boxed_slice(),
@@ -288,8 +300,32 @@ impl LiveScope {
             track: parking_lot::Mutex::new((String::new(), 0)),
             key_track: parking_lot::Mutex::new(String::new()),
             key_bands: std::array::from_fn(|_| AtomicF32::new(-120.0)),
+            timeline: crate::bus_timeline::Timeline::new(),
         }
     }
+
+    /// Audio thread, first thing in `process()`: key frames for the last
+    /// block, this block's song time, and the bus key for this block.
+    pub fn begin_block(&self, transport: Option<&clack_plugin::events::event_types::TransportEvent>) {
+        self.timeline.begin_block(self, transport);
+    }
+
+    /// Audio thread, after the block's samples are pushed: its key frames now
+    /// rather than at the next block.
+    pub fn end_block(&self) { self.timeline.end_block(self); }
+
+    /// For a plugin that pushes its own samples (instruments): begin the
+    /// block now and end it when the guard drops, on every return path.
+    #[must_use = "hold it for the whole process(): let _block = scope.block(..)"]
+    pub fn block(&self, transport: Option<&clack_plugin::events::event_types::TransportEvent>) -> BlockEnd<'_> {
+        self.begin_block(transport);
+        BlockEnd(self)
+    }
+
+    /// The end half of [`Self::block`], for a plugin whose block was begun
+    /// by `effect::begin_events` but which pushes samples itself.
+    #[must_use = "hold it for the whole process(): let _block_end = scope.block_end()"]
+    pub fn block_end(&self) -> BlockEnd<'_> { BlockEnd(self) }
 
     /// The key track's level (dB) at `hz`, interpolated between band centres
     /// on a log axis. Atomics only — safe on the audio thread. −120 when no
@@ -395,7 +431,6 @@ pub fn bus_track_from_host(host: &mut clack_plugin::host::HostMainThreadHandle<'
 
 /// Bands + level of the scope's last `n` samples. Allocates; publisher thread.
 pub fn scope_spectrum(scope: &LiveScope, n: usize) -> (f32, f32, [f32; superduper_dsp_sdk::bus::BANDS]) {
-    use superduper_dsp_sdk::bus::{band_edges, BANDS};
     let n = n.min(scope.buf.len()).max(64);
     let mut x = vec![0f32; n];
     scope.snapshot(&mut x);
@@ -410,25 +445,7 @@ pub fn scope_spectrum(scope: &LiveScope, n: usize) -> (f32, f32, [f32; superdupe
     let fft = planner.plan_fft_forward(n);
     let mut spec = fft.make_output_vec();
     let _ = fft.process(&mut x, &mut spec);
-    let bin_hz = sr / n as f32;
-    // Band level = the RMS of what lies in the band, so bands add up to the
-    // total level. Parseval with a Hann window: rms² in a set of bins =
-    // 16 / (3 N²) · Σ|X_k|² (one-sided). A peak-bin reading instead sags by
-    // up to ~2 dB when a tone falls between bins.
-    let norm = 16.0 / (3.0 * (n as f32) * (n as f32));
-    let pw = |db_pow: f32| 10.0 * db_pow.max(1e-12).log10();
-    let edges = band_edges();
-    let bands: [f32; BANDS] = std::array::from_fn(|b| {
-        let (lo, hi) = (edges[b] / bin_hz, edges[b + 1] / bin_hz);
-        let (i0, i1) = (lo.ceil() as usize, hi.ceil() as usize);
-        let p: f32 = if i1 > i0 {
-            (i0..i1.min(spec.len())).map(|i| spec[i].norm_sqr()).sum()
-        } else {
-            // Narrower than a bin (low end): that bin's power, shared by width.
-            spec.get(lo.round() as usize).map_or(0.0, |c| c.norm_sqr()) * (hi - lo)
-        };
-        pw(p * norm)
-    });
+    let bands = crate::bus_timeline::bands_from_spectrum(&spec, n, sr);
     (db(rms), db(peak), bands)
 }
 
@@ -481,9 +498,19 @@ pub fn spawn_bus_publisher_mcp<T: Send + Sync + 'static>(
         let mut last_moved = std::time::Instant::now();
         let mut reader: Option<superduper_dsp_sdk::bus::Reader> = None;
         let mut keyed = false;
+        let mut attached = false;
+        let mut key_blocks = 0u64;
         loop {
             let Some(inner) = weak.upgrade() else { break };
             let sc = scope(&inner);
+            if !attached {
+                // Key frames share the bus slot's index and owner id.
+                if let Some(fr) = superduper_dsp_sdk::bus_frames::Frames::open() {
+                    sc.timeline.attach(fr, publisher.slot(), publisher.instance());
+                }
+                attached = true;
+            }
+            sc.timeline.tick(superduper_dsp_sdk::bus::now_ms());
             let t = sc.track.lock().clone();
             if t != track { publisher.set_track(&t.0, t.1); track = t; }
             // A bypassed or stopped plugin is not called, so its scope keeps
@@ -511,10 +538,18 @@ pub fn spawn_bus_publisher_mcp<T: Send + Sync + 'static>(
                         .filter(|s| s.instance != own && s.track == key)
                         .max_by(|a, b| a.rms_db.total_cmp(&b.rms_db))
                 });
-                let src = best.map_or([-120.0; superduper_dsp_sdk::bus::BANDS], |s| s.bands_db);
-                for (a, v) in sc.key_bands.iter().zip(src) { a.store(v, Ordering::Relaxed); }
+                sc.timeline.set_key_source(best.as_ref().map(|s| (s.slot, s.instance)));
+                // While the audio thread keys from frames on the song
+                // timeline, this wall-clock copy would only overwrite it.
+                let from_frames = sc.timeline.key_blocks() != key_blocks;
+                key_blocks = sc.timeline.key_blocks();
+                if !from_frames {
+                    let src = best.map_or([-120.0; superduper_dsp_sdk::bus::BANDS], |s| s.bands_db);
+                    for (a, v) in sc.key_bands.iter().zip(src) { a.store(v, Ordering::Relaxed); }
+                }
                 keyed = true;
             } else if keyed {
+                sc.timeline.set_key_source(None);
                 for a in sc.key_bands.iter() { a.store(-120.0, Ordering::Relaxed); }
                 keyed = false;
             }

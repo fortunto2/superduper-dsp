@@ -596,6 +596,28 @@ Multiband (per band), Reverb/Delay (Key Duck), Filter (Key Mod), Vocal
 (Rider), Double (Key Open). The bus lags 50–100 ms: slow ducking, never kick
 pumping — that stays the side-chain input.
 
+**Key frames on the song timeline** (`sdk::bus_frames`, `synth_core::bus_timeline`,
+2026-10-22): the wall-clock copy above broke every render faster than real
+time — of two full-speed REAPER renders of one project one did not duck at all
+and one ducked −11 dB through the whole song, where 1x ducked −11.3 dB on the
+key and 0.0 off it. With frames, five renders (full speed and 1x) came out
+bit-identical, onset 20–30 ms (1x used to jitter 40–120 ms). Now each
+plugin's audio thread also writes 32-band frames (2048 window, 256 hop) stamped
+with the CLAP transport's song time into `<bus>.frames` (same slot index and
+owner as the bus, 1024-frame ring = 5.5 s), only while some reader asked in
+the last 3 s. A keyed plugin takes, at each block start, the newest frame at
+or before the block's song time — one rule live and offline, so a render
+sounds like playback. Faster than real time (3 blocks arriving in under half
+their length) it waits for a key track that is behind; it stops waiting when
+that track sits one block behind without progress (same thread, key track
+second) or makes none for 100 ms (not played), until it moves again. No
+transport, or a key track on an older build: the wall-clock copy as before.
+Every `process()` must hand the block its transport: effects through
+`effect::begin_events(shared, &process, events)`, plugins that push their
+own samples through `let _block = scope.block(process.transport)` (or
+`scope.block_end()` after `begin_events`). `synth-core/tests/bus_timeline.rs`
+plays the three host orders.
+
 **`sdsp-bus serve`** (stdio, the `superduper-bus` entry in `.mcp.json`; HTTP on
 :7892 — 7891 is each plugin's own MCP) is what an agent mixes through:
 `bus_list`, `track_spectrum`, `mix_masking` (clashes = both loud within 6 dB,

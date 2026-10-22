@@ -42,6 +42,8 @@ pub mod timbre; // harmonic + envelope timbre analysis and morph gains (superdup
 #[cfg(feature = "gui")]
 pub mod gui;
 #[cfg(feature = "gui")]
+pub mod bus_timeline; // the bus key on the song timeline: key frames written and read on audio threads
+#[cfg(feature = "gui")]
 pub mod bus_key; // reacting to the bus key: span level, factor, duck gain, smoothed envelope (Reverb/Delay/Filter/Vocal)
 #[cfg(feature = "gui")]
 pub mod effect; // the front half of every effect's process(): events, bypass that still feeds the scope

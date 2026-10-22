@@ -10,9 +10,9 @@
 //! as a closure over `(l_in, l_out, Option<(r_in, r_out)>)`.
 //!
 //! ```ignore
-//! fn process(&mut self, _: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
+//! fn process(&mut self, process: Process, mut audio: Audio, mut events: Events) -> Result<ProcessStatus, PluginError> {
 //!     let shared = self.shared;
-//!     let _denormals = effect::begin_events(&**shared, &mut events);   // params in, dirty/gesture out, FTZ on
+//!     let _denormals = effect::begin_events(&**shared, &process, &mut events);   // song time, params in, dirty/gesture out, FTZ on
 //!     let p = self.settings();                        // one snapshot of the atomics per block
 //!     effect::run_ports(&**shared, &mut audio, |l_in, l_out, r| {
 //!         self.dsp.run(&p, l_in, l_out, r);
@@ -58,16 +58,18 @@ macro_rules! impl_shared_host {
 
 /// One block of a stereo (or mono) effect: [`begin_events`] then
 /// [`run_ports`]. For a plugin whose DSP reads the parameters itself (EQ).
-pub fn stereo_block<S, F>(shared: &S, audio: &mut Audio, events: &mut Events, dsp: F) -> Result<ProcessStatus, PluginError>
+pub fn stereo_block<S, F>(shared: &S, process: &Process, audio: &mut Audio, events: &mut Events, dsp: F) -> Result<ProcessStatus, PluginError>
 where
     S: SharedHost,
     F: FnMut(&[f32], &mut [f32], Option<(&[f32], &mut [f32])>),
 {
-    let _denormals = begin_events(shared, events);
+    let _denormals = begin_events(shared, process, events);
     run_ports(shared, audio, dsp)
 }
 
-/// The event half: parameter events in, dirty / gesture events out. Call it
+/// The event half: the block's song time to the bus key
+/// (`LiveScope::begin_block`), parameter events in, dirty / gesture events
+/// out. Call it
 /// **before** snapshotting parameters for the block, or the block runs on
 /// last block's values (one block of automation lag; chorus/filter/midside
 /// had it for an hour on 2026-10-21).
@@ -78,8 +80,9 @@ where
 /// record / overdub command to a buffer of subnormals) ran without FTZ and
 /// clap-validator measured it 26–65× slower on subnormal input (2026-10-21).
 #[must_use = "hold the guard for the whole process(): let _denormals = begin_events(..)"]
-pub fn begin_events<S: SharedHost>(shared: &S, events: &mut Events) -> superduper_dsp_sdk::denormals::Guard {
+pub fn begin_events<S: SharedHost>(shared: &S, process: &Process, events: &mut Events) -> superduper_dsp_sdk::denormals::Guard {
     let guard = superduper_dsp_sdk::denormals::Guard::new();
+    shared.scope().begin_block(process.transport);
     apply_param_events(shared.params(), events.input);
     emit_dirty_param_events(shared.params(), shared.dirty_params(), events.output);
     emit_gesture_events(shared.gesture_begin(), shared.gesture_end(), events.output);
@@ -116,6 +119,7 @@ where
     for port_pair in audio {
         one_port(scope, bypassed, port_pair, &mut dsp)?;
     }
+    scope.end_block();
     Ok(ProcessStatus::Continue)
 }
 
@@ -144,6 +148,7 @@ where
     if let Some(port_pair) = audio.port_pair(0) {
         one_port(shared.scope(), bypassed, port_pair, &mut dsp)?;
     }
+    shared.scope().end_block();
     Ok(ProcessStatus::Continue)
 }
 

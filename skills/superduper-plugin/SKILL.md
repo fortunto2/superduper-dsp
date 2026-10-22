@@ -69,11 +69,14 @@ DAW UI. A plugin without these is invisible to it:
 - [ ] `new_shared`: `superduper_synth_core::gui::spawn_bus_publisher_mcp("SuperDuper <Name>", &shared.inner, |s| &s.scope, Some(ParamsAccess { defs: PARAMS, values: |s| &s.params, dirty: Some(|s| &s.dirty_params) }), Some(mail::handle) /* or None */)`
   — publishes level + 32-band spectrum, exposes every parameter (`plugin_params` /
   `plugin_set_params`), the bus key (`key` doc), and the plugin's own docs.
-- [ ] `process()` = `effect::begin_events(&**shared, &mut events)` (params in, dirty/gesture
-  out — before the block's parameter snapshot), then `effect::run_ports(&**shared, &mut audio,
+- [ ] `process()` = `effect::begin_events(&**shared, &process, &mut events)` (the block's song
+  time to the bus key frames, params in, dirty/gesture out — before the block's parameter
+  snapshot), then `effect::run_ports(&**shared, &mut audio,
   |l_in, l_out, r| …)` (denormals, bypass that still feeds the bus scope, the port walk, the
   scope fed from the output). `impl_shared_host!(SharedParamsInner)` next to the Deref. No own
-  `scope.push`, no own bypass branch. A side-chain plugin captures its key port first
+  `scope.push`, no own bypass branch. An instrument (pushes its own samples, no
+  `begin_events`) starts `process()` with `let _block = self.shared.scope.block(process.transport);`
+  — without it the bus key frames carry no song time and a render keyed on it drifts. A side-chain plugin captures its key port first
   (`sc.capture(&mut audio, 1)`) and uses `run_main_port` (port 0 only). A plugin whose bypass
   must keep its latency delay running (bypass must not move PDC: Saturator, Double, Vocoder,
   Pitch, Tune, Stretch, Granular, Formant) uses `run_ports_with` / `run_main_port_with` — the

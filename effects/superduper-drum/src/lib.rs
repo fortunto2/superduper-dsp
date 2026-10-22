@@ -366,10 +366,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Song time for the bus key frames; their flush runs when this drops.
+        let _block = self.shared.scope.block(process.transport);
         // Flush denormals to zero — long decays / feedback loops
         // otherwise generate ≈10⁻³⁸ floats that murder CPU and cause
         // periodic ticks at the buffer rate. RAII restores host CSR.

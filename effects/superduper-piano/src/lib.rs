@@ -403,7 +403,9 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         })
     }
 
-    fn process(&mut self, _process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
+    fn process(&mut self, process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
+        // Song time for the bus key frames; their flush runs when this drops.
+        let _block = self.shared.scope.block(process.transport);
         let _denormals = superduper_dsp_sdk::denormals::Guard::new();
         let shared = self.shared;
         superduper_dsp_sdk::clap_helpers::apply_param_events(&shared.params, events.input);

@@ -45,6 +45,7 @@
 pub mod dsp;
 pub mod build_meta;
 pub mod bus; // shared-memory bus: every instance publishes level + spectrum (+ key); anyone reads
+pub mod bus_frames; // the bus spectrum on the song timeline, for keys that must hold in an offline render
 pub mod clap_helpers;
 pub mod denormals;
 pub mod preset_load;

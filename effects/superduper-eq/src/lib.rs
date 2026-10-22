@@ -317,7 +317,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
@@ -325,7 +325,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         // scope) and the port walk live in synth-core::effect; only the DSP
         // is this plugin's.
         let (dsp, shared) = (&mut self.dsp, self.shared);
-        superduper_synth_core::effect::stereo_block(&**shared, &mut audio, &mut events, |l_in, l_out, r| {
+        superduper_synth_core::effect::stereo_block(&**shared, &process, &mut audio, &mut events, |l_in, l_out, r| {
             dsp.process(shared, (l_in, l_out), r);
         })
     }

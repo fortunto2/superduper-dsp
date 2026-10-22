@@ -747,10 +747,12 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Song time for the bus key frames; their flush runs when this drops.
+        let _block = self.shared.scope.block(process.transport);
         // Flush denormals to zero — formant biquads + noise-filter chains
         // otherwise spin up ~10⁻³⁸ floats that murder CPU on long releases.
         let _denormals = superduper_dsp_sdk::denormals::Guard::new();

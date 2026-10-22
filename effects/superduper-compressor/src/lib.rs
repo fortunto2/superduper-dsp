@@ -489,14 +489,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         // Events, dirty/gesture flags, bypass (which still feeds the bus
         // scope) and the port walk live in synth-core::effect.
         let shared = self.shared;
-        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &mut events);
+        let _denormals = superduper_synth_core::effect::begin_events(&**shared, &process, &mut events);
+        // Pushes its own samples: flush their key frames when this drops.
+        let _block_end = shared.scope.block_end();
 
         let bypassed = shared.bypass.load(Ordering::Relaxed);
         let sr = self.sample_rate;

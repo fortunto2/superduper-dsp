@@ -63,6 +63,19 @@ pub fn band_edges() -> [f32; BANDS + 1] {
     std::array::from_fn(|i| 20.0 * 1000f32.powf(i as f32 / BANDS as f32))
 }
 
+/// An instance id: odd (0 marks a free slot) and unique across instances,
+/// restarts and processes. Time, pid and counter alone are not enough: every
+/// .clap links its own copy of this crate and so its own counter, and plugins
+/// of different kinds loading in one millisecond drew equal ids — they then
+/// answered each other's mail and read each other as "self" for the key. A
+/// RandomState salt is fresh per call and per binary (each copy of std seeds
+/// its own keys from the OS).
+fn instance_id(now: u64, pid: u32, counter: u64) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let salt = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    ((now << 20) ^ ((pid as u64) << 44) ^ (counter << 1) ^ salt) | 1
+}
+
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -158,13 +171,8 @@ impl Publisher {
     /// Claim a slot. None when the bus cannot be opened or all slots are live.
     pub fn open(plugin: &str) -> Option<Self> {
         let map = open_map()?;
-        // Unique across instances (counter), restarts (time) and processes (pid).
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        // The counter sits above the forced low bit: `x ^ counter | 1` made
-        // counters 2k and 2k+1 the same id, so two instances created in one
-        // millisecond (project load, track duplicate) answered each other's
-        // mail and read each other as "self" for the key.
-        let id = ((now_ms() << 20) ^ ((std::process::id() as u64) << 44) ^ (NEXT.fetch_add(1, Ordering::Relaxed) << 1)) | 1;
+        let id = instance_id(now_ms(), std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
         let now = now_ms();
         for slot in 0..SLOTS {
             let b = slot_base(slot);
@@ -308,6 +316,19 @@ mod tests {
             assert_eq!(ids.len(), 8, "eight instances in one millisecond, eight ids");
             assert!(ps.iter().all(|p| p.instance() & 1 == 1), "odd, never 0 (= free slot)");
         });
+    }
+
+    #[test]
+    fn two_plugin_binaries_in_one_millisecond_never_share_an_id() {
+        // Each .clap links its own copy of this crate, so each has its own
+        // counter: Spectrum, Limiter and Soothe loading in one millisecond all
+        // drew counter 2 and the same id (REAPER, 2026-10-22: duck_under on
+        // Pad's Soothe was answered by the master's Spectrum). Same clock, pid
+        // and counter must still give different ids.
+        let (now, pid) = (now_ms(), std::process::id());
+        let ids: std::collections::HashSet<u64> = (0..64).map(|_| instance_id(now, pid, 2)).collect();
+        assert_eq!(ids.len(), 64, "64 binaries, one clock tick, one counter value: 64 ids");
+        assert!(ids.iter().all(|id| id & 1 == 1), "odd, never 0 (= free slot)");
     }
 
     #[test]

@@ -28,4 +28,4 @@ params = { "1" = 1.15, "2" = 1.0 }
 [[stage]]
 plugin = "limiter"
 # Push into limiter for target LUFS; ceiling at -1 dBTP.
-params = { "0" = -8.0, "1" = -1.0 }
+params = { "0" = 8.0, "1" = -1.0 }

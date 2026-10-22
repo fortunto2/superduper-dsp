@@ -399,6 +399,41 @@ fn find_instance(track: &str, plugin: &str) -> Result<u64, McpError> {
     }
 }
 
+/// Share of the key's power (0..1) in bands whose centres lie in Soothe's
+/// `[lo, hi]` — the only place its key cut can act. A silent key reads 1:
+/// nothing measured is no reason to warn.
+fn key_share_in(key_db: &[f32; BANDS], lo: f32, hi: f32) -> f32 {
+    let e = band_edges();
+    let (mut inside, mut total) = (0.0f64, 0.0f64);
+    for (b, &db) in key_db.iter().enumerate() {
+        if db <= -100.0 { continue; }
+        let p = 10f64.powf(db as f64 / 10.0);
+        total += p;
+        if (lo..=hi).contains(&(e[b] * e[b + 1]).sqrt()) { inside += p; }
+    }
+    if total == 0.0 { 1.0 } else { (inside / total) as f32 }
+}
+
+/// duck_under used to report success for a key Soothe cannot reach: a kick
+/// lives under 100 Hz, Soothe's bands start at Lo (≥ 100, default 300), so
+/// "bass under kick" set everything and ducked nothing. Measured while the
+/// song plays; None when it is stopped or the key mostly sits in range.
+async fn duck_reach_warning(track: &str, key: &str) -> Option<String> {
+    if key.is_empty() { return None; }
+    let rows = reader().ok()?.read_all();
+    let k = rows.iter().filter(|s| s.track == key).max_by(|a, b| a.rms_db.total_cmp(&b.rms_db))?;
+    let got = mail(track, "Soothe", "params", "get", serde_json::Value::Null).await.ok()?.0.value;
+    let param = |n: &str| got.as_array()?.iter().find(|p| p["name"] == n)?["value"].as_f64().map(|v| v as f32);
+    let (lo, hi) = (param("Lo")?, param("Hi")?);
+    let share = key_share_in(&k.bands_db, lo, hi);
+    (share < 0.5).then(|| format!(
+        "only {:.0}% of {key}'s energy is inside this Soothe's range ({lo:.0}-{hi:.0} Hz), so it can duck little or nothing. \
+         Soothe's Lo stops at 100 Hz and the bus lags 50-100 ms, so for a kick or 808 use a compressor side-chain instead \
+         (sdsp-chain: a compressor stage with sidechain = \"track:{key}\" and Range = the depth; in a DAW: route {key} to the compressor's sidechain input).",
+        share * 100.0
+    ))
+}
+
 /// MCP wants an object schema at the root, so the document rides in `value`.
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct DocOut { pub value: serde_json::Value }
@@ -589,7 +624,7 @@ impl BusServer {
         mail(&i.track, &i.plugin, "params", "set", serde_json::Value::Object(i.values)).await
     }
 
-    #[rmcp::tool(description = "Duck one track under another in the bands where they fight, only while the key plays (Trackspacer, no routing): sets the bus key and Key Depth/Range of the SuperDuper Soothe on `track`. Use for a part that must stay but yields to a more important one (guitar/pad under the vocal, synth under the lead); not for kick-bass pumping (the bus lags 50-100 ms — use the compressor side-chain). Soothe must be the last enabled plugin on that track: add it with REAPER MCP track_fx_add_by_name \"CLAP: SuperDuper Soothe\" and pass amount_db: 0 if it is only there to duck. Measure mix_masking (prefer {track: \"Soothe\"}) before and after and mix_compare.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
+    #[rmcp::tool(description = "Duck one track under another in the bands where they fight, only while the key plays (Trackspacer, no routing): sets the bus key and Key Depth/Range of the SuperDuper Soothe on `track`. Use for a part that must stay but yields to a more important one (guitar/pad under the vocal, synth under the lead); not for kick-bass pumping (the bus lags 50-100 ms — use the compressor side-chain); the result carries a `warning` when most of the key sits outside Soothe's Lo-Hi range, where it cannot duck. Soothe must be the last enabled plugin on that track: add it with REAPER MCP track_fx_add_by_name \"CLAP: SuperDuper Soothe\" and pass amount_db: 0 if it is only there to duck. Measure mix_masking (prefer {track: \"Soothe\"}) before and after and mix_compare.", annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false))]
     async fn duck_under(&self, Parameters(i): Parameters<DuckInput>) -> Result<rmcp::Json<DocOut>, McpError> {
         let key = mail(&i.track, "Soothe", "key", "set", serde_json::json!({"track": i.key})).await?;
         let mut v = serde_json::Map::new();
@@ -597,7 +632,9 @@ impl BusServer {
         v.insert("Key Range".into(), serde_json::json!(i.range_db.unwrap_or(24.0)));
         if let Some(a) = i.amount_db { v.insert("Amount".into(), serde_json::json!(a)); }
         let params = mail(&i.track, "Soothe", "params", "set", serde_json::Value::Object(v)).await?;
-        Ok(rmcp::Json(DocOut { value: serde_json::json!({"key": key.0.value, "params": params.0.value}) }))
+        let mut out = serde_json::json!({"key": key.0.value, "params": params.0.value});
+        if let Some(w) = duck_reach_warning(&i.track, &i.key).await { out["warning"] = w.into(); }
+        Ok(rmcp::Json(DocOut { value: out }))
     }
 
     #[rmcp::tool(description = "The song key the SuperDuper Drum's Key=Auto follows (from ~/.superduper-dsp/song-key).", annotations(read_only_hint = true, open_world_hint = false))]
@@ -690,5 +727,28 @@ mod tests {
     fn every_tool_schema_is_accepted() {
         let tools = super::BusServer::new().tool_router.list_all();
         assert!(tools.len() >= 8, "{} tools", tools.len());
+    }
+
+    /// A key spectrum with energy only in the bands whose centres fall in [lo, hi].
+    fn key_between(lo: f32, hi: f32) -> [f32; super::BANDS] {
+        let e = super::band_edges();
+        std::array::from_fn(|b| { let c = (e[b] * e[b + 1]).sqrt(); if (lo..=hi).contains(&c) { -12.0 } else { -120.0 } })
+    }
+
+    #[test]
+    fn key_share_sees_a_kick_below_soothe() {
+        // Kick body 40-100 Hz vs Soothe's default 300 Hz-10 kHz: nothing to duck.
+        assert!(super::key_share_in(&key_between(40.0, 100.0), 300.0, 10_000.0) < 0.01);
+        // A vocal 300 Hz-5 kHz sits inside it.
+        assert!(super::key_share_in(&key_between(300.0, 5_000.0), 300.0, 10_000.0) > 0.99);
+        // Half in, half out (by power): one band below, one inside, equal level.
+        let e = super::band_edges();
+        let mut k = [-120.0f32; super::BANDS];
+        k[4] = -10.0; // ~50 Hz
+        k[20] = -10.0; // ~1.7 kHz
+        let s = super::key_share_in(&k, 300.0, 10_000.0);
+        assert!((s - 0.5).abs() < 0.01, "{s}; band 4 centre {}", (e[4] * e[5]).sqrt());
+        // A silent key has nothing to measure: no warning from silence.
+        assert_eq!(super::key_share_in(&[-120.0; super::BANDS], 300.0, 10_000.0), 1.0);
     }
 }

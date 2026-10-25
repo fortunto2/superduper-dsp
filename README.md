@@ -13,6 +13,15 @@ theme, factory presets, sidechain ducking, automation write, MIDI CC
 [**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
 
+**Agent skills** (mixing by measurement, songs in REAPER, audio to MIDI and more,
+[list](skills/README.md)) install as a Claude Code plugin:
+
+```bash
+/plugin install superduper-dsp --marketplace fortunto2/superduper-dsp
+```
+
+Other agents: `npx skills add fortunto2/superduper-dsp --all`.
+
 ## Screenshots
 
 | Wave (wavetable synth) | Kubyz (jaw harp / khomus) |

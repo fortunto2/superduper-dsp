@@ -1,0 +1,13 @@
+{
+  "name": "superduper-dsp",
+  "version": "0.16.4",
+  "description": "Agent skills for SuperDuper DSP: mix and master by measurement, songs in REAPER on these instruments, headless plugin chains, audio to MIDI, mashups, reference teardowns, vocal chains, writing new plugins.",
+  "author": {
+    "name": "Rustam Salavatov",
+    "url": "https://github.com/fortunto2"
+  },
+  "homepage": "https://rustman.org/projects/project-superduper-dsp/",
+  "repository": "https://github.com/fortunto2/superduper-dsp",
+  "license": "MIT",
+  "keywords": ["audio", "music", "mixing", "mastering", "reaper", "clap", "midi"]
+}

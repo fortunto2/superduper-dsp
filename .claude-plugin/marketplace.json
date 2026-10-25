@@ -1,0 +1,22 @@
+{
+  "name": "superduper-dsp",
+  "description": "SuperDuper DSP agent skills: mixing by measurement, songs in REAPER, headless chains, audio to MIDI.",
+  "owner": {
+    "name": "Rustam Salavatov",
+    "url": "https://github.com/fortunto2"
+  },
+  "plugins": [
+    {
+      "name": "superduper-dsp",
+      "source": "./",
+      "description": "9 skills for making music with an agent on SuperDuper DSP plugins",
+      "version": "0.16.4",
+      "author": {
+        "name": "Rustam Salavatov",
+        "url": "https://github.com/fortunto2"
+      },
+      "license": "MIT",
+      "category": "productivity"
+    }
+  ]
+}

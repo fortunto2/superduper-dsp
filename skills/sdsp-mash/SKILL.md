@@ -14,7 +14,7 @@ TOML stages, per-stage LUFS/dBTP. User confirmed it sounds better than ffmpeg gl
 1. **Подбор пары/куплетов** (правила решают всё):
    - BPM: 1:1, 2:1 (half-time) или стретч ≤ ±8% — тянуть ВСЕГДА бит, вокал священен (узнаваемость).
    - Ключи: для читки почти неважно; для напевных хуков — соседи по Camelot (±1, A↔B).
-   - Замер: `sdsp-mash analyze <wav>` (v1; точный BPM + анти-полутемп x2/x0.5) или `~/.claude/skills/music-teka/keybpm.py` (BPM+key+Camelot).
+   - Замер: `sdsp-mash analyze <wav>` (v1; точный BPM + анти-полутемп x2/x0.5) или `~/Music/1music/.claude/skills/music-teka/keybpm.py` (BPM+key+Camelot).
 2. **Стемы**: через **`uvx`** (без установки) — `uvx --with numpy --from demucs demucs --two-stems=vocals -o OUT "file"` для вокала; убрать `--two-stems` = полный 4-stem (drums/bass/other). **`--with numpy` обязателен** (иначе torch падает на numpy). Полный референс — глобальный скилл **`stem-split`** / память [[reference_demucs_via_uvx]]. (Старая заметка про venv `kx` устарела — он посессионный.)
 3. **mash.toml**: `bpm` грида; `[[track]]` role=beat-drums|beat-bass|beat-other|vocal, `offset_beats`, `start_sec/len_sec` (вырез куплета), `gain_db`, vocal: `highpass_hz`+компрессор (v1), `auto_align=true` (v1, фазовый снап по кросс-корреляции онсетов); `[duck]` — дакается ТОЛЬКО beat-other (бас/драмы не трогать — иначе «низ пропал»); `[intro_sweep]`; `[[master]]` eq→compressor→limiter.
 4. **Рендер** → WAV → mp3 (`ffmpeg -q:a 0`) → в `~/Music/DJ/Sets/AI Mashups/`.

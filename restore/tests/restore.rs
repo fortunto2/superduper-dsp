@@ -1,44 +1,9 @@
 //! Restoration measured against known clean signals: the clean part is synthesised, so the
 //! residual after processing is exactly what the processor failed to remove (or damaged).
 
+mod common;
+use common::*;
 use superduper_restore::{process_offline, Mode, Restorer, Settings};
-
-const SR: f32 = 48_000.0;
-
-/// xorshift32 → uniform in [-1, 1).
-struct Rng(u32);
-impl Rng {
-    fn next(&mut self) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 17;
-        self.0 ^= self.0 << 5;
-        (self.0 as f32 / u32::MAX as f32) * 2.0 - 1.0
-    }
-}
-
-fn white(n: usize, amp: f32, seed: u32) -> Vec<f32> {
-    let mut r = Rng(seed);
-    (0..n).map(|_| r.next() * amp).collect()
-}
-
-fn tone(n: usize, f: f32, amp: f32) -> Vec<f32> {
-    (0..n).map(|i| amp * (std::f32::consts::TAU * f * i as f32 / SR).sin()).collect()
-}
-
-fn energy(x: &[f32]) -> f64 {
-    x.iter().map(|&v| v as f64 * v as f64).sum()
-}
-
-fn db(x: f64) -> f64 {
-    10.0 * x.max(1e-30).log10()
-}
-
-/// SNR of `y` against the known clean `s` over `range` (residual = y − s).
-fn snr_db(s: &[f32], y: &[f32], range: std::ops::Range<usize>) -> f64 {
-    let sig = energy(&s[range.clone()]);
-    let res: f64 = range.map(|i| (y[i] as f64 - s[i] as f64).powi(2)).sum();
-    db(sig / res)
-}
 
 /// Speech-like program: 1 kHz + 2.5 kHz partials in 0.5 s bursts with 0.5 s gaps, so the
 /// adaptive floor sees noise in the gaps the way it does between words.
@@ -198,4 +163,23 @@ fn learned_profile_survives_a_round_trip() {
     assert_eq!(ya, yb, "restored profile behaves differently");
     let mut c = Restorer::new(44_100.0 * 2.0, 1); // different FFT size → different bin count
     assert!(!c.denoiser_mut().set_profile(profile), "a profile of another shape must be refused");
+}
+
+/// CPU cost of the spectral modes, stereo, 512-sample blocks: printed for before/after numbers.
+#[test]
+fn spectral_modes_realtime_factor() {
+    let n = SR as usize * 10;
+    let x: Vec<f32> = bursts(n).iter().zip(white(n, 0.02, 7)).map(|(a, b)| a + b).collect();
+    for mode in [Mode::Spectral, Mode::Dereverb] {
+        let (mut l, mut rr) = (x.clone(), x.clone());
+        let mut r = Restorer::new(SR, 2);
+        r.set(Settings { mode, ..Settings::default() });
+        let t = std::time::Instant::now();
+        for (a, b) in l.chunks_mut(512).zip(rr.chunks_mut(512)) {
+            r.process(&mut [a, b]);
+        }
+        let rtf = t.elapsed().as_secs_f64() / 10.0;
+        eprintln!("{mode:?} stereo realtime factor {rtf:.4} ({:.2} µs per 512-sample block)", rtf * 512.0 / SR as f64 * 1e6);
+        assert!(rtf < 0.5, "{mode:?} too slow: rtf {rtf}");
+    }
 }

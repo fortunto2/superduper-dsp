@@ -3,14 +3,16 @@ name = "superduper-restore"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Audio restoration DSP: spectral noise gating (adaptive or learned profile) and late-reverb suppression. Zero dependencies, offline or real-time."
+description = "Audio restoration DSP: spectral noise gating (adaptive or learned profile), late-reverb suppression and RNNoise. Pure Rust, wasm-friendly, offline or real-time."
 
 [lib]
 name = "superduper_restore"
 
-# Empty by default, like superduper-loudness: the plugin wraps it, and video and
-# wasm tools run it offline without the plugin stack. `neural` pulls RNNoise.
+# Only the shared STFT (superduper-dsp-core on realfft, pure Rust, builds for wasm): the
+# plugin wraps this crate, and video and wasm tools run it offline without the plugin stack.
+# `neural` pulls RNNoise.
 [dependencies]
+superduper-dsp-core = { path = "../dsp-core", features = ["stft"] }
 nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 
 [features]

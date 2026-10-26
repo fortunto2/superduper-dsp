@@ -84,11 +84,17 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
   48 kHz only — other rates pass through; unreliable on noise with no voice, see
   its README), Mix for all modes, learned profile saved in plugin state. Same
   latency in every mode (FFT size, 43 ms @ 48 kHz) via CLAP `latency`. DSP lives
-  in the zero-dependency `restore/` crate (`superduper-restore`, ported from
+  in the `restore/` crate (`superduper-restore`, pure Rust, wasm; ported from
   FilmCraft audio-dsp, MIT — see `restore/NOTICE`) so video tools can run it
   offline (`process_offline`). BS.1770 metering likewise moved to the
-  zero-dependency `loudness/` crate (`superduper-loudness`); synth-core
-  re-exports it as `synth_core::loudness`.
+  `loudness/` crate (`superduper-loudness`); synth-core re-exports it as
+  `synth_core::loudness`.
+- **`dsp-core/`** (`superduper-dsp-core`) — the primitives shared below synth-core:
+  `Biquad`, `LatencyDelay`, and (feature `stft`, realfft) `spectral::StftProcessor`.
+  synth-core re-exports all three at their old paths; loudness takes the
+  dependency-free part, restore runs Spectral and Dereverb on the same STFT
+  (√Hann window). Add a primitive here when a crate below synth-core needs it,
+  never as a second copy.
 - **superduper-nam** *(new)* — Neural Amp Modeler. Pure-Rust port
   of Steven Atkinson's WaveNet / LSTM / Linear inference (see
   `synth_core::nam`), bit-compatible weight ordering with NAM

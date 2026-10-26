@@ -1,4 +1,4 @@
-//! SuperDuper Restore — audio restoration DSP, zero dependencies by default.
+//! SuperDuper Restore — audio restoration DSP, pure Rust (wasm-friendly), no plugin stack.
 //!
 //! One processor, several modes, so a plugin knob or a video pipeline flag picks the algorithm:
 //!
@@ -13,20 +13,21 @@
 //! callers use [`process_offline`], which compensates it. [`Settings::mix_pct`] blends the
 //! latency-aligned dry signal back in, in every mode.
 //!
-//! The spectral algorithms are ported from FilmCraft `filmcraft-audio-dsp` (MIT/Apache-2.0,
+//! Spectral and Dereverb share one STFT runner on `superduper-dsp-core` (the same processor
+//! synth-core's spectral plugins use). The spectral algorithms are ported from FilmCraft `filmcraft-audio-dsp` (MIT/Apache-2.0,
 //! (c) 2026 ArtCraft Team and the FilmCraft contributors, github.com/storytold/filmcraft); see
 //! each module's header. Neural is `nnnoiseless` (BSD-3-Clause).
 
 mod denoise;
 mod dereverb;
-mod fft;
 #[cfg(feature = "neural")]
 mod neural;
 mod stft;
 
 pub use denoise::Denoiser;
 pub use dereverb::Dereverb;
-pub use fft::Fft;
+
+use superduper_dsp_core::LatencyDelay;
 
 /// Which restoration runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -51,13 +52,8 @@ impl Mode {
         }
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Mode::Spectral => "Spectral",
-            Mode::Dereverb => "Dereverb",
-            Mode::Neural => "Neural",
-        }
-    }
+    /// Display names in parameter order (index = [`Mode::from_index`]'s input).
+    pub const NAMES: [&'static str; 3] = ["Spectral", "Dereverb", "Neural (RNNoise)"];
 
     /// Whether this build can change the sound in this mode (Neural needs the feature).
     pub fn is_implemented(self) -> bool {
@@ -89,31 +85,19 @@ impl Default for Settings {
     }
 }
 
-/// Fixed per-channel delay line (latency padding, aligned dry signal).
-pub(crate) struct Delay {
-    lines: Vec<Vec<f32>>,
-    pos: Vec<usize>,
-}
+/// Fixed per-channel delay (latency padding, aligned dry signal); a zero length passes through.
+pub(crate) struct Delay(Vec<LatencyDelay>);
 
 impl Delay {
     pub(crate) fn new(len: usize, channels: usize) -> Self {
-        Delay { lines: vec![vec![0.0; len]; channels], pos: vec![0; channels] }
+        Delay(if len == 0 { Vec::new() } else { (0..channels).map(|_| LatencyDelay::new(len)).collect() })
     }
     pub(crate) fn reset(&mut self) {
-        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|v| *v = 0.0));
-        self.pos.iter_mut().for_each(|p| *p = 0);
+        self.0.iter_mut().for_each(LatencyDelay::reset);
     }
     pub(crate) fn process(&mut self, channels: &mut [&mut [f32]]) {
-        for (ch, buf) in channels.iter_mut().enumerate().take(self.lines.len()) {
-            let line = &mut self.lines[ch];
-            if line.is_empty() {
-                continue;
-            }
-            let pos = &mut self.pos[ch];
-            for v in buf.iter_mut() {
-                *v = std::mem::replace(&mut line[*pos], *v);
-                *pos = (*pos + 1) % line.len();
-            }
+        for (line, buf) in self.0.iter_mut().zip(channels.iter_mut()) {
+            buf.iter_mut().for_each(|v| *v = line.process(*v));
         }
     }
 }
@@ -156,12 +140,8 @@ impl Restorer {
             dry: Delay::new(latency, ch),
             scratch: vec![[0.0; MIX_CHUNK]; ch],
         };
-        r.set(Settings::default());
+        r.apply_params(Settings::default());
         r
-    }
-
-    pub fn settings(&self) -> Settings {
-        self.settings
     }
 
     /// Whether Neural mode runs the network (built with `neural`, 48 kHz). When false it is an
@@ -170,8 +150,11 @@ impl Restorer {
         !matches!(self.neural, NeuralPath::Pass(_))
     }
 
-    /// Apply settings; cheap when nothing changed, call it every block.
+    /// Apply settings; returns at once when nothing changed, so call it every block.
     pub fn set(&mut self, s: Settings) {
+        if s == self.settings {
+            return;
+        }
         if s.mode != self.settings.mode {
             match s.mode {
                 Mode::Spectral => self.denoise.reset(),
@@ -179,6 +162,10 @@ impl Restorer {
                 Mode::Neural => self.reset_neural(),
             }
         }
+        self.apply_params(s);
+    }
+
+    fn apply_params(&mut self, s: Settings) {
         self.denoise.set_params(s.reduction_db, s.threshold_db, s.smoothing_pct);
         self.dereverb.set_params(s.amount_pct, s.rt60_s);
         self.settings = s;
@@ -203,10 +190,6 @@ impl Restorer {
 
     pub fn denoiser_mut(&mut self) -> &mut Denoiser {
         &mut self.denoise
-    }
-
-    pub fn clear_profile(&mut self) {
-        self.denoise.clear_profile();
     }
 
     /// Samples of delay, identical in every mode.
@@ -299,22 +282,17 @@ pub fn process_offline(channels: &mut [Vec<f32>], sample_rate: f32, settings: Se
         r.learn(false);
         r.reset();
     }
+    // In place: pad each channel with `lat` samples of tail, run, drop the first `lat`.
     let lat = r.latency();
     let len = channels.iter().map(Vec::len).max().unwrap_or(0);
-    let mut padded: Vec<Vec<f32>> = channels
-        .iter()
-        .map(|c| {
-            let mut v = c.clone();
-            v.resize(len + lat, 0.0);
-            v
-        })
-        .collect();
+    let lens: Vec<usize> = channels.iter().map(Vec::len).collect();
+    channels.iter_mut().for_each(|c| c.resize(len + lat, 0.0));
     {
-        let mut views: Vec<&mut [f32]> = padded.iter_mut().map(|c| c.as_mut_slice()).collect();
+        let mut views: Vec<&mut [f32]> = channels.iter_mut().map(|c| c.as_mut_slice()).collect();
         r.process(&mut views);
     }
-    for (c, p) in channels.iter_mut().zip(padded) {
-        let n = c.len();
-        c.copy_from_slice(&p[lat..lat + n]);
+    for (c, n) in channels.iter_mut().zip(lens) {
+        c.drain(..lat);
+        c.truncate(n);
     }
 }

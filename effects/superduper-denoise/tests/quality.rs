@@ -115,6 +115,35 @@ fn learned_profile_is_saved_in_plugin_state() {
     PluginShared::new().load_state_json(&plain).expect("plain state loads");
 }
 
+/// States written before the shared `SimpleState::capture`/`restore_params` helpers, verbatim:
+/// one with the profile, one from the oldest SDK format (no preset, no key), and a foreign
+/// version that must be refused rather than half-applied.
+#[test]
+fn states_written_by_earlier_builds_still_load() {
+    use std::sync::atomic::Ordering;
+    let with_profile = r#"{"version":1,"params":[0.0,21.0,6.0,50.0,50.0,0.8,0.0,-3.0,70.0],"bypass":true,"active_preset":2,"key_track":"Vox","profile":{"sample_rate":48000.0,"bins":[[1.0,2.0],[3.0,4.0]]}}"#;
+    let s = superduper_denoise::PluginShared::new();
+    s.load_state_json(with_profile).expect("load");
+    assert_eq!(s.params[superduper_denoise::P_REDUCTION].load(Ordering::Relaxed), 21.0);
+    assert_eq!(s.params[superduper_denoise::P_MIX].load(Ordering::Relaxed), 70.0);
+    assert!(s.bypass.load(Ordering::Relaxed));
+    assert_eq!(s.active_preset.load(Ordering::Relaxed), 2);
+    assert_eq!(*s.scope.key_track.lock(), "Vox");
+    assert_eq!(s.saved_profile.lock().as_ref().map(|p| p.bins.clone()), Some(vec![vec![1.0, 2.0], vec![3.0, 4.0]]));
+
+    let oldest = r#"{"version":1,"params":[1.0,12.0],"bypass":false}"#;
+    let o = superduper_denoise::PluginShared::new();
+    o.load_state_json(oldest).expect("oldest format loads");
+    assert_eq!(o.params[superduper_denoise::P_MODE].load(Ordering::Relaxed), 1.0);
+    assert_eq!(o.params[superduper_denoise::P_MIX].load(Ordering::Relaxed), 100.0, "missing params keep their value");
+    assert!(o.saved_profile.lock().is_none());
+
+    let foreign = r#"{"version":2,"params":[2.0],"bypass":false}"#;
+    let f = superduper_denoise::PluginShared::new();
+    assert_eq!(f.load_state_json(foreign), Err("state version mismatch"));
+    assert_eq!(f.params[superduper_denoise::P_MODE].load(Ordering::Relaxed), 0.0, "refused state changes nothing");
+}
+
 /// Render with Mode = Neural and the given Mix, every other param at its default.
 fn render_neural(x: &[f32], mix: f64) -> (Vec<f32>, Vec<f32>) {
     use clack_common::events::{event_types::ParamValueEvent, Pckn};
@@ -129,27 +158,11 @@ fn render_neural(x: &[f32], mix: f64) -> (Vec<f32>, Vec<f32>) {
     })
 }
 
-/// The voiced test talker from restore/tests/neural.rs, shortened: harmonic stack on a gliding
-/// f0 with formant bumps, 4 Hz syllables with silent gaps.
-fn voiced(n: usize) -> Vec<f32> {
-    let bump = |f: f32, c: f32, w: f32| (-((f - c) / w).powi(2)).exp();
-    let mut phase = 0.0f32;
-    (0..n)
-        .map(|i| {
-            let t = i as f32 / SR as f32;
-            let f0 = 140.0 + 30.0 * (std::f32::consts::TAU * 0.7 * t).sin();
-            phase += std::f32::consts::TAU * f0 / SR as f32;
-            let syl = (std::f32::consts::TAU * 4.0 * t).sin().max(0.0).powf(0.7);
-            let s: f32 = (1..40)
-                .map(|h| f0 * h as f32)
-                .take_while(|&f| f <= 8000.0)
-                .enumerate()
-                .map(|(k, f)| (bump(f, 700.0, 180.0) + 0.6 * bump(f, 1220.0, 220.0) + 0.3 * bump(f, 2600.0, 350.0) + 0.02) * (phase * (k + 1) as f32).sin())
-                .sum();
-            0.08 * s * syl
-        })
-        .collect()
-}
+/// The voiced test talker the restore tests use: harmonic stack on a gliding f0 with formant
+/// bumps, 4 Hz syllables with silent gaps.
+#[path = "../../../restore/tests/common/mod.rs"]
+mod common;
+use common::voiced;
 
 /// Neural through the real CLAP host at 48 kHz: noise between syllables is removed, Mix 50 lands
 /// in between, and process() stays allocation-free with the network and the mix path running.

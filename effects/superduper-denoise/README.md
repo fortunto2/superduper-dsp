@@ -1,8 +1,8 @@
 # SuperDuper Denoise
 
 Removes broadband noise or room reverb. A thin CLAP wrapper over
-[`superduper-restore`](../../restore), which holds the DSP with zero
-dependencies, so video tools run the same algorithms offline
+[`superduper-restore`](../../restore), which holds the DSP without the
+plugin stack (pure Rust, builds for wasm), so video tools run the same algorithms offline
 (`superduper_restore::process_offline`).
 
 ## Modes

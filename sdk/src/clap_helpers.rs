@@ -212,6 +212,34 @@ pub struct SimpleState {
 
 pub const SIMPLE_STATE_VERSION: u32 = 1;
 
+impl SimpleState {
+    /// The common block as it stands now. Plugins that persist extra fields embed this
+    /// (`#[serde(flatten)]`) instead of copying it field by field, so a field added here
+    /// reaches them too.
+    pub fn capture(params: &[AtomicF32], bypass: bool, active_preset: u32, key_track: &str) -> Self {
+        SimpleState {
+            version: SIMPLE_STATE_VERSION,
+            params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+            bypass,
+            active_preset,
+            key_track: key_track.to_string(),
+        }
+    }
+
+    /// Version check, then the saved values back into `params` (extra saved values are
+    /// ignored, missing ones keep their current value). Bypass, preset and key are the
+    /// caller's to restore, they live in its own Shared.
+    pub fn restore_params(&self, params: &[AtomicF32]) -> Result<(), &'static str> {
+        if self.version != SIMPLE_STATE_VERSION {
+            return Err("state version mismatch");
+        }
+        for (slot, v) in params.iter().zip(&self.params) {
+            slot.store(*v, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
 pub fn save_simple_state(
     params: &[AtomicF32],
     bypass: bool,
@@ -240,13 +268,7 @@ pub fn save_simple_state_keyed(
     key_track: &str,
     output: &mut clack_common::stream::OutputStream,
 ) -> Result<(), clack_plugin::plugin::PluginError> {
-    let state = SimpleState {
-        version: SIMPLE_STATE_VERSION,
-        params: params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
-        bypass,
-        active_preset,
-        key_track: key_track.to_string(),
-    };
+    let state = SimpleState::capture(params, bypass, active_preset, key_track);
     serde_json::to_writer(output, &state)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON write error"))
 }
@@ -276,16 +298,7 @@ pub fn load_simple_state_keyed(
 ) -> Result<(bool, u32, String), clack_plugin::plugin::PluginError> {
     let state: SimpleState = serde_json::from_reader(input)
         .map_err(|_| clack_plugin::plugin::PluginError::Message("state JSON read error"))?;
-    if state.version != SIMPLE_STATE_VERSION {
-        return Err(clack_plugin::plugin::PluginError::Message(
-            "state version mismatch",
-        ));
-    }
-    for (i, v) in state.params.iter().enumerate() {
-        if let Some(slot) = params.get(i) {
-            slot.store(*v, Ordering::Relaxed);
-        }
-    }
+    state.restore_params(params).map_err(clack_plugin::plugin::PluginError::Message)?;
     Ok((state.bypass, state.active_preset, state.key_track))
 }
 

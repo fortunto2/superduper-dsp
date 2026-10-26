@@ -15,6 +15,8 @@ const OWN_LATENCY: usize = 2 * FRAME;
 /// nnnoiseless expects 16-bit PCM magnitudes in f32.
 const PCM: f32 = 32768.0;
 pub(crate) const RATE: f32 = 48_000.0;
+/// Silent frames that wipe RNNoise's memory on reset (input history spans 4, cepstra 8).
+const FLUSH_FRAMES: usize = 16;
 
 pub(crate) struct Neural {
     states: Vec<Box<DenoiseState<'static>>>,
@@ -37,8 +39,18 @@ impl Neural {
         }
     }
 
+    /// Clears the stream without touching the allocator: this runs on the audio thread (CLAP
+    /// `reset`, a mode switch), and `DenoiseState` has no reset of its own, only a boxed `new`.
+    /// Silence through the network for `FLUSH_FRAMES` empties its input history and cepstral
+    /// memory and settles the GRU on its zero-input state (~17 µs per frame per channel).
     pub(crate) fn reset(&mut self) {
-        self.states.iter_mut().for_each(|s| *s = DenoiseState::new());
+        let silence = [0.0; FRAME];
+        let mut sink = [0.0; FRAME];
+        for s in &mut self.states {
+            for _ in 0..FLUSH_FRAMES {
+                s.process_frame(&mut sink, &silence);
+            }
+        }
         self.input.iter_mut().for_each(|f| *f = [0.0; FRAME]);
         self.output.iter_mut().for_each(|f| *f = [0.0; FRAME]);
         self.pos = 0;

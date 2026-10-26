@@ -1,6 +1,6 @@
 //! SuperDuper Denoise — removes broadband noise or room reverb from a voice or a whole mix.
 //!
-//! A thin CLAP wrapper over `superduper-restore` (the DSP lives there, dependency-free, so video
+//! A thin CLAP wrapper over `superduper-restore` (the DSP lives there, without the plugin stack, so video
 //! tools run the same algorithms offline). One `Mode` param picks the algorithm:
 //!
 //! - **Spectral** — STFT spectral gating. Adaptive by default (minimum-statistics floor, no learn
@@ -40,10 +40,9 @@ use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use superduper_dsp_sdk::clap_helpers::ParamDef;
+use superduper_dsp_sdk::clap_helpers::{ParamDef, SimpleState};
 use superduper_dsp_sdk::{build_date, build_num, plugin_display_name, version_string};
 use superduper_restore::{Mode, Restorer, Settings};
-use superduper_synth_core::dsp_blocks::SmoothedParam;
 
 fn init_logging() { superduper_dsp_sdk::log::init("denoise"); }
 use superduper_dsp_sdk::slog;
@@ -79,7 +78,7 @@ pub const P_LEARN: usize = 6;
 pub const P_OUTPUT: usize = 7;
 pub const P_MIX: usize = 8;
 
-pub const MODE_NAMES: [&str; 3] = ["Spectral", "Dereverb", "Neural (RNNoise)"];
+pub const MODE_NAMES: [&str; 3] = Mode::NAMES;
 
 /// The `Settings` a param snapshot asks for — the one mapping, shared with offline renders.
 pub fn settings_from(load: impl Fn(usize) -> f32) -> Settings {
@@ -133,7 +132,7 @@ pub struct SavedProfile {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DenoiseState {
     #[serde(flatten)]
-    base: superduper_dsp_sdk::clap_helpers::SimpleState,
+    base: SimpleState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     profile: Option<SavedProfile>,
 }
@@ -186,9 +185,38 @@ impl<'a> clack_plugin::plugin::PluginMainThread<'a, PluginShared> for PluginMain
 pub struct PluginAudioProcessor<'a> {
     shared: &'a PluginShared,
     restorer: Restorer,
-    learning: bool,
-    smooth_output: SmoothedParam,
+    output: OutputGain,
     sample_rate: f32,
+}
+
+/// The Output knob: a 5 ms one-pole slew in dB (the `SmoothedParam` curve), with the
+/// coefficient computed once and `powf` per sample only while the knob is moving.
+struct OutputGain {
+    db: f32,
+    coef: f32,
+}
+
+impl OutputGain {
+    fn new(db: f32, sample_rate: f32) -> Self {
+        OutputGain { db, coef: (-1.0 / (0.005 * sample_rate)).exp() }
+    }
+
+    fn apply(&mut self, target_db: f32, channels: &mut [&mut [f32]]) {
+        let len = channels.iter().map(|c| c.len()).min().unwrap_or(0);
+        if (self.db - target_db).abs() < 1e-4 {
+            self.db = target_db;
+            let g = 10f32.powf(target_db / 20.0);
+            if g != 1.0 {
+                channels.iter_mut().for_each(|c| c.iter_mut().for_each(|v| *v *= g));
+            }
+            return;
+        }
+        for i in 0..len {
+            self.db = target_db + (self.db - target_db) * self.coef;
+            let g = 10f32.powf(self.db / 20.0);
+            channels.iter_mut().for_each(|c| c[i] *= g);
+        }
+    }
 }
 
 fn apply_param_events(shared: &PluginShared, events: &InputEvents) {
@@ -220,8 +248,7 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         Ok(Self {
             shared,
             restorer,
-            learning: false,
-            smooth_output: SmoothedParam::new(shared.params[P_OUTPUT].load(Ordering::Relaxed)),
+            output: OutputGain::new(shared.params[P_OUTPUT].load(Ordering::Relaxed), sr),
             sample_rate: sr,
         })
     }
@@ -243,9 +270,8 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         let load = |i: usize| shared.params[i].load(Ordering::Relaxed);
         self.restorer.set(settings_from(load));
         let learn = load(P_LEARN) >= 0.5;
-        if learn != self.learning {
+        if learn != self.restorer.denoiser().is_learning() {
             self.restorer.learn(learn);
-            self.learning = learn;
             if !learn {
                 // A user action, once per learn: the copy for `save` may allocate here.
                 if let (Some(bins), Some(mut slot)) = (self.restorer.denoiser().profile(), shared.saved_profile.try_lock()) {
@@ -262,25 +288,20 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         }
         let output_db_t = load(P_OUTPUT);
 
-        let restorer = &mut self.restorer;
-        let smooth_output = &mut self.smooth_output;
+        let (restorer, output) = (&mut self.restorer, &mut self.output);
         superduper_synth_core::effect::run_ports(&**shared, &mut audio, |l_read, l_write, r| {
             l_write.copy_from_slice(l_read);
             match r {
                 Some((r_read, r_write)) => {
                     r_write.copy_from_slice(r_read);
-                    restorer.process(&mut [&mut *l_write, &mut *r_write]);
-                    for i in 0..l_write.len().min(r_write.len()) {
-                        let g = 10f32.powf(smooth_output.step(output_db_t, sr) / 20.0);
-                        l_write[i] *= g;
-                        r_write[i] *= g;
-                    }
+                    let mut ch = [&mut *l_write, &mut *r_write];
+                    restorer.process(&mut ch);
+                    output.apply(output_db_t, &mut ch);
                 }
                 None => {
-                    restorer.process(&mut [&mut *l_write]);
-                    for v in l_write.iter_mut() {
-                        *v *= 10f32.powf(smooth_output.step(output_db_t, sr) / 20.0);
-                    }
+                    let mut ch = [&mut *l_write];
+                    restorer.process(&mut ch);
+                    output.apply(output_db_t, &mut ch);
                 }
             }
         })?;
@@ -299,7 +320,7 @@ impl PluginLatencyImpl for PluginMainThread<'_> {
 // ---------------------------------------------------------------------------
 
 impl PluginAudioPortsImpl for PluginMainThread<'_> {
-    fn count(&mut self, is_input: bool) -> u32 { if is_input { 1 } else { 1 } }
+    fn count(&mut self, _is_input: bool) -> u32 { 1 }
     fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
         if index != 0 { return; }
         writer.set(&AudioPortInfo {
@@ -353,13 +374,12 @@ impl SharedParamsInner {
     /// The session state as JSON: params, bypass, preset, bus key and the learned profile.
     pub fn save_state_json(&self) -> String {
         let state = DenoiseState {
-            base: superduper_dsp_sdk::clap_helpers::SimpleState {
-                version: superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION,
-                params: self.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
-                bypass: self.bypass.load(Ordering::Relaxed),
-                active_preset: self.active_preset.load(Ordering::Relaxed),
-                key_track: self.scope.key_track.lock().clone(),
-            },
+            base: SimpleState::capture(
+                &self.params,
+                self.bypass.load(Ordering::Relaxed),
+                self.active_preset.load(Ordering::Relaxed),
+                &self.scope.key_track.lock(),
+            ),
             profile: self.saved_profile.lock().clone(),
         };
         serde_json::to_string(&state).unwrap_or_default()
@@ -368,12 +388,7 @@ impl SharedParamsInner {
     /// Restore from `save_state_json`; the profile is queued for the audio thread.
     pub fn load_state_json(&self, json: &str) -> Result<(), &'static str> {
         let state: DenoiseState = serde_json::from_str(json).map_err(|_| "state JSON read error")?;
-        if state.base.version != superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION {
-            return Err("state version mismatch");
-        }
-        for (slot, v) in self.params.iter().zip(&state.base.params) {
-            slot.store(*v, Ordering::Relaxed);
-        }
+        state.base.restore_params(&self.params)?;
         self.bypass.store(state.base.bypass, Ordering::Relaxed);
         self.active_preset.store(state.base.active_preset, Ordering::Relaxed);
         *self.scope.key_track.lock() = state.base.key_track;
@@ -409,7 +424,6 @@ use clack_extensions::gui::{
     AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, PluginGuiImpl,
     Window as ClapGuiWindow,
 };
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 impl PluginGuiImpl for PluginMainThread<'_> {
     fn is_api_supported(&mut self, c: GuiConfiguration) -> bool {
@@ -426,8 +440,8 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     fn set_scale(&mut self, _: f64) -> Result<(), PluginError> { Ok(()) }
     fn get_size(&mut self) -> Option<GuiSize> {
         Some(GuiSize {
-            width: self.gui_resize.0.load(AtomicOrdering::Relaxed),
-            height: self.gui_resize.1.load(AtomicOrdering::Relaxed),
+            width: self.gui_resize.0.load(Ordering::Relaxed),
+            height: self.gui_resize.1.load(Ordering::Relaxed),
         })
     }
     fn can_resize(&mut self) -> bool { true }
@@ -447,8 +461,8 @@ impl PluginGuiImpl for PluginMainThread<'_> {
     fn set_size(&mut self, s: GuiSize) -> Result<(), PluginError> {
         let w = s.width.clamp(gui::MIN_WIDTH, gui::MAX_WIDTH);
         let h = s.height.clamp(gui::MIN_HEIGHT, gui::MAX_HEIGHT);
-        self.gui_resize.0.store(w, AtomicOrdering::Relaxed);
-        self.gui_resize.1.store(h, AtomicOrdering::Relaxed);
+        self.gui_resize.0.store(w, Ordering::Relaxed);
+        self.gui_resize.1.store(h, Ordering::Relaxed);
         Ok(())
     }
     fn set_parent(&mut self, window: ClapGuiWindow) -> Result<(), PluginError> {

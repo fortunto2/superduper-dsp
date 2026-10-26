@@ -16,13 +16,12 @@
 //! - `TruePeakDetector` — 4× linear-interp upsample + max sample,
 //!   results in dBTP
 //!
-//! Zero dependencies on purpose: the plugins reach it through
+//! No third-party dependencies on purpose (only the dependency-free
+//! `superduper-dsp-core` for its `Biquad`): the plugins reach it through
 //! `superduper_synth_core::loudness` (a re-export), and offline/video tools
 //! use this crate directly without pulling fundsp/realfft/wide.
 
-mod biquad;
-
-pub use biquad::Biquad;
+pub use superduper_dsp_core::Biquad;
 
 /// K-weighting filter — two biquads per channel: stage 1 is a
 /// high-shelf at 1681 Hz (+4 dB), stage 2 is a high-pass at 38 Hz.

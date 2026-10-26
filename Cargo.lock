@@ -4263,6 +4263,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "superduper-dsp-core"
+version = "0.1.0"
+dependencies = [
+ "realfft",
+]
+
+[[package]]
 name = "superduper-dsp-daemon"
 version = "0.1.0"
 dependencies = [
@@ -4540,6 +4547,9 @@ dependencies = [
 [[package]]
 name = "superduper-loudness"
 version = "0.1.0"
+dependencies = [
+ "superduper-dsp-core",
+]
 
 [[package]]
 name = "superduper-midside"
@@ -4695,6 +4705,7 @@ name = "superduper-restore"
 version = "0.1.0"
 dependencies = [
  "nnnoiseless",
+ "superduper-dsp-core",
 ]
 
 [[package]]
@@ -4878,6 +4889,7 @@ dependencies = [
  "sdsp-test-kit",
  "serde",
  "serde_json",
+ "superduper-dsp-core",
  "superduper-dsp-sdk",
  "superduper-loudness",
  "symphonia",

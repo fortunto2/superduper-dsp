@@ -29,7 +29,8 @@ pub mod drumlib; // drum one-shot library: class from name or sound, pad mapping
 pub mod bus_mail; // the way back in: per-instance mailbox next to the bus (agents read and set non-param state)
 pub mod mixmap; // who fights whom in which band, from bus spectra (Spectrum Mix view, bus gateway)
 pub mod sfz; // SFZ multisample engine: parser, regions, voices (+ loader behind `sfz-load`) — SuperDuper Piano
-pub mod spectral;
+/// The STFT processor lives in `superduper-dsp-core` (shared with the restoration DSP).
+pub use superduper_dsp_core::spectral;
 pub mod supermass;
 pub mod swiftf0; // SwiftF0 neural pitch tracker, pure-Rust inference (option in superduper-tune)
 pub mod user_preset;

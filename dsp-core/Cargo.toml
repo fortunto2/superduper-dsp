@@ -1,0 +1,18 @@
+[package]
+name = "superduper-dsp-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The DSP primitives every SuperDuper crate shares: RBJ biquad, latency delay, and (feature `stft`) the streaming STFT overlap-add processor. Zero dependencies without `stft`; pure Rust and wasm-friendly with it."
+
+[lib]
+name = "superduper_dsp_core"
+
+# Empty by default so the loudness meter stays dependency-free. `stft` pulls realfft
+# (pure Rust, builds for wasm32-unknown-unknown).
+[dependencies]
+realfft = { version = "3.5", optional = true }
+
+[features]
+default = []
+stft = ["dep:realfft"]

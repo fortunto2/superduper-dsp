@@ -8,6 +8,7 @@ members = [
     "sdk-macros",
     "sdk-build",
     "synth-core",
+    "dsp-core",
     "loudness",
     "restore",
     "connectome-core",

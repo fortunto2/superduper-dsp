@@ -9,6 +9,9 @@
 //! build on this, so the STFT scaffolding lives in exactly one place.
 //!
 //! One instance = one channel. Hold `[StftProcessor; 2]` for stereo.
+//! The restoration DSP (`superduper-restore`, Spectral and Dereverb modes) runs on it too, with
+//! a √Hann analysis/synthesis pair ([`Window::SqrtHann`]): gain masks want the window applied
+//! once overall rather than twice.
 //!
 //! **RT-safe:** all buffers + FFT plans are allocated in [`StftProcessor::new`];
 //! [`process_sample`](StftProcessor::process_sample) never allocates.
@@ -30,6 +33,16 @@
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
+
+/// Analysis and synthesis window (the same one on both sides).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Window {
+    /// Hann × Hann: overlap-adds to `0.375·osamp`. Phase-vocoder ops.
+    #[default]
+    Hann,
+    /// √Hann × √Hann = Hann: overlap-adds to `0.5·osamp`. Spectral gain masks.
+    SqrtHann,
+}
 
 pub struct StftProcessor {
     n: usize,
@@ -65,21 +78,30 @@ impl StftProcessor {
     /// `inputs` = number of analysis streams (1 for pitch, 2 for a vocoder's
     /// modulator + carrier).
     pub fn new(sr: f32, n: usize, hop: usize, inputs: usize) -> Self {
-        assert!(inputs >= 1 && inputs <= 2, "StftProcessor supports 1..=2 inputs");
+        Self::with_window(sr, n, hop, inputs, Window::Hann)
+    }
+
+    /// [`StftProcessor::new`] with an explicit window pair.
+    pub fn with_window(sr: f32, n: usize, hop: usize, inputs: usize, win: Window) -> Self {
+        assert!((1..=2).contains(&inputs), "StftProcessor supports 1..=2 inputs");
         let half = n / 2;
         let ring = n - hop;
         let osamp = n as f32 / hop as f32;
-        let cola = 0.375 * osamp; // mean(Hann²)=3/8, × overlap factor
+        // mean(w_a·w_s) × overlap factor: Hann² = 3/8, √Hann² = Hann = 1/2.
+        let cola = match win { Window::Hann => 0.375, Window::SqrtHann => 0.5 } * osamp;
         let cola_scale = 1.0 / (n as f32 * cola);
         let mut planner = RealFftPlanner::<f32>::new();
         let fwd = planner.plan_fft_forward(n);
         let inv = planner.plan_fft_inverse(n);
         let scratch_fwd = fwd.make_scratch_vec().into_boxed_slice();
         let scratch_inv = inv.make_scratch_vec().into_boxed_slice();
-        let window: Box<[f32]> = (0..n)
-            .map(|k| 0.5 - 0.5 * (core::f32::consts::TAU * k as f32 / n as f32).cos())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let window: Box<[f32]> = match win {
+            Window::Hann => (0..n).map(|k| 0.5 - 0.5 * (core::f32::consts::TAU * k as f32 / n as f32).cos()).collect(),
+            // Periodic Hann in f64, then √ — the restoration window as it was measured.
+            Window::SqrtHann => (0..n)
+                .map(|k| ((0.5 - 0.5 * (core::f64::consts::TAU * k as f64 / n as f64).cos()) as f32).sqrt())
+                .collect(),
+        };
         let in_fifo = (0..inputs).map(|_| vec![0.0; n].into_boxed_slice()).collect();
         let ana = (0..inputs)
             .map(|_| vec![Complex::new(0.0, 0.0); half + 1].into_boxed_slice())
@@ -164,8 +186,9 @@ impl StftProcessor {
     where
         F: FnMut(&[&[Complex<f32>]], &mut [Complex<f32>]),
     {
-        for s in 0..self.inputs {
-            self.in_fifo[s][self.rover] = inputs[s];
+        let rover = self.rover;
+        for (fifo, &x) in self.in_fifo.iter_mut().zip(inputs) {
+            fifo[rover] = x;
         }
         let out = self.out_fifo[self.rover - self.ring];
         self.rover += 1;
@@ -250,11 +273,11 @@ pub fn smooth_proportional(src: &[f32], dst: &mut [f32], frac: f32, prefix: &mut
     for k in 0..n {
         prefix[k + 1] = prefix[k] + src[k] as f64;
     }
-    for k in 0..n {
+    for (k, d) in dst.iter_mut().enumerate().take(n) {
         let w = ((k as f32 * frac) as usize).max(1);
         let lo = k.saturating_sub(w);
         let hi = (k + w).min(n - 1);
-        dst[k] = ((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1) as f64) as f32;
+        *d = ((prefix[hi + 1] - prefix[lo]) / (hi - lo + 1) as f64) as f32;
     }
 }
 

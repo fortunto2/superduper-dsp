@@ -10,6 +10,7 @@ name = "superduper_synth_core"
 
 [dependencies]
 superduper-loudness = { path = "../loudness" }
+superduper-dsp-core = { path = "../dsp-core", features = ["stft"] }
 fundsp = "0.23"
 realfft = "3.5"
 serde = { version = "1", features = ["derive"] }

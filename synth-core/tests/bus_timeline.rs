@@ -90,10 +90,13 @@ fn play_key(key: &LiveScope, k: usize, t: f64, rng: &mut u32) {
 /// What the keyed track hears at each block start, scored against the gate:
 /// the key's frame ending at `t` covers `t − WINDOW/sr .. t`, so a block
 /// whose whole window is inside a burst must hear it and one whose whole
-/// window (plus a hop of slack) is outside must not. Returns mismatches.
+/// window is outside must not, with the slack the timeline itself allows: it
+/// takes a frame up to two hops at 44.1 kHz old as the block's own (`GOOD_S`),
+/// which at 48 kHz still sees 2 ms of a burst that ended (t = 2.1013, −67 dB,
+/// one run in ten). Returns mismatches.
 fn score(heard: &[(f64, f32)]) -> (usize, usize) {
     let w = WINDOW as f64 / SR as f64;
-    let slack = HOP as f64 / SR as f64;
+    let slack = 2.0 * HOP as f64 / 44_100.0;
     let (mut checked, mut wrong) = (0, 0);
     for &(t, db) in heard {
         let span = |a: f64, b: f64| (0..64).map(move |i| a + (b - a) * i as f64 / 63.0);
@@ -170,6 +173,64 @@ fn faster_than_real_time_keyed_track_waits_for_a_key_track_that_is_behind() {
     // The first few blocks decide that this is a render; a burst starts at
     // 0.8 s, well after that.
     assert_eq!(wrong, 0, "waited for the key instead of keying on its past");
+}
+
+/// The key track's render thread starts well after ours: the macOS CI runner
+/// (2026-10-26) overslept the 30 ms of the test above past `WAIT_MAX`, and the
+/// keyed track, taking a key track with no frame yet for one that is not
+/// played, rendered the whole song with no key (125 blocks wrong). A busy Mac
+/// starting an offline render is the same race, so a key track that has not
+/// written its first frame gets start-up patience, not 100 ms.
+#[test]
+fn a_key_track_that_starts_late_is_waited_for_not_taken_for_absent() {
+    let (key, keyed, _turn) = pair("late", (60, 61));
+    let k2 = key.clone();
+    let producer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let mut rng = 0x0bad_cafe;
+        for (k, t) in blocks() { play_key(&k2, k, t, &mut rng); }
+    });
+    let heard: Vec<(f64, f32)> = blocks().map(|(_, t)| {
+        keyed.begin_block(Some(&transport(t)));
+        let db = key_level_db(&keyed);
+        for _ in 0..BLOCK { keyed.push(0.0); }
+        keyed.end_block();
+        (t, db)
+    }).collect();
+    producer.join().expect("producer");
+    let (checked, wrong) = score(&heard);
+    assert!(checked > 250, "{checked} blocks scored");
+    assert_eq!(wrong, 0, "a late key track was taken for an absent one");
+}
+
+/// The key track's render thread loses the CPU once, mid-song, for longer than
+/// `STALL` while one block behind (a busy machine; the macOS CI runner,
+/// 2026-10-26). That block cannot tell it from a host running both tracks on
+/// one thread, and may take the key a block late, but the rest of the render
+/// must go back to waiting: the key track then falls further behind than one
+/// block, which a same-thread host can never do.
+#[test]
+fn a_key_thread_preempted_once_does_not_stop_the_waiting_for_the_rest_of_the_song() {
+    let (key, keyed, _turn) = pair("preempted", (50, 51));
+    let k2 = key.clone();
+    let producer = std::thread::spawn(move || {
+        let mut rng = 0x5eed_1234;
+        for (k, t) in blocks() {
+            if k == 100 { std::thread::sleep(Duration::from_millis(80)); }
+            play_key(&k2, k, t, &mut rng);
+        }
+    });
+    let heard: Vec<(f64, f32)> = blocks().map(|(_, t)| {
+        keyed.begin_block(Some(&transport(t)));
+        let db = key_level_db(&keyed);
+        for _ in 0..BLOCK { keyed.push(0.0); }
+        keyed.end_block();
+        (t, db)
+    }).collect();
+    producer.join().expect("producer");
+    let (checked, wrong) = score(&heard);
+    assert!(checked > 250, "{checked} blocks scored");
+    assert!(wrong <= 1, "{wrong} blocks keyed on a stale key after one preemption: the block that judged it serial may take the key a block late, no other");
 }
 
 #[test]

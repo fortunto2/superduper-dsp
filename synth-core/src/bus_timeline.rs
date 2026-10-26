@@ -21,7 +21,8 @@
 //! waiting when that track sits one block behind and makes no progress (the
 //! host runs both on one thread, the key track second: its frame for this
 //! block cannot appear until this block returns), or makes none at all for
-//! 100 ms (not played); any later progress turns waiting back on.
+//! 100 ms (not played; a key track with no frame yet gets a second, since it
+//! may not have started); any later progress turns waiting back on.
 //!
 //! Without a transport (stopped, monitoring) or with a key track whose
 //! plugin predates frames, the publisher thread's wall-clock copy stays in
@@ -63,6 +64,12 @@ const WANTED_MS: u64 = 3000;
 /// until it moves again.
 const STALL: Duration = Duration::from_millis(40);
 const WAIT_MAX: Duration = Duration::from_millis(100);
+/// A key track that has not written its first frame yet may simply not have
+/// started: a render thread scheduled late on a busy machine overslept 100 ms
+/// on the macOS CI runner (2026-10-26) and the keyed track rendered the whole
+/// song with no key. Until the first frame it gets this long; the price for a
+/// key track that is never played is one pause of this length per render.
+const START_MAX: Duration = Duration::from_secs(1);
 /// Blocks arriving in under this fraction of their own length, this many
 /// in a row, mean the host is rendering faster than real time.
 const FAST_RATIO: f64 = 0.5;
@@ -247,6 +254,12 @@ impl Timeline {
         // Ahead of us without the frame we need (lapped the ring): waiting
         // cannot bring it back.
         let ahead = fr.newest_t(slot, owner).is_some_and(|n| n > t);
+        let one_block_behind = |st: &State| fr.newest_t(slot, owner).is_some_and(|n| t - n <= 2.0 * st.block_s + GOOD_S);
+        // A host running both tracks on one thread keeps the key track exactly
+        // one block behind; further behind, it is another thread that lost the
+        // CPU while we judged it serial (2026-10-26: one 80 ms preemption left
+        // 102 blocks of a 4 s render on a stale key). Wait for it again.
+        if st.serial && !one_block_behind(st) { st.serial = false; }
         if good(&pick) {
             st.serial = false;
         } else if st.fast >= FAST_BLOCKS && !st.serial && !st.absent && !ahead {
@@ -259,9 +272,9 @@ impl Timeline {
                 let w = fr.written(slot, owner).unwrap_or(seen);
                 if w != seen { seen = w; moved = Instant::now(); }
                 let stalled = moved.elapsed();
-                let one_block_behind = fr.newest_t(slot, owner).is_some_and(|n| t - n <= 2.0 * st.block_s + GOOD_S);
-                if one_block_behind && stalled > STALL { st.serial = true; break }
-                if stalled > WAIT_MAX || start.elapsed() > 4 * WAIT_MAX { st.absent = true; break }
+                if one_block_behind(st) && stalled > STALL { st.serial = true; break }
+                let patience = if seen == 0 { START_MAX } else { WAIT_MAX };
+                if stalled > patience || start.elapsed() > 4 * patience { st.absent = true; break }
             }
             st.key_seen = seen;
         }

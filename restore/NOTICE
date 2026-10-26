@@ -23,3 +23,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---------------------------------------------------------------------------
+With the `neural` feature, superduper-restore links nnnoiseless
+(https://github.com/jneem/nnnoiseless), a Rust port of RNNoise by Jean-Marc
+Valin / Xiph.Org, BSD-3-Clause. Its license text ships in that crate.

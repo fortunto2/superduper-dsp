@@ -1,4 +1,4 @@
-use crate::{PARAMS, P_AMOUNT, P_MODE, P_REDUCTION, P_RT60, P_SMOOTHING, P_THRESHOLD};
+use crate::{PARAMS, P_AMOUNT, P_MIX, P_MODE, P_REDUCTION, P_RT60, P_SMOOTHING, P_THRESHOLD};
 
 superduper_dsp_sdk::define_preset!(PARAMS);
 
@@ -24,6 +24,17 @@ pub static PRESETS: &[Preset] = &[
         (P_REDUCTION, 30.0),
         (P_THRESHOLD, 8.0),
         (P_SMOOTHING, 40.0),
+    ]),
+
+    // Voice-only cleanup on a 48 kHz session.
+    Preset::from_overrides("Neural Voice", &[
+        (P_MODE, 2.0),
+    ]),
+
+    // Same, with some room left in so it does not sound sealed.
+    Preset::from_overrides("Neural Voice Gentle", &[
+        (P_MODE, 2.0),
+        (P_MIX, 70.0),
     ]),
 
     Preset::from_overrides("Dereverb Small Room", &[

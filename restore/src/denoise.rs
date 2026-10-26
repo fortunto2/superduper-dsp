@@ -191,6 +191,24 @@ impl Denoiser {
         self.noise.iter().any(|s| s.profile.is_some())
     }
 
+    /// The learned profile, one power spectrum (n/2+1 bins) per channel, to persist it.
+    pub fn profile(&self) -> Option<Vec<Vec<f32>>> {
+        self.noise.iter().map(|s| s.profile.clone()).collect()
+    }
+
+    /// Install a profile saved from [`Denoiser::profile`]. Refused (false, nothing changed) when
+    /// the channel count or bin count differs — a profile from another sample rate is meaningless.
+    pub fn set_profile(&mut self, profile: Vec<Vec<f32>>) -> bool {
+        let bins = self.n / 2 + 1;
+        if profile.len() != self.noise.len() || profile.iter().any(|p| p.len() != bins || p.iter().any(|v| !v.is_finite())) {
+            return false;
+        }
+        for (st, p) in self.noise.iter_mut().zip(profile) {
+            st.profile = Some(p);
+        }
+        true
+    }
+
     /// Back to adaptive tracking.
     pub fn clear_profile(&mut self) {
         self.noise.iter_mut().for_each(|s| s.profile = None);

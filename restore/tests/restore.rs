@@ -106,7 +106,8 @@ fn silence_in_is_silence_out_in_every_mode() {
     }
 }
 
-/// Neural is not built yet: it must be an exact delayed identity, never a broken effect.
+/// Without the `neural` feature Neural must be an exact delayed identity, never a broken effect.
+#[cfg(not(feature = "neural"))]
 #[test]
 fn neural_mode_passes_audio_untouched_with_the_common_latency() {
     let x = white(20_000, 0.5, 3);
@@ -119,6 +120,7 @@ fn neural_mode_passes_audio_untouched_with_the_common_latency() {
         assert_eq!(y[i], x[i - lat], "sample {i}");
     }
     assert!(!Mode::Neural.is_implemented());
+    assert!(!r.neural_ready());
 }
 
 #[test]
@@ -128,8 +130,10 @@ fn every_mode_reports_the_same_latency_and_offline_is_aligned() {
     let y = run(spectral(0.0), &x, None);
     let err = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(err < 1e-4, "offline output misaligned or altered, max err {err}");
-    let neural = run(Settings { mode: Mode::Neural, ..Settings::default() }, &x, None);
-    assert_eq!(neural, x, "offline Neural must be identity");
+    if !cfg!(feature = "neural") {
+        let neural = run(Settings { mode: Mode::Neural, ..Settings::default() }, &x, None);
+        assert_eq!(neural, x, "offline Neural without the network must be identity");
+    }
 }
 
 /// Syllable-like dry bursts (150 ms every 500 ms) through an exponential diffuse tail (RT60
@@ -169,4 +173,29 @@ fn dereverb_cuts_the_tail_between_syllables() {
     eprintln!("dereverb: tail {tail_cut:.1} dB, syllables {body_change:.1} dB");
     assert!(tail_cut < -6.0, "tail only cut {tail_cut:.1} dB");
     assert!(body_change > -3.0, "syllables lost {body_change:.1} dB");
+}
+
+/// A learned profile taken out of one Restorer and put into a fresh one (what a plugin does
+/// across save/reload) must produce the same output; a profile of the wrong shape is refused.
+#[test]
+fn learned_profile_survives_a_round_trip() {
+    let n = SR as usize * 3;
+    let noise = white(n, 0.05, 31);
+    let held: Vec<f32> = tone(n, 1000.0, 0.2).iter().zip(&noise).map(|(a, b)| a + b).collect();
+    let mut a = Restorer::new(SR, 1);
+    a.set(spectral(20.0));
+    a.learn(true);
+    a.process(&mut [&mut noise[..SR as usize].to_vec()]);
+    a.learn(false);
+    let profile = a.denoiser().profile().expect("profile after learning");
+    a.reset();
+    let mut b = Restorer::new(SR, 1);
+    b.set(spectral(20.0));
+    assert!(b.denoiser_mut().set_profile(profile.clone()), "same-shape profile must be accepted");
+    let (mut ya, mut yb) = (held.clone(), held);
+    a.process(&mut [&mut ya]);
+    b.process(&mut [&mut yb]);
+    assert_eq!(ya, yb, "restored profile behaves differently");
+    let mut c = Restorer::new(44_100.0 * 2.0, 1); // different FFT size → different bin count
+    assert!(!c.denoiser_mut().set_profile(profile), "a profile of another shape must be refused");
 }

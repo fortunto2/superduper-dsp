@@ -7,11 +7,15 @@
 //!   step); flip **Learn** on while only noise plays and off again to freeze a noise profile,
 //!   which then keeps held notes and steady tones the adaptive floor would eat.
 //! - **Dereverb** — late-reverb suppression for a voice in a room (assumed RT60 knob).
-//! - **Neural** — reserved for RNNoise (`nnnoiseless`); passes audio through until it lands.
+//! - **Neural** — RNNoise (pure-Rust `nnnoiseless`, model compiled in). It is trained at 48 kHz
+//!   only, so at any other host rate it refuses: exact passthrough, and the GUI says why.
+//!   Decided over resampling: a resampler pair would add latency and its own artefacts to
+//!   every mode's shared delay, and DAW video sessions run at 48 kHz anyway.
 //!
+//! **Mix** blends the latency-aligned dry signal back in, in every mode.
 //! Every mode reports the same latency (the FFT size, ~43 ms at 48 kHz) through the CLAP
 //! `latency` extension, so switching modes never moves the track against the others.
-//! The learned profile is not saved with the session yet: re-learn after reload.
+//! The learned Spectral profile is saved with the session (plugin state), per sample rate.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -29,7 +33,8 @@ use clack_extensions::params::{
     ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
     PluginParams,
 };
-use clack_extensions::state::PluginState;
+use clack_extensions::state::{PluginState, PluginStateImpl};
+use clack_common::stream::{InputStream, OutputStream};
 
 use clack_plugin::plugin::features::*;
 use clack_plugin::prelude::*;
@@ -58,6 +63,8 @@ pub const PARAMS: &[ParamDef] = &[
     // 1 while the noise-only passage plays; back to 0 freezes the profile.
     ParamDef { id: 6, name: b"Learn",     min: 0.0, max: 1.0,   default: 0.0,  unit: "" },
     ParamDef { id: 7, name: b"Output",    min: -24.0, max: 12.0, default: 0.0, unit: "dB" },
+    // Processed share: 100 = fully restored, lower lets some of the dry signal through.
+    ParamDef { id: 8, name: b"Mix",       min: 0.0, max: 100.0, default: 100.0, unit: "%" },
 ];
 
 const STEPPED_PARAMS: &[u32] = &[0, 6];
@@ -70,8 +77,9 @@ pub const P_AMOUNT: usize = 4;
 pub const P_RT60: usize = 5;
 pub const P_LEARN: usize = 6;
 pub const P_OUTPUT: usize = 7;
+pub const P_MIX: usize = 8;
 
-pub const MODE_NAMES: [&str; 3] = ["Spectral", "Dereverb", "Neural (soon)"];
+pub const MODE_NAMES: [&str; 3] = ["Spectral", "Dereverb", "Neural (RNNoise)"];
 
 /// The `Settings` a param snapshot asks for — the one mapping, shared with offline renders.
 pub fn settings_from(load: impl Fn(usize) -> f32) -> Settings {
@@ -82,6 +90,7 @@ pub fn settings_from(load: impl Fn(usize) -> f32) -> Settings {
         smoothing_pct: load(P_SMOOTHING),
         amount_pct: load(P_AMOUNT),
         rt60_s: load(P_RT60),
+        mix_pct: load(P_MIX),
     }
 }
 
@@ -104,6 +113,29 @@ pub struct SharedParamsInner {
     pub latency: AtomicU32,
     /// Whether a learned profile is in use, for the GUI.
     pub has_profile: AtomicBool,
+    /// False when Neural cannot run at the host's sample rate (it then passes through).
+    pub neural_ready: AtomicBool,
+    /// The learned profile as last frozen or loaded, what `save` writes.
+    pub saved_profile: parking_lot::Mutex<Option<SavedProfile>>,
+    /// A profile loaded from state, waiting for the audio thread to take it (no allocation there).
+    pub incoming_profile: parking_lot::Mutex<Option<SavedProfile>>,
+}
+
+/// A learned Spectral profile with the sample rate it belongs to (its bin count depends on it).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedProfile {
+    pub sample_rate: f32,
+    pub bins: Vec<Vec<f32>>,
+}
+
+/// Plugin state: the common params block plus the learned profile. States without the profile
+/// field (none were ever written, but the default keeps it tolerant) load as adaptive.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DenoiseState {
+    #[serde(flatten)]
+    base: superduper_dsp_sdk::clap_helpers::SimpleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<SavedProfile>,
 }
 
 pub struct PluginShared { pub inner: SharedParams }
@@ -122,6 +154,9 @@ impl PluginShared {
                 active_preset: AtomicU32::new(0),
                 latency: AtomicU32::new(2048),
                 has_profile: AtomicBool::new(false),
+                neural_ready: AtomicBool::new(true),
+                saved_profile: parking_lot::Mutex::new(None),
+                incoming_profile: parking_lot::Mutex::new(None),
             }),
         }
     }
@@ -171,8 +206,16 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
     ) -> Result<Self, PluginError> {
         shared.scope.set_sample_rate(cfg.sample_rate as f32);
         let sr = cfg.sample_rate as f32;
-        let restorer = Restorer::new(sr, 2);
+        let mut restorer = Restorer::new(sr, 2);
         shared.latency.store(restorer.latency() as u32, Ordering::Relaxed);
+        shared.neural_ready.store(restorer.neural_ready(), Ordering::Relaxed);
+        // A profile from the session (or from before a sample-rate change) comes back here,
+        // off the audio thread; one learned at another rate is dropped by its bin count.
+        shared.incoming_profile.lock().take();
+        if let Some(p) = shared.saved_profile.lock().as_ref().filter(|p| p.sample_rate == sr) {
+            restorer.denoiser_mut().set_profile(p.bins.clone());
+        }
+        shared.has_profile.store(restorer.denoiser().has_profile(), Ordering::Relaxed);
         slog!("activate sr={} latency={}", sr, restorer.latency());
         Ok(Self {
             shared,
@@ -203,6 +246,18 @@ impl<'a> clack_plugin::plugin::PluginAudioProcessor<'a, PluginShared, PluginMain
         if learn != self.learning {
             self.restorer.learn(learn);
             self.learning = learn;
+            if !learn {
+                // A user action, once per learn: the copy for `save` may allocate here.
+                if let (Some(bins), Some(mut slot)) = (self.restorer.denoiser().profile(), shared.saved_profile.try_lock()) {
+                    *slot = Some(SavedProfile { sample_rate: sr, bins });
+                }
+            }
+            shared.has_profile.store(self.restorer.denoiser().has_profile(), Ordering::Relaxed);
+        }
+        if let Some(p) = shared.incoming_profile.try_lock().and_then(|mut s| s.take()) {
+            if p.sample_rate == sr {
+                self.restorer.denoiser_mut().set_profile(p.bins);
+            }
             shared.has_profile.store(self.restorer.denoiser().has_profile(), Ordering::Relaxed);
         }
         let output_db_t = load(P_OUTPUT);
@@ -294,7 +349,57 @@ impl PluginAudioProcessorParams for PluginAudioProcessor<'_> {
     }
 }
 
-superduper_dsp_sdk::simple_state_impl!(PluginMainThread<'_>);
+impl SharedParamsInner {
+    /// The session state as JSON: params, bypass, preset, bus key and the learned profile.
+    pub fn save_state_json(&self) -> String {
+        let state = DenoiseState {
+            base: superduper_dsp_sdk::clap_helpers::SimpleState {
+                version: superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION,
+                params: self.params.iter().map(|a| a.load(Ordering::Relaxed)).collect(),
+                bypass: self.bypass.load(Ordering::Relaxed),
+                active_preset: self.active_preset.load(Ordering::Relaxed),
+                key_track: self.scope.key_track.lock().clone(),
+            },
+            profile: self.saved_profile.lock().clone(),
+        };
+        serde_json::to_string(&state).unwrap_or_default()
+    }
+
+    /// Restore from `save_state_json`; the profile is queued for the audio thread.
+    pub fn load_state_json(&self, json: &str) -> Result<(), &'static str> {
+        let state: DenoiseState = serde_json::from_str(json).map_err(|_| "state JSON read error")?;
+        if state.base.version != superduper_dsp_sdk::clap_helpers::SIMPLE_STATE_VERSION {
+            return Err("state version mismatch");
+        }
+        for (slot, v) in self.params.iter().zip(&state.base.params) {
+            slot.store(*v, Ordering::Relaxed);
+        }
+        self.bypass.store(state.base.bypass, Ordering::Relaxed);
+        self.active_preset.store(state.base.active_preset, Ordering::Relaxed);
+        *self.scope.key_track.lock() = state.base.key_track;
+        *self.saved_profile.lock() = state.profile.clone();
+        *self.incoming_profile.lock() = state.profile;
+        Ok(())
+    }
+}
+
+impl PluginStateImpl for PluginMainThread<'_> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        use std::io::Write;
+        output
+            .write_all(self.shared.save_state_json().as_bytes())
+            .map_err(|_| PluginError::Message("state write error"))
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        use std::io::Read;
+        let mut json = String::new();
+        input.read_to_string(&mut json).map_err(|_| PluginError::Message("state read error"))?;
+        self.shared.load_state_json(&json).map_err(PluginError::Message)?;
+        self.track_watch.rescan_param_values();
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CLAP GUI extension

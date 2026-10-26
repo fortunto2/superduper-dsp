@@ -3,7 +3,7 @@ name = "superduper-denoise"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Noise and room-reverb remover — Spectral (adaptive or learned profile) and Dereverb modes; Neural (RNNoise) reserved."
+description = "Noise and room-reverb remover — Spectral (adaptive or learned profile) and Dereverb modes; Neural (RNNoise, 48 kHz)."
 
 [lib]
 name = "superduper_denoise"
@@ -17,7 +17,9 @@ atomic_float = "1"
 parking_lot = "0.12"
 superduper-dsp-sdk = { path = "../../sdk" }
 superduper-synth-core = { path = "../../synth-core", features = ["gui"] }
-superduper-restore = { path = "../../restore" }
+superduper-restore = { path = "../../restore", features = ["neural"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 egui = "0.33"
 egui-baseview = { git = "https://github.com/BillyDM/egui-baseview" }

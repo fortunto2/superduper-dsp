@@ -80,7 +80,9 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 - **superduper-denoise** *(new)* — noise / room-reverb remover, `Mode` param:
   Spectral (STFT gating, adaptive minimum-statistics floor or a **Learn**ed
   profile that keeps held tones), Dereverb (late-reverb subtraction, RT60 knob),
-  Neural (reserved for RNNoise/`nnnoiseless`, passthrough until then). Same
+  Neural (RNNoise via pure-Rust `nnnoiseless`, feature `neural` on restore,
+  48 kHz only — other rates pass through; unreliable on noise with no voice, see
+  its README), Mix for all modes, learned profile saved in plugin state. Same
   latency in every mode (FFT size, 43 ms @ 48 kHz) via CLAP `latency`. DSP lives
   in the zero-dependency `restore/` crate (`superduper-restore`, ported from
   FilmCraft audio-dsp, MIT — see `restore/NOTICE`) so video tools can run it

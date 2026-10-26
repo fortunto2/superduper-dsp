@@ -8,6 +8,12 @@ description = "Audio restoration DSP: spectral noise gating (adaptive or learned
 [lib]
 name = "superduper_restore"
 
-# Deliberately empty, like superduper-loudness: the plugin wraps it, and video
-# tools run it offline over a whole file without the plugin stack.
+# Empty by default, like superduper-loudness: the plugin wraps it, and video and
+# wasm tools run it offline without the plugin stack. `neural` pulls RNNoise.
 [dependencies]
+nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
+
+[features]
+default = []
+# Neural mode: RNNoise (pure Rust, model compiled in, 48 kHz only).
+neural = ["dep:nnnoiseless"]

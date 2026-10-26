@@ -90,3 +90,92 @@ fn default_spectral_pulls_steady_noise_down() {
     eprintln!("steady noise through the plugin: {change:.1} dB");
     assert!(change < -8.0, "noise only changed {change:.1} dB");
 }
+
+/// The learned Spectral profile is part of the session: save, load into a fresh instance,
+/// and the profile comes back both for the next save and queued for the audio thread.
+#[test]
+fn learned_profile_is_saved_in_plugin_state() {
+    use std::sync::atomic::Ordering;
+    use superduper_denoise::{PluginShared, SavedProfile, P_REDUCTION};
+    let a = PluginShared::new();
+    let bins: Vec<Vec<f32>> = (0..2).map(|c| (0..1025).map(|k| (k + c) as f32 * 1e-6).collect()).collect();
+    *a.saved_profile.lock() = Some(SavedProfile { sample_rate: 48_000.0, bins: bins.clone() });
+    a.params[P_REDUCTION].store(21.0, Ordering::Relaxed);
+    let json = a.save_state_json();
+    eprintln!("state with profile: {} bytes", json.len());
+    let b = PluginShared::new();
+    b.load_state_json(&json).expect("load");
+    assert_eq!(b.params[P_REDUCTION].load(Ordering::Relaxed), 21.0);
+    assert_eq!(b.saved_profile.lock().as_ref().map(|p| p.bins.clone()), Some(bins.clone()));
+    assert_eq!(b.incoming_profile.lock().as_ref().map(|p| p.bins.clone()), Some(bins));
+    // No profile: the field is omitted and loading stays adaptive.
+    let c = PluginShared::new();
+    let plain = c.save_state_json();
+    assert!(!plain.contains("profile"));
+    PluginShared::new().load_state_json(&plain).expect("plain state loads");
+}
+
+/// Render with Mode = Neural and the given Mix, every other param at its default.
+fn render_neural(x: &[f32], mix: f64) -> (Vec<f32>, Vec<f32>) {
+    use clack_common::events::{event_types::ParamValueEvent, Pckn};
+    use clack_common::utils::{ClapId, Cookie};
+    let mode = ClapId::new(superduper_denoise::P_MODE as u32);
+    let mix_id = ClapId::new(superduper_denoise::P_MIX as u32);
+    sdsp_test_kit::host::render_with::<Target>(SR, 512, x, x, move |pos, buf| {
+        if pos == 0 {
+            buf.push(&ParamValueEvent::new(0, mode, Pckn::match_all(), 2.0, Cookie::empty()));
+            buf.push(&ParamValueEvent::new(0, mix_id, Pckn::match_all(), mix, Cookie::empty()));
+        }
+    })
+}
+
+/// The voiced test talker from restore/tests/neural.rs, shortened: harmonic stack on a gliding
+/// f0 with formant bumps, 4 Hz syllables with silent gaps.
+fn voiced(n: usize) -> Vec<f32> {
+    let bump = |f: f32, c: f32, w: f32| (-((f - c) / w).powi(2)).exp();
+    let mut phase = 0.0f32;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / SR as f32;
+            let f0 = 140.0 + 30.0 * (std::f32::consts::TAU * 0.7 * t).sin();
+            phase += std::f32::consts::TAU * f0 / SR as f32;
+            let syl = (std::f32::consts::TAU * 4.0 * t).sin().max(0.0).powf(0.7);
+            let s: f32 = (1..40)
+                .map(|h| f0 * h as f32)
+                .take_while(|&f| f <= 8000.0)
+                .enumerate()
+                .map(|(k, f)| (bump(f, 700.0, 180.0) + 0.6 * bump(f, 1220.0, 220.0) + 0.3 * bump(f, 2600.0, 350.0) + 0.02) * (phase * (k + 1) as f32).sin())
+                .sum();
+            0.08 * s * syl
+        })
+        .collect()
+}
+
+/// Neural through the real CLAP host at 48 kHz: noise between syllables is removed, Mix 50 lands
+/// in between, and process() stays allocation-free with the network and the mix path running.
+/// Noise alone is the wrong probe for RNNoise: offline, white noise with no voice in it was cut
+/// anywhere from −1 to −46 dB depending only on the noise seed. With a voice present the result
+/// is stable (SNR +4 / +9 / +10.5 dB at noise 0.01 / 0.03 / 0.06, six seeds each).
+#[test]
+fn neural_through_the_plugin_cleans_gaps_without_allocating() {
+    let frames = SR as usize * 4;
+    let s = voiced(frames);
+    let x: Vec<f32> = s.iter().zip(probes::noise(frames, 0.03)).map(|(a, b)| a + b).collect();
+    // The host gets the output 2048 samples late (the reported latency), so compare shifted.
+    const LAT: usize = 2048;
+    let gaps: Vec<usize> = (SR as usize..frames - LAT).filter(|&i| s[i].abs() < 1e-6).collect();
+    let gap_db = |y: &[f32]| {
+        let wet: f64 = gaps.iter().map(|&i| (y[i + LAT] as f64).powi(2)).sum();
+        let dry: f64 = gaps.iter().map(|&i| (x[i] as f64).powi(2)).sum();
+        10.0 * (wet / dry).log10()
+    };
+    let (full, _) = render_neural(&x, 100.0);
+    let (half, _) = render_neural(&x, 50.0);
+    let (cut, cut_half) = (gap_db(&full), gap_db(&half));
+    eprintln!("neural through the plugin: noise in gaps {cut:.1} dB at mix 100, {cut_half:.1} dB at mix 50");
+    assert!(cut < -12.0, "neural only cut {cut:.1} dB between syllables");
+    assert!(cut_half > cut + 3.0 && cut_half < -3.0, "mix 50 should land between: {cut_half:.1} dB");
+    sdsp_test_kit::alloc::reset();
+    let _ = render_neural(&probes::noise(1 << 14, 0.3), 70.0);
+    sdsp_test_kit::alloc::assert_rt_clean("superduper-denoise neural", (1 << 14) / 512);
+}

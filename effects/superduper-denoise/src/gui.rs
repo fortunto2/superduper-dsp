@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use superduper_synth_core::gui as core_gui;
 
 use crate::presets::PRESETS;
-use crate::{SharedParams, MODE_NAMES, PARAMS, P_AMOUNT, P_LEARN, P_MODE, P_OUTPUT, P_REDUCTION, P_RT60, P_SMOOTHING, P_THRESHOLD};
+use crate::{SharedParams, MODE_NAMES, PARAMS, P_AMOUNT, P_LEARN, P_MIX, P_MODE, P_OUTPUT, P_REDUCTION, P_RT60, P_SMOOTHING, P_THRESHOLD};
 
 pub const DEFAULT_WIDTH: u32 = 460;
 pub const DEFAULT_HEIGHT: u32 = 340;
@@ -127,10 +127,17 @@ fn draw(ctx: &egui::Context, state: &mut GuiState) {
                     hint(ui, "For a voice in a room; long sustained sounds get cut too");
                 }),
                 _ => core_gui::section(ui, "Neural", |ui| {
-                    hint(ui, "RNNoise is not built in yet: audio passes through unchanged");
+                    hint(ui, if state.shared.neural_ready.load(Ordering::Relaxed) {
+                        "RNNoise: keeps the voice, removes everything else. Mix sets the strength"
+                    } else {
+                        "RNNoise runs at 48 kHz only: set the project to 48 kHz. Passing through now"
+                    });
                 }),
             }
-            core_gui::section(ui, "Output", |ui| row(ui, P_OUTPUT));
+            core_gui::section(ui, "Output", |ui| {
+                row(ui, P_MIX);
+                row(ui, P_OUTPUT);
+            });
         });
     });
 }

@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 OUT="$ROOT/dist/release-mac-$V"; rm -rf "$OUT"; mkdir -p "$OUT/macos" "$OUT/vst3" "$OUT/au"
 T="${CARGO_TARGET_DIR:-$ROOT/target}"
-cargo build --release --workspace --exclude superduper-denoise --lib 2>&1 | tail -1
+cargo build --release --workspace --lib 2>&1 | tail -1
 grep -E '^\s+"superduper-' cmake/plugin_list.cmake | tr -d ' "' | while IFS='|' read -r crate name clap_id _rest; do
   stem="${crate//-/_}"
   dylib="$T/release/lib${stem}.dylib"

@@ -15,8 +15,14 @@
 //!   Integrated (gated full-program) loudness, all in LUFS
 //! - `TruePeakDetector` — 4× linear-interp upsample + max sample,
 //!   results in dBTP
+//!
+//! Zero dependencies on purpose: the plugins reach it through
+//! `superduper_synth_core::loudness` (a re-export), and offline/video tools
+//! use this crate directly without pulling fundsp/realfft/wide.
 
-use crate::dsp_blocks::Biquad;
+mod biquad;
+
+pub use biquad::Biquad;
 
 /// K-weighting filter — two biquads per channel: stage 1 is a
 /// high-shelf at 1681 Hz (+4 dB), stage 2 is a high-pass at 38 Hz.
@@ -121,10 +127,14 @@ impl LoudnessMeter {
     /// Mono feed — BS.1770 dual-mono: one K-filter, channel sum = 2·k².
     /// Exists because the limiter's mono branch used to call
     /// `process_stereo(x, x)` and pay for two identical filter chains.
+    pub fn sample_rate(&self) -> f32 {
+        self.sr
+    }
+
     #[inline]
     pub fn process_mono(&mut self, x: f32) -> bool {
         let k = self.k_l.process(x);
-        self.block_sum += (2.0 * (k as f64) * (k as f64)) as f64;
+        self.block_sum += 2.0 * (k as f64) * (k as f64);
         self.block_samples_remaining -= 1;
         if self.block_samples_remaining == 0 {
             self.commit_block();

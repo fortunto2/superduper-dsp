@@ -8,6 +8,8 @@ members = [
     "sdk-macros",
     "sdk-build",
     "synth-core",
+    "loudness",
+    "restore",
     "connectome-core",
     "mobile/fly-ios",
     "effects/example-passthrough",

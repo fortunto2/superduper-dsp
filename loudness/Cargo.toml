@@ -1,0 +1,13 @@
+[package]
+name = "superduper-loudness"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "ITU-R BS.1770-4 / EBU R128 loudness (LUFS M/S/I) and true-peak metering. Zero dependencies, wasm-friendly."
+
+[lib]
+name = "superduper_loudness"
+
+# Deliberately empty: the meter is shared by the CLAP plugins (via synth-core),
+# the offline tools and video projects that cannot pull fundsp/realfft/wide.
+[dependencies]

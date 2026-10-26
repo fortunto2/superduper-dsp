@@ -9,6 +9,7 @@ description = "Shared DSP code for SuperDuper synth/effect plugins (ported from 
 name = "superduper_synth_core"
 
 [dependencies]
+superduper-loudness = { path = "../loudness" }
 fundsp = "0.23"
 realfft = "3.5"
 serde = { version = "1", features = ["derive"] }

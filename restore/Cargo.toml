@@ -1,0 +1,13 @@
+[package]
+name = "superduper-restore"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Audio restoration DSP: spectral noise gating (adaptive or learned profile) and late-reverb suppression. Zero dependencies, offline or real-time."
+
+[lib]
+name = "superduper_restore"
+
+# Deliberately empty, like superduper-loudness: the plugin wraps it, and video
+# tools run it offline over a whole file without the plugin stack.
+[dependencies]

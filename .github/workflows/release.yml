@@ -96,6 +96,7 @@ jobs:
             -p superduper-multiband \
             -p superduper-morph \
             -p superduper-double \
+            -p superduper-denoise \
             -p superduper-space \
             -p superduper-synth-core
 
@@ -318,6 +319,7 @@ jobs:
             -p superduper-multiband `
             -p superduper-morph `
             -p superduper-double `
+            -p superduper-denoise `
             -p superduper-space `
             -p superduper-synth-core
 

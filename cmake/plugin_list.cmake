@@ -52,5 +52,6 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-stretch|SuperDuperStretch|co.superduperai.stretch|co.superduperai.wrappers.stretch|aufx|sdSt"
     "superduper-multiband|SuperDuperMultiband|co.superduperai.multiband|co.superduperai.wrappers.multiband|aufx|sdMb"
     "superduper-double|SuperDuperDouble|co.superduperai.double|co.superduperai.wrappers.double|aufx|sdDb"
+    "superduper-denoise|SuperDuperDenoise|co.superduperai.denoise|co.superduperai.wrappers.denoise|aufx|sdDn"
     "superduper-morph|SuperDuperMorph|co.superduperai.morph|co.superduperai.wrappers.morph|aufx|sdMo"
 )

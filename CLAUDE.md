@@ -77,6 +77,16 @@ unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 - **superduper-double** *(new)* — vocal doubler: up to 4 PSOLA heads with
   independent slow time/pitch drift (a second take, not a delay), Tuned /
   Tuned Lead modes on Tune's scale quantiser, Key Open from the bus.
+- **superduper-denoise** *(new)* — noise / room-reverb remover, `Mode` param:
+  Spectral (STFT gating, adaptive minimum-statistics floor or a **Learn**ed
+  profile that keeps held tones), Dereverb (late-reverb subtraction, RT60 knob),
+  Neural (reserved for RNNoise/`nnnoiseless`, passthrough until then). Same
+  latency in every mode (FFT size, 43 ms @ 48 kHz) via CLAP `latency`. DSP lives
+  in the zero-dependency `restore/` crate (`superduper-restore`, ported from
+  FilmCraft audio-dsp, MIT — see `restore/NOTICE`) so video tools can run it
+  offline (`process_offline`). BS.1770 metering likewise moved to the
+  zero-dependency `loudness/` crate (`superduper-loudness`); synth-core
+  re-exports it as `synth_core::loudness`.
 - **superduper-nam** *(new)* — Neural Amp Modeler. Pure-Rust port
   of Steven Atkinson's WaveNet / LSTM / Linear inference (see
   `synth_core::nam`), bit-compatible weight ordering with NAM

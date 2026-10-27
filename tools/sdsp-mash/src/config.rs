@@ -135,6 +135,51 @@ pub struct TrackConfig {
     /// following pause (dotted-quarter feedback). Vocals only.
     #[serde(default)]
     pub delay_throw: bool,
+    /// Optional noise / room clean-up, first in the track chain (before the
+    /// high-pass), through SuperDuper Denoise's offline path.
+    #[serde(default)]
+    pub denoise: Option<TrackDenoiseConfig>,
+}
+
+/// `[track.denoise]`: the Denoise plugin's modes, rendered offline over the stem.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TrackDenoiseConfig {
+    /// "spectral" (noise floor), "dereverb" (room tail, voice only) or "neural"
+    /// (RNNoise, voice, 48 kHz only; other rates pass through).
+    pub mode: DenoiseMode,
+    pub reduction_db: f32,
+    pub threshold_db: f32,
+    pub amount_pct: f32,
+    pub rt60_s: f32,
+    pub mix_pct: f32,
+    /// Spectral: learn the noise from `[start_s, len_s]` of noise only, then
+    /// hold that profile; without it the floor is tracked as the stem plays.
+    pub learn_s: Option<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DenoiseMode {
+    #[default]
+    Spectral,
+    Dereverb,
+    Neural,
+}
+
+impl Default for TrackDenoiseConfig {
+    fn default() -> Self {
+        let d = superduper_restore::Settings::default();
+        Self {
+            mode: DenoiseMode::Spectral,
+            reduction_db: d.reduction_db,
+            threshold_db: d.threshold_db,
+            amount_pct: d.amount_pct,
+            rt60_s: d.rt60_s,
+            mix_pct: d.mix_pct,
+            learn_s: None,
+        }
+    }
 }
 
 /// A per-track compressor (feed-forward, soft-knee). Reuses the same static
@@ -644,6 +689,25 @@ mod tests {
         assert_eq!(comp.ratio, 3.0);
         assert_eq!(comp.makeup_db, 2.0);
         assert_eq!(comp.knee_db, 6.0); // default
+    }
+
+    #[test]
+    fn parses_track_denoise_with_plugin_defaults() {
+        let text = r#"
+            bpm = 120.0
+            [[track]]
+            path = "vocal.wav"
+            role = "vocal"
+            [track.denoise]
+            mode = "neural"
+            mix_pct = 70.0
+        "#;
+        let cfg = MashConfig::parse(text).expect("parse");
+        let d = cfg.tracks[0].denoise.as_ref().expect("denoise");
+        assert_eq!(d.mode, DenoiseMode::Neural);
+        assert_eq!(d.mix_pct, 70.0);
+        assert_eq!(d.reduction_db, superduper_restore::Settings::default().reduction_db);
+        assert!(d.learn_s.is_none());
     }
 
     #[test]

@@ -198,6 +198,9 @@ pub fn prepare(cfg: &MashConfig) -> Result<Prepared, RenderError> {
             l = sl;
             r = srr;
         }
+        if let Some(d) = &t.denoise {
+            crate::track_fx::apply_denoise(&mut l, &mut r, project_sr, d);
+        }
         if let Some(hz) = t.highpass_hz {
             apply_highpass(&mut l, &mut r, project_sr, hz);
         }

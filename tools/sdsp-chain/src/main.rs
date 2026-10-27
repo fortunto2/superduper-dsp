@@ -250,11 +250,6 @@ macro_rules! impl_stage {
             let sr = io.input.sr;
             let frames = io.input.frames();
             let block = BLOCK as usize;
-            // Round UP: dropping the final partial block would silently shorten
-            // every render by up to BLOCK-1 samples.
-            let n_blocks = (frames + block - 1) / block;
-            let padded = n_blocks * block;
-
             let stopped = plugin
                 .activate(
                     |_, _| (),
@@ -265,6 +260,21 @@ macro_rules! impl_stage {
                     },
                 )
                 .expect("activate");
+            // A plugin that looks ahead (LinEq, Denoise) reports its delay; feed
+            // that many extra samples and drop as many from the front, so a
+            // stage's output lines up with its input as it does in a DAW with
+            // delay compensation.
+            let lat = {
+                let mut handle = plugin.plugin_handle();
+                handle
+                    .get_extension::<clack_extensions::latency::PluginLatency>()
+                    .map(|ext| ext.get(&mut handle) as usize)
+                    .unwrap_or(0)
+            };
+            // Round UP: dropping the final partial block would silently shorten
+            // every render by up to BLOCK-1 samples.
+            let n_blocks = (frames + lat).div_ceil(block);
+            let padded = n_blocks * block;
 
             let mut in_l = io.input.l.clone();
             let mut in_r = io.input.r.clone();
@@ -397,6 +407,8 @@ macro_rules! impl_stage {
             });
             plugin.deactivate(stopped_back);
 
+            out_l.drain(..lat);
+            out_r.drain(..lat);
             out_l.truncate(frames);
             out_r.truncate(frames);
             Audio { l: out_l, r: out_r, sr }
@@ -437,6 +449,7 @@ impl_stage!(stage_soothe,     superduper_soothe::SuperDuperSoothe,         "co.s
 impl_stage!(stage_multiband,  superduper_multiband::SuperDuperMultiband,   "co.superduperai.multiband",  "/sdsp-chain/mb");
 impl_stage!(stage_morph,      superduper_morph::SuperDuperMorph,           "co.superduperai.morph",      "/sdsp-chain/mrf");
 impl_stage!(stage_double,     superduper_double::SuperDuperDouble,         "co.superduperai.double",     "/sdsp-chain/dbl");
+impl_stage!(stage_denoise,    superduper_denoise::SuperDuperDenoise,       "co.superduperai.denoise",    "/sdsp-chain/dns");
 
 macro_rules! impl_instrument {
     ($fn_name:ident, $plugin_ty:path, $bundle_id:literal, $entry_path:literal, $n_in:expr) => {
@@ -704,6 +717,9 @@ fn registry() -> &'static [PluginSpec] {
         // Morph's sidechain is the target timbre; Double is a vocal doubler.
         PluginSpec { key: "morph",      params: superduper_morph::PARAMS,      presets: || superduper_morph::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_morph,      sidechain: true  },
         PluginSpec { key: "double",     params: superduper_double::PARAMS,     presets: || superduper_double::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_double,     sidechain: false },
+        // Learn offline = automate it: `automate = { Learn = [[0.0, 1.0], [1.5, 1.0], [1.51, 0.0]] }`
+        // learns the first 1.5 s (noise only) and freezes that profile for the rest.
+        PluginSpec { key: "denoise",    params: superduper_denoise::PARAMS,    presets: || superduper_denoise::presets::PRESETS.iter().map(|p| p.name).collect(), render: stage_denoise,    sidechain: false },
     ]
 }
 
@@ -1639,3 +1655,6 @@ fn real_main() -> Result<(), String> {
     println!("\nWrote {} ({:.2} s)", out_path.display(), final_mix.frames() as f64 / sr);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -162,12 +162,27 @@ Plugins with a sidechain input: `compressor`, `reverb`, `supermass`, `delay`,
 
 ## Plugins
 
-`--list` is authoritative. Currently 21: `eq`, `lineq`, `compressor`, `saturator`,
+`--list` is authoritative. Currently 25: `eq`, `lineq`, `compressor`, `saturator`,
 `limiter`, `midside`, `vocal`, `filter`, `reverb`, `supermass`, `delay`, `chorus`,
 `formant`, `granular`, `stretch`, `pitch`, `tune`, `vocoder`, `harmonic`, `wind`,
-`soothe`. Note: `tune`/`pitch` report ~57 ms latency and the chain has no PDC —
-a serial chain just shifts as a whole, but in a multi-track mix that track lands
-late; nudge the input if the timing matters.
+`soothe`, `multiband`, `morph`, `double`, `denoise`.
+
+**Latency is compensated.** Every stage asks the plugin for its CLAP latency and drops
+that many samples from the front, as a DAW with delay compensation does, so a stage's
+output lines up with its input: `lineq` (FIR), `denoise` (2048 samples) and any other
+look-ahead plugin no longer shift a track late in a multi-track mix.
+
+**`denoise`**: `Mode` 0 = Spectral (noise floor), 1 = Dereverb (room tail, voice only),
+2 = Neural (RNNoise, voice, 48 kHz only; other rates pass through). `Reduction`/`Threshold`
+for Spectral, `Amount`/`RT60` for Dereverb, `Mix` on all. Learning a noise profile offline
+is automation on `Learn`: on over a noise-only passage, off before the material.
+
+```toml
+[[stage]]
+plugin = "denoise"
+params = { Mode = 0.0, Reduction = 20.0 }
+automate = { Learn = [[0.0, 1.0], [0.9, 1.0], [0.95, 0.0]] }   # learn the first 0.9 s
+```
 
 ## What it guarantees
 

@@ -21,6 +21,8 @@ superduper-lineq      = { path = "../../effects/superduper-lineq" }
 superduper-filter     = { path = "../../effects/superduper-filter" }
 
 superduper-synth-core = { path = "../../synth-core" }
+# Track clean-up through Denoise's offline path (Spectral / Dereverb / Neural).
+superduper-restore    = { path = "../../restore", features = ["neural"] }
 superduper-dsp-sdk    = { path = "../../sdk" }
 clack-host = { version = "0.1", features = ["clack-plugin"] }
 clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "state", "clack-host"] }

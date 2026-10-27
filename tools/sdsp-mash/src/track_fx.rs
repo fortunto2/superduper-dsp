@@ -10,6 +10,32 @@ use superduper_synth_core::dsp_blocks::{compressor_gain_db, tape_clip, Biquad, E
 use crate::config::TrackCompConfig;
 use crate::duck::{db_to_lin, lin_to_db};
 
+/// Clean a stem with SuperDuper Denoise's offline path (latency already removed,
+/// so the stem stays on its grid).
+pub fn apply_denoise(l: &mut Vec<f32>, r: &mut Vec<f32>, sr: u32, cfg: &crate::config::TrackDenoiseConfig) {
+    use crate::config::DenoiseMode;
+    use superduper_restore::{process_offline, Mode, Settings};
+    let settings = Settings {
+        mode: match cfg.mode {
+            DenoiseMode::Spectral => Mode::Spectral,
+            DenoiseMode::Dereverb => Mode::Dereverb,
+            DenoiseMode::Neural => Mode::Neural,
+        },
+        reduction_db: cfg.reduction_db,
+        threshold_db: cfg.threshold_db,
+        amount_pct: cfg.amount_pct,
+        rt60_s: cfg.rt60_s,
+        mix_pct: cfg.mix_pct,
+        ..Settings::default()
+    };
+    let profile = cfg.learn_s.map(|[start, len]| ((start * sr as f64) as usize, (len * sr as f64) as usize));
+    let mut ch = [std::mem::take(l), std::mem::take(r)];
+    process_offline(&mut ch, sr as f32, settings, profile);
+    let [nl, nr] = ch;
+    *l = nl;
+    *r = nr;
+}
+
 /// Vocal delay-throw (v2.3): the last word of each phrase is thrown into a
 /// dotted-quarter feedback echo that rings into the following pause — the
 /// dubby Fred-again vocal tail. Phrase boundaries are detected as loud→quiet
@@ -296,5 +322,33 @@ mod tests {
         let near = rms(&l[word..word + sr as usize / 4]);
         let far = rms(&l[word + 3 * sr as usize / 4..n]);
         assert!(far < near, "echoes should decay: near {near}, far {far}");
+    }
+
+    #[test]
+    fn denoise_learned_from_the_room_tone_cleans_the_gaps_and_keeps_alignment() {
+        // 1 s of noise to learn from, then 250 ms bursts of tone over the same noise.
+        let n = SR as usize * 3;
+        let mut seed = 0x2468_ace1u32;
+        let mut voiced = Vec::with_capacity(n);
+        let mut l: Vec<f32> = (0..n).map(|i| {
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            let on = i >= SR as usize && ((i - SR as usize) / (SR as usize / 4)) % 2 == 0;
+            voiced.push(on);
+            let tone = if on { 0.3 * (i as f32 * 220.0 * std::f32::consts::TAU / SR as f32).sin() } else { 0.0 };
+            tone + (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.03
+        }).collect();
+        let mut r = l.clone();
+        let input = l.clone();
+        let cfg = crate::config::TrackDenoiseConfig { reduction_db: 20.0, learn_s: Some([0.0, 0.9]), ..Default::default() };
+        apply_denoise(&mut l, &mut r, SR, &cfg);
+        assert_eq!(l.len(), input.len());
+        let gaps = |x: &[f32]| -> f64 { (SR as usize..n).filter(|&i| !voiced[i]).map(|i| (x[i] as f64).powi(2)).sum() };
+        let drop_db = 10.0 * (gaps(&l) / gaps(&input)).log10();
+        assert!(drop_db < -10.0, "gaps moved {drop_db:.1} dB");
+        // Aligned: the tone in the bursts keeps its phase (a 2048-sample shift would not).
+        let burst: Vec<usize> = (SR as usize + 2_000..SR as usize + 9_000).collect();
+        let dot: f64 = burst.iter().map(|&i| (l[i] * input[i]) as f64).sum();
+        let norm: f64 = burst.iter().map(|&i| (input[i] as f64).powi(2)).sum();
+        assert!(dot / norm > 0.8, "burst correlates {:.2} with the input", dot / norm);
     }
 }

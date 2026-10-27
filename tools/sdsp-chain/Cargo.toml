@@ -38,6 +38,7 @@ superduper-soothe     = { path = "../../effects/superduper-soothe" }
 superduper-multiband  = { path = "../../effects/superduper-multiband" }
 superduper-morph      = { path = "../../effects/superduper-morph" }
 superduper-double     = { path = "../../effects/superduper-double" }
+superduper-denoise    = { path = "../../effects/superduper-denoise" }
 # Instruments: not renderable here (the chain has no MIDI), but their parameter
 # and preset tables are what you need when driving them over MCP in a DAW.
 superduper-wave       = { path = "../../effects/superduper-wave" }
@@ -49,7 +50,7 @@ superduper-sampler    = { path = "../../effects/superduper-sampler" }
 superduper-synth-core = { path = "../../synth-core" }
 superduper-dsp-sdk    = { path = "../../sdk" }
 clack-host = { version = "0.1", features = ["clack-plugin"] }
-clack-extensions = { version = "0.1", features = ["params", "audio-ports", "log", "state", "clack-host"] }
+clack-extensions = { version = "0.1", features = ["params", "audio-ports", "latency", "log", "state", "clack-host"] }
 clack-plugin = "0.1"
 clack-common = "0.1"
 serde = { version = "1", features = ["derive"] }

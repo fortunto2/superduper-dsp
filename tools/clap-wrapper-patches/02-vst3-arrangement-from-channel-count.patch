@@ -1,0 +1,23 @@
+diff --git a/src/wrapasvst3.cpp b/src/wrapasvst3.cpp
+index b071cc0..409999a 100644
+--- a/src/wrapasvst3.cpp
++++ b/src/wrapasvst3.cpp
+@@ -731,6 +731,18 @@ static Vst::SpeakerArrangement speakerArrFromPortType(const char *port_type)
+ void ClapAsVst3::addAudioBusFrom(const clap_audio_port_info_t *info, bool is_input)
+ {
+   auto spk = speakerArrFromPortType(info->port_type);
++  if (Vst::SpeakerArr::getChannelCount(spk) != (int32)info->channel_count)
++  {
++    // A port type with no VST3 arrangement (none, surround, ambisonic) mapped to
++    // kEmpty: 0 speakers on a bus that reports channel_count channels, which the
++    // SDK validator rejects. Use one bit per channel, the arrangement
++    // setBusArrangements() above already requires.
++    spk = 0;
++    for (auto c = 0U; c < info->channel_count; ++c)
++    {
++      spk = (spk << 1) + 1;
++    }
++  }
+   auto bustype = Vst::BusTypes::kMain;  // actually, everything is main, except
+   if (is_input && !(info->flags & CLAP_AUDIO_PORT_IS_MAIN))
+   {

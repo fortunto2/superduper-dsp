@@ -83,6 +83,18 @@ function(sdsp_add_wrapper)
     string(MAKE_C_IDENTIFIER "${SDSP_CRATE}" sdsp_id)
 
     # ---- VST3 ----
+    # clap-wrapper compiles its VST3 glue into a static lib per plugin, but with
+    # our options (no TUID, no note expressions) every copy is the same 11 files.
+    # Compiled 36 times it was 385 of 590 compile units and, with unbounded
+    # `make -j`, sank the 3-core release runner into swap for hours. The first
+    # plugin builds the lib; the rest alias it, which `target_add_vst3_wrapper`
+    # honours through its `if (NOT TARGET <tg>-clap-wrapper-vst3-lib)` guard.
+    get_property(sdsp_vst3_lib GLOBAL PROPERTY SDSP_SHARED_VST3_LIB)
+    if (sdsp_vst3_lib)
+        add_library(${sdsp_id}_vst3-clap-wrapper-vst3-lib ALIAS ${sdsp_vst3_lib})
+    else()
+        set_property(GLOBAL PROPERTY SDSP_SHARED_VST3_LIB ${sdsp_id}_vst3-clap-wrapper-vst3-lib)
+    endif()
     add_library(${sdsp_id}_vst3 MODULE)
     target_add_vst3_wrapper(
         TARGET ${sdsp_id}_vst3

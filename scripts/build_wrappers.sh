@@ -73,7 +73,10 @@ cmake -B "$BUILD_DIR" -S "$ROOT" \
     -DCMAKE_C_FLAGS="-Wno-unknown-warning-option"
 
 echo "==> building wrappers"
-cmake --build "$BUILD_DIR" --config Release --parallel
+# A bare `--parallel` is `make -j` with no limit: 210 clang processes and 15 GB at
+# once on a laptop, hours of swap on a 3-core 7 GB release runner. One job per core.
+JOBS="${SDSP_WRAPPER_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}"
+cmake --build "$BUILD_DIR" --config Release --parallel "$JOBS"
 
 echo
 echo "==> built wrappers:"

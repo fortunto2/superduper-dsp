@@ -170,9 +170,12 @@ jobs:
             cmake-wrappers-${{ runner.os }}-
 
       - name: Build VST3 + AU wrappers
-        # A hang fails in 90 minutes, not at the job's limit: v0.15.0 sat 6 h
-        # here (11.5 min on a laptop). Not `timeout 90m` in the script — macOS
-        # runners have no GNU timeout, and that line failed 0.16.1 with 127.
+        # Guard, not the fix: v0.12.1 took 5.5 h here and v0.15.0-0.17.1 hit this
+        # limit, because a bare `--parallel` was `make -j` with no bound (210
+        # clang processes, 15 GB) on a 3-core 7 GB runner. build_wrappers.sh now
+        # runs one job per core and builds the VST3 glue once instead of 36 times:
+        # 67 s locally at 3 jobs. Not `timeout 90m` in the script: macOS runners
+        # have no GNU timeout, and that line failed 0.16.1 with 127.
         timeout-minutes: 90
         env:
           V: ${{ steps.ver.outputs.version }}

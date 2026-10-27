@@ -8,14 +8,11 @@
 #
 # `make` (no args) is the same as `make all`.
 
-.PHONY: help all clap wrappers install test test-fast clean release ios \
-        tools validate hooks validator-install \
-        ambient compressor delay eq kubyz limiter pad reverb saturator \
-        spectrum supermass vocal wave
+# `make wave` builds one plugin: every short name in cmake/plugin_list.cmake.
+PLUGINS := $(shell grep -oE '^ +"superduper-[a-z0-9-]+' cmake/plugin_list.cmake | sed 's/.*superduper-//')
 
-# Map short plugin names → bundle script names, so `make wave` works.
-PLUGINS := ambient compressor delay eq kubyz limiter pad reverb saturator \
-           spectrum supermass vocal wave
+.PHONY: help all clap wrappers install test test-fast clean release ios \
+        tools validate hooks validator-install $(PLUGINS)
 
 help:
 	@echo "SuperDuper DSP build targets:"
@@ -60,7 +57,7 @@ ios:
 
 # Per-plugin shortcuts.
 $(PLUGINS):
-	@./scripts/build_$@_bundle.sh
+	@./scripts/build_plugin_bundle.sh $@
 
 validate:
 	@python3 tools/validate_claps.py

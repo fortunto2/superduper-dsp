@@ -61,43 +61,9 @@ jobs:
 
       - name: Run tests
         run: |
+          # Every plugin in cmake/plugin_list.cmake plus synth-core, like the build step.
           cargo test --release --no-fail-fast \
-            -p superduper-reverb \
-            -p superduper-supermass \
-            -p superduper-spectrum \
-            -p superduper-saturator \
-            -p superduper-delay \
-            -p superduper-compressor \
-            -p superduper-eq \
-            -p superduper-limiter \
-            -p superduper-ambient \
-            -p superduper-pad \
-            -p superduper-vocal \
-            -p superduper-wave \
-            -p superduper-kubyz \
-            -p superduper-chorus \
-            -p superduper-drum \
-            -p superduper-sampler \
-            -p superduper-piano \
-            -p superduper-looper \
-            -p superduper-filter \
-            -p superduper-midside \
-            -p superduper-lineq \
-            -p superduper-soothe \
-            -p superduper-vocoder \
-            -p superduper-pitch \
-            -p superduper-nam \
-            -p superduper-harmonic \
-            -p superduper-tune \
-            -p superduper-formant \
-            -p superduper-granular \
-            -p superduper-stretch \
-            -p superduper-wind \
-            -p superduper-multiband \
-            -p superduper-morph \
-            -p superduper-double \
-            -p superduper-denoise \
-            -p superduper-space \
+            $(grep -oE '^ +"superduper-[a-z0-9-]+' cmake/plugin_list.cmake | tr -d ' "' | sed 's/^/-p /') \
             -p superduper-synth-core
 
       - name: Package .clap bundles
@@ -106,45 +72,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/macos
-          grep -E '^\s+"superduper-' cmake/plugin_list.cmake | tr -d ' "' | while IFS='|' read -r crate name bundle_id _rest
-          do
-              dylib_stem="${crate//-/_}"
-              dylib="target/release/lib${dylib_stem}.dylib"
-              [[ -f "$dylib" ]] || { echo "missing $dylib"; exit 1; }
-              bundle="dist/macos/${name}.clap"
-              mkdir -p "$bundle/Contents/MacOS"
-              cp "$dylib" "$bundle/Contents/MacOS/$name"
-              cat > "$bundle/Contents/Info.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDevelopmentRegion</key><string>English</string>
-              <key>CFBundleExecutable</key><string>$name</string>
-              <key>CFBundleIdentifier</key><string>$bundle_id</string>
-              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-              <key>CFBundleName</key><string>$name</string>
-              <key>CFBundlePackageType</key><string>BNDL</string>
-              <key>CFBundleShortVersionString</key><string>$V</string>
-              <key>CFBundleVersion</key><string>$V</string>
-              <key>LSMinimumSystemVersion</key><string>12.0</string>
-          </dict>
-          </plist>
-          EOF
-              codesign --force --sign - --deep "$bundle" || true
+          # The same script that builds a local bundle (one row of cmake/plugin_list.cmake
+          # each), so what ships is what was tested here.
+          ./scripts/build_plugin_bundle.sh --all --no-build --no-install --out dist/macos --version "$V"
+          names=()
+          while IFS='|' read -r _crate name _rest; do names+=("$name"); done < <(
+              grep -E '^\s+"superduper-' cmake/plugin_list.cmake | tr -d ' "')
+          for name in "${names[@]}"; do
               (cd dist/macos && zip -qry "../${name}-${V}-macos-arm64.zip" "${name}.clap")
           done
-          (cd dist/macos && zip -qry "../superduper-dsp-${V}-macos-arm64.zip" \
-              SuperDuperReverb.clap SuperDuperSupermass.clap SuperDuperSpectrum.clap \
-              SuperDuperSaturator.clap SuperDuperDelay.clap SuperDuperCompressor.clap \
-              SuperDuperEq.clap SuperDuperLimiter.clap SuperDuperAmbient.clap \
-              SuperDuperPad.clap SuperDuperVocal.clap SuperDuperWave.clap \
-              SuperDuperKubyz.clap SuperDuperChorus.clap SuperDuperDrum.clap \
-              SuperDuperSampler.clap SuperDuperLooper.clap SuperDuperFilter.clap \
-              SuperDuperMidSide.clap SuperDuperLineq.clap SuperDuperSoothe.clap \
-              SuperDuperNam.clap SuperDuperVocoder.clap SuperDuperPitch.clap \
-              SuperDuperHarmonic.clap SuperDuperTune.clap)
+          # Every plugin, not a hand-typed 27 of 36 (that list stopped at Tune).
+          (cd dist/macos && zip -qry "../superduper-dsp-${V}-macos-arm64.zip" $(printf '%s.clap ' "${names[@]}"))
           (cd dist && shasum -a 256 *.zip > SHA256SUMS-macos.txt)
           ls -la dist/
 
@@ -287,44 +225,9 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --release --no-fail-fast `
-            -p superduper-reverb `
-            -p superduper-supermass `
-            -p superduper-spectrum `
-            -p superduper-saturator `
-            -p superduper-delay `
-            -p superduper-compressor `
-            -p superduper-eq `
-            -p superduper-limiter `
-            -p superduper-ambient `
-            -p superduper-pad `
-            -p superduper-vocal `
-            -p superduper-wave `
-            -p superduper-kubyz `
-            -p superduper-chorus `
-            -p superduper-drum `
-            -p superduper-sampler `
-            -p superduper-piano `
-            -p superduper-looper `
-            -p superduper-filter `
-            -p superduper-midside `
-            -p superduper-lineq `
-            -p superduper-soothe `
-            -p superduper-vocoder `
-            -p superduper-pitch `
-            -p superduper-nam `
-            -p superduper-harmonic `
-            -p superduper-tune `
-            -p superduper-formant `
-            -p superduper-granular `
-            -p superduper-stretch `
-            -p superduper-wind `
-            -p superduper-multiband `
-            -p superduper-morph `
-            -p superduper-double `
-            -p superduper-denoise `
-            -p superduper-space `
-            -p superduper-synth-core
+          # Every plugin in cmake/plugin_list.cmake plus synth-core, like the build step.
+          $crates = Select-String -Path cmake/plugin_list.cmake -Pattern '^\s+"(superduper-[a-z0-9-]+)\|' | ForEach-Object { "-p"; $_.Matches[0].Groups[1].Value }
+          cargo test --release --no-fail-fast @crates -p superduper-synth-core
 
       - name: Package .clap files
         shell: pwsh
@@ -359,6 +262,12 @@ jobs:
           # Align the MSVC runtime CRT across ALL targets: the VST3 SDK defaults
           # to static /MT while clap-wrapper's export obj is /MD → LNK2038/LNK1169.
           # Force everything to the dynamic CRT (/MD) to match.
+          # Our clap-wrapper patches, except the macOS-SDK one (the mac job applies
+          # all of them through build_wrappers.sh).
+          for patch in tools/clap-wrapper-patches/*.patch; do
+              case "$patch" in *macos*) continue ;; esac
+              git -C tools/clap-wrapper apply "$PWD/$patch"
+          done
           cmake -B build-wrappers -DCMAKE_BUILD_TYPE=Release \
             -DCLAP_WRAPPER_DOWNLOAD_DEPENDENCIES=ON \
             -DCLAP_WRAPPER_BUILD_AUV2=OFF \

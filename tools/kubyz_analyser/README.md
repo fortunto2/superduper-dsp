@@ -65,7 +65,7 @@ let db: [f32; N_HARMONICS] = [
 4. Add a `FormantPreset` const with the F1/F2/F3 and bandwidths.
 5. Add a `KubyzPreset { name: ..., harmonics: harmonics_<name>(), formant: ... }`
    entry to the `presets()` table.
-6. Rebuild: `./scripts/build_kubyz_bundle.sh`. The new preset shows up in
+6. Rebuild: `./scripts/build_plugin_bundle.sh kubyz`. The new preset shows up in
    the plugin's preset dropdown.
 
 ## How the analysis works (very short)

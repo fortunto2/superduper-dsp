@@ -249,7 +249,7 @@ If nothing is routed to the sidechain, the internal oscillator is used instead
 
 ```bash
 # from the workspace root
-./scripts/build_vocoder_bundle.sh          # builds + installs the .clap
+./scripts/build_plugin_bundle.sh vocoder          # builds + installs the .clap
 cargo test --release -p superduper-vocoder # 17 test functions
 ```
 

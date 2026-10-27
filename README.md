@@ -155,14 +155,11 @@ make clean            # Wipe cargo + cmake outputs
 below if you'd rather skip make:
 
 ```bash
-# All 17 plugins in one go:
+# Every plugin in one go:
 ./scripts/build_all_bundles.sh
-# Or one plugin at a time:
-./scripts/build_kubyz_bundle.sh
-./scripts/build_reverb_bundle.sh
-./scripts/build_sampler_bundle.sh
-./scripts/build_piano_bundle.sh
-# ...
+# Or one plugin at a time (short name, or `make kubyz`):
+./scripts/build_plugin_bundle.sh kubyz
+./scripts/build_plugin_bundle.sh reverb sampler piano
 ```
 
 Per-plugin scripts compile the Rust cdylib, package the `.clap`

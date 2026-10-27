@@ -19,7 +19,7 @@ warning the validator cannot measure fairly for one plugin is listed in
 KNOWN with its reason and printed as `known`, never as a pass. The
 validator's own source: `git clone https://github.com/free-audio/clap-validator`
 (cargo install keeps no checkout). Build
-it first (`./scripts/build_<name>_bundle.sh`). Exit 1 on any failure or on
+it first (`./scripts/build_plugin_bundle.sh <name>`). Exit 1 on any failure or on
 UNCHECKED when a plugin was explicitly requested.
 
 Needs `clap-validator` on PATH: `scripts/install_clap_validator.sh` (or

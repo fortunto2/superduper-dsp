@@ -2,7 +2,7 @@
 # Build VST3 + AUv2 wrappers around the Rust CLAP plugins.
 #
 # Prerequisites: cargo, cmake ≥ 3.21, the .clap bundles already built
-# (run ./scripts/build_release.sh first or per-plugin build_*_bundle.sh).
+# (run ./scripts/build_release.sh or ./scripts/build_all_bundles.sh first).
 #
 # Usage:
 #   ./scripts/build_wrappers.sh              # configure + build

@@ -117,8 +117,8 @@ DAW UI. A plugin without these is invisible to it:
 ### 2. Workspace registration
 
 - [ ] `Cargo.toml` (root) — add `"effects/superduper-<name>"` to `[workspace] members`.
-- [ ] `scripts/build_<name>_bundle.sh` — `scripts/build_all_bundles.sh` and the wrappers read the
-  plugin list from `cmake/plugin_list.cmake`, so a script per plugin is all they need. Copy `scripts/build_saturator_bundle.sh` and replace every `superduper-saturator` / `SuperDuperSaturator` / `saturator` / `co.superduperai.saturator` / `libsuperduper_saturator.dylib`. Keep `chmod +x` on the new file.
+- [ ] No bundle script to write: `scripts/build_plugin_bundle.sh <name>` (and `make <name>`,
+  `build_all_bundles.sh`, the wrappers, the release workflow) all read the row below.
 - [ ] `cmake/plugin_list.cmake` — add a row to `SDSP_WRAPPER_PLUGINS`:
   ```
   "superduper-<name>|SuperDuper<Name>|co.superduperai.<name>|co.superduperai.wrappers.<name>|aufx|sd<XX>"

@@ -834,10 +834,10 @@ superduper-dsp/
   plugin/                    old shell-plugin code (deprecated, kept for reference)
   daemon/, protocol/         IPC infrastructure (deprecated for now)
   scripts/
-    build_<name>_bundle.sh    one per plugin (23 total), all derive from
-                             build_saturator_bundle.sh — copy + change
-                             two strings to add another.
-    build_bundle.sh             generic helper used by the per-effect scripts
+    build_plugin_bundle.sh      build + bundle + install any plugin by short name
+                             (`reverb`, `--all`), one row of cmake/plugin_list.cmake
+                             each; the release workflow packages with it too
+    build_bundle.sh             the legacy SuperDuperDSP shell plugin only
     build_release.sh            full local release zip with SHA256SUMS
     restart_reaper.sh           graceful (or --force) REAPER restart
     install_local.sh, load_effect.sh, load_named_effect.sh
@@ -1061,11 +1061,12 @@ Every effect crate ships at least 3 test files:
   Read with `cargo test --test spectrum -- --nocapture` — the ASCII art
   is the assertion target (a human or AI sees the shape and decides if it's right).
 
-### 6. Bundle script `scripts/build_<name>_bundle.sh`
+### 6. A row in `cmake/plugin_list.cmake`
 
-Copy `scripts/build_reverb_bundle.sh`, change two strings: the package name
-and the CFBundleIdentifier. The script also installs to
-`~/Library/Audio/Plug-Ins/CLAP/<Name>.clap`.
+No per-plugin script: `scripts/build_plugin_bundle.sh <name>` (or `make <name>`)
+reads the row, builds, bundles and installs to
+`~/Library/Audio/Plug-Ins/CLAP/<Name>.clap`. The wrappers, the installer and
+the release workflow read the same row.
 
 ## Shared building blocks — use these instead of rolling your own
 
@@ -1447,26 +1448,10 @@ and the CFBundleIdentifier. The script also installs to
 
 ### Build a specific plugin + install
 ```bash
-./scripts/build_reverb_bundle.sh
-./scripts/build_supermass_bundle.sh
-./scripts/build_spectrum_bundle.sh
-./scripts/build_saturator_bundle.sh
-./scripts/build_delay_bundle.sh
-./scripts/build_compressor_bundle.sh
-./scripts/build_eq_bundle.sh
-./scripts/build_limiter_bundle.sh
-./scripts/build_vocal_bundle.sh
-./scripts/build_ambient_bundle.sh
-./scripts/build_pad_bundle.sh
-./scripts/build_vocoder_bundle.sh
-./scripts/build_pitch_bundle.sh
-./scripts/build_harmonic_bundle.sh
-./scripts/build_wind_bundle.sh
-./scripts/build_formant_bundle.sh
-./scripts/build_granular_bundle.sh
-./scripts/build_stretch_bundle.sh
-# new effects: copy one of the above and change two strings (package name +
-# CFBundleIdentifier). Or call ./scripts/build_bundle.sh <name> directly.
+./scripts/build_plugin_bundle.sh reverb          # or: make reverb
+./scripts/build_plugin_bundle.sh pitch tune      # several at once
+./scripts/build_all_bundles.sh                   # every plugin in cmake/plugin_list.cmake
+# a new effect needs only its row in cmake/plugin_list.cmake
 ```
 
 ### Run all tests across the workspace

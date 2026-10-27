@@ -65,6 +65,6 @@ harmonic energy essentially untouched (**Δ −0.1 dB**), pluck peak preserved
 ## Build
 
 ```bash
-./scripts/build_harmonic_bundle.sh          # builds + installs the .clap
+./scripts/build_plugin_bundle.sh harmonic          # builds + installs the .clap
 cargo test --release -p superduper-harmonic  # dsp_smoke + clap_e2e + denoise
 ```

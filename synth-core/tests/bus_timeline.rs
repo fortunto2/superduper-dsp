@@ -226,10 +226,16 @@ fn a_key_thread_preempted_once_does_not_stop_the_waiting_for_the_rest_of_the_son
     let k2 = key.clone();
     let producer = std::thread::spawn(move || {
         let mut rng = 0x5eed_1234;
+        let mut paused = Duration::ZERO;
         for (k, t) in blocks() {
-            if k == 100 { std::thread::sleep(Duration::from_millis(80)); }
+            if k == 100 {
+                let at = Instant::now();
+                std::thread::sleep(Duration::from_millis(80));
+                paused = at.elapsed();
+            }
             play_key(&k2, k, t, &mut rng);
         }
+        paused
     });
     let heard: Vec<(f64, f32)> = blocks().map(|(_, t)| {
         keyed.begin_block(Some(&transport(t)));
@@ -238,9 +244,16 @@ fn a_key_thread_preempted_once_does_not_stop_the_waiting_for_the_rest_of_the_son
         keyed.end_block();
         (t, db)
     }).collect();
-    producer.join().expect("producer");
+    let paused = producer.join().expect("producer");
     let (checked, wrong) = score(&heard);
     assert!(checked > 250, "{checked} blocks scored");
+    // A pause past WAIT_MAX (100 ms) is a key track that stopped, and the keyed
+    // track rightly stops waiting for it. The macOS CI VM stretched this 80 ms
+    // sleep past that (2026-10-27: 101 blocks), so that run is not the case here.
+    if paused >= Duration::from_millis(95) {
+        eprintln!("inconclusive: the key thread paused {paused:?}, past the 100 ms wait; {wrong} blocks without key");
+        return;
+    }
     assert!(wrong <= 1, "{wrong} blocks keyed on a stale key after one preemption: the block that judged it serial may take the key a block late, no other");
 }
 

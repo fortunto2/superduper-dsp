@@ -1,6 +1,6 @@
 {
   "name": "superduper-dsp",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "description": "Agent skills for SuperDuper DSP: mix and master by measurement, songs in REAPER on these instruments, headless plugin chains, audio to MIDI, mashups, reference teardowns, vocal chains, writing new plugins.",
   "author": {
     "name": "Rustam Salavatov",

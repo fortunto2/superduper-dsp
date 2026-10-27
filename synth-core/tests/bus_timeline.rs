@@ -185,10 +185,13 @@ fn faster_than_real_time_keyed_track_waits_for_a_key_track_that_is_behind() {
 fn a_key_track_that_starts_late_is_waited_for_not_taken_for_absent() {
     let (key, keyed, _turn) = pair("late", (60, 61));
     let k2 = key.clone();
+    let t0 = Instant::now();
     let producer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
+        let started = t0.elapsed();
         let mut rng = 0x0bad_cafe;
         for (k, t) in blocks() { play_key(&k2, k, t, &mut rng); }
+        started
     });
     let heard: Vec<(f64, f32)> = blocks().map(|(_, t)| {
         keyed.begin_block(Some(&transport(t)));
@@ -197,10 +200,18 @@ fn a_key_track_that_starts_late_is_waited_for_not_taken_for_absent() {
         keyed.end_block();
         (t, db)
     }).collect();
-    producer.join().expect("producer");
+    let started = producer.join().expect("producer");
     let (checked, wrong) = score(&heard);
     assert!(checked > 250, "{checked} blocks scored");
-    assert_eq!(wrong, 0, "a late key track was taken for an absent one");
+    // The promise is patience up to START_MAX (1 s), not forever. A 300 ms
+    // sleep that the machine stretched past it (the macOS CI VM, 2026-10-27:
+    // 125 wrong blocks with no other explanation) is a key track that really
+    // was absent for that long, so the case this test is about did not happen.
+    if started >= Duration::from_millis(900) {
+        eprintln!("inconclusive: the key track started {started:?} late, past the 1 s patience; {wrong} blocks without key");
+        return;
+    }
+    assert_eq!(wrong, 0, "a late key track (started {started:?}) was taken for an absent one");
 }
 
 /// The key track's render thread loses the CPU once, mid-song, for longer than

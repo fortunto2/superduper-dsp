@@ -149,13 +149,11 @@ One reference track was torn down and rebuilt entirely from a single kubyz pluck
 the gain solver, converged to within 1 dB on six of seven bands. A second script put the same mix into REAPER for hand
 work, reading the settings from the very TOML the render used, so there is one source of truth. The scripts are not part of this plugin.
 
-## Снятие партий в MIDI
+## Getting the parts as MIDI
 
-Ноты, сетку и деление на инструменты снимает MuScriptor по полному миксу, стемы
-не нужны, и барабаны приходят в GM-карте прямо для нашего Drum. На этом же
-Gesaffelstein: темп 102.994 против измеренного 102.985, бас G1, кик 51 доля
-подряд без пропусков. Чему нельзя верить — velocity (все ноты 100), длительности
-(педальную ноту дробит на атаки) и названиям инструментов.
+MuScriptor takes the notes, the grid and the split into instruments from the full mix; stems are not needed, and the drums arrive in the
+GM map, straight for SuperDuper Drum. On the same reference track: tempo 102.994 against a measured 102.985, bass G1, the kick on 51
+beats in a row without a miss. What not to trust: velocity (all notes 100), durations (a pedal note is chopped into attacks) and
+instrument names.
 
-Команды, размеры моделей, скорость на Apple Silicon и проверка результата —
-скилл **audio-to-midi**. 
+Commands, model sizes, speed on Apple Silicon and checking the result: see the **audio-to-midi** skill.

@@ -12,7 +12,9 @@ verified by render measurement, not by ear alone. The order is the
 instrument (see sdsp-mix "The channel chain" for why); the numbers are the
 starting point for that voice on that mic.
 
-## Recording constants (before any plugin)
+## Recording constants (before any plugin): the example setup
+
+These are the settings of the setup this chain was measured on (one dynamic mic, one interface). Use them as a worked example and substitute your own gain and distance; the targets (peak range, no clipping) carry over.
 
 - **AT2040**, Arrow preamp **47–48 dB**, LOW CUT on the Arrow ON (nothing
   useful below 80 Hz on this mic), peaks **−12…−6 dBFS**. A take peaking at
@@ -49,7 +51,7 @@ Sends from the vocal: **Vox Delay −14 dB**, **Vox Reverb −9 dB**. Returns ru
 - SD Reverb: Pre-Delay 40 ms, Decay 0.65, Size 0.6, Duck 6 dB (5/250 ms)
 
 The duck hides the tail while a word sounds and lets it bloom in pauses —
-wet pauses, dry words. **"Ревер не работает" almost always means the return
+wet pauses, dry words. **"the reverb does not work" almost always means the return
 reset to defaults** (Mix 0.18, Duck 0): quitting REAPER without saving
 loses parameter-only changes — verify Mix=1.0 before touching anything else.
 
@@ -63,7 +65,7 @@ thr −30, ratio 10, **Range 3 dB**, 12/350 ms, SC HPF 100. Range is the whole
 point: depth is capped no matter how loud the take got.
 
 Balance that worked: bus fader **−6 dB** static, duck adds up to 3 dB under
-words. Two independent ears: fader = музыка всегда, Range = насколько ныряет.
+words. Two independent ears: fader = the music always, Range = how far it dips.
 
 ## Master
 

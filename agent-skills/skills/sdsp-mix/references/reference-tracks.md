@@ -53,9 +53,9 @@ Tags: **low** (sub, kick/bass relationship, mono low end) · **vocal** (level, p
 Body and low-mid buildup (`low`, `body`) is the most common deviation in home mixes; check it
 against every reference, whatever the question.
 
-### Artists the owner already references
+### The author's habitual references (examples)
 
-The owner already checks mixes against these three, so they get their own per-question split.
+The author checks mixes against these three, so they get their own per-question split.
 All [+], verified.
 
 | Track | Use it for |

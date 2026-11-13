@@ -5,7 +5,10 @@ an open-source suite of CLAP audio plugins written in Rust. They cover mixing an
 songs built in REAPER on the suite's instruments, headless plugin chains, audio to MIDI, mashups, reference
 teardowns and vocal chains, and the checklist for writing a new plugin.
 
-Project page: <https://rustman.org/projects/project-superduper-dsp/> · Repository: <https://github.com/fortunto2/superduper-dsp>
+Project page: <https://rustman.org/projects/project-superduper-dsp/> · How it is used, in plain words: <https://rustman.org/wiki/creative-music-with-claude/> · Repository: <https://github.com/fortunto2/superduper-dsp>
+
+**What you need before it does anything useful:** the SuperDuper DSP plugins and command-line tools (see Prerequisites), plus Python for the measurement
+scripts. Two skills also need REAPER and a REAPER MCP server. Each skill checks and tells you what is missing.
 
 ## Skills
 
@@ -13,7 +16,7 @@ Project page: <https://rustman.org/projects/project-superduper-dsp/> · Reposito
 |---|---|
 | `sdsp-mix` | Mix and master by measurement: band balance against a reference, sidechain ducking, mono low end, loudness targets. Ships `mixcheck.py`, `mixverify.py`, `mixopt.py`, `mixmap.py`. |
 | `sdsp-chain` | Render plugin chains headlessly from a TOML file (no DAW), with per-stage LUFS and true peak. |
-| `superduper-song` | Build songs in REAPER on the SuperDuper instruments through a REAPER MCP server: parameter maps, presets, MIDI CC. (Body in Russian.) |
+| `superduper-song` | Build songs in REAPER on the SuperDuper instruments through a REAPER MCP server: parameter maps, presets, MIDI CC. |
 | `audio-to-midi` | Turn a recording into MIDI with a local model, and check the result before trusting it. |
 | `track-teardown` | Reverse-engineer a reference track with spectrograms, stems and numbers, and rebuild its feel. |
 | `vocal-mix` | A slot-by-slot vocal chain in REAPER, with the numbers that shipped on a real track. |
@@ -58,9 +61,9 @@ Each skill starts with a "Needs" note and checks for what it needs before runnin
 
 ## Notes
 
-- The skills are living documents written while making music on this project. Most are in English; `superduper-song` is mostly in Russian,
-  `audio-to-midi` has Russian passages (the SwiftF0 and film-score parts, which describe tools the plugin does not include), and the
-  working log for `sdsp-mash` is in the repository (`docs/skill-notes/`), not in the plugin.
+- The skills are living documents written while making music on this project, all in English. Longer author logs that depend on a private setup
+  (the `sdsp-mash` session log, a film-score recipe) are in the repository under `docs/skill-notes/`, not in the plugin.
+  `audio-to-midi` and `track-teardown` describe a few of the author's own tools (SwiftF0 tracker, one-track scripts) as results and say when they are not bundled.
 - Measurements quoted in the skills (speeds, accuracies) were taken on Apple Silicon.
 
 ## License

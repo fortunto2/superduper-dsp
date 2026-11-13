@@ -13,15 +13,18 @@ theme, factory presets, sidechain ducking, automation write, MIDI CC
 [**Download the latest release**](https://github.com/fortunto2/superduper-dsp/releases/latest)
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
 
-**Agent skills** (mixing by measurement, songs in REAPER, audio to MIDI and more,
-[list](agent-skills/README.md)) install as a Claude Code plugin:
+**Agent skills.** Nine skills for Claude Code that mix and master by measurement, build songs in REAPER on these instruments,
+render plugin chains headlessly, turn audio into MIDI, and more. They install as a plugin:
 
 ```bash
 /plugin marketplace add fortunto2/superduper-dsp
 /plugin install superduper-dsp@superduper-dsp
 ```
 
-Other agents: `npx skills add fortunto2/superduper-dsp --all`.
+The plugin carries instructions and Python scripts only; install the plugins and the `sdsp-chain` / `sdsp-bus` tools from the releases page
+(macOS `.pkg`) first. Skill list, prerequisites and exactly what it runs: [agent-skills/README.md](agent-skills/README.md).
+Write-ups: [project page](https://rustman.org/projects/project-superduper-dsp/), [making music with an AI assistant](https://rustman.org/wiki/creative-music-with-claude/).
+Other agents: `npx skills add fortunto2/superduper-dsp --all` (not re-tested since the move to `agent-skills/`).
 
 ## Screenshots
 

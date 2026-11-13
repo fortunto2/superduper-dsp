@@ -1,6 +1,6 @@
 ---
 name: audio-to-midi
-description: "Turn a recording into MIDI: pick the right local transcription model, run it, and check the result before trusting it. Use when the user says \"audio to MIDI\", \"get the notes out of this track\", \"transcribe this melody\", \"what notes are being played\", \"which strings and frets\", \"replay this with the SuperDuper instruments\", or drops audio expecting notes rather than a mix. Covers MuScriptor (full-mix, multi-instrument), Basic Pitch (fast, velocity), SwiftF0 (monophonic line) and guitar-hear (string and fret on top of Basic Pitch), with measured speed and accuracy on Apple Silicon, what each gets wrong, a known-answer control that catches a silently broken run, and how the MIDI lands in the SuperDuper instruments. Do NOT use for stem separation or for analysing a reference's mix (track-teardown)."
+description: "Turn a recording into MIDI: pick the right local transcription model, run it, and check the result before trusting it. Use when the user says \"audio to MIDI\", \"get the notes out of this track\", \"transcribe this melody\", \"what notes are being played\", \"replay this with the SuperDuper instruments\", or drops audio expecting notes rather than a mix. Covers MuScriptor (full-mix, multi-instrument), Basic Pitch (fast, velocity), and SwiftF0 (monophonic line), with measured speed and accuracy on Apple Silicon, what each gets wrong, a known-answer control that catches a silently broken run, and how the MIDI lands in the SuperDuper instruments. Do NOT use for stem separation or for analysing a reference's mix (track-teardown)."
 ---
 
 # audio-to-midi — from a recording to notes you can re-play
@@ -8,7 +8,7 @@ description: "Turn a recording into MIDI: pick the right local transcription mod
 > **Needs** `uv` (for `uvx`) and an internet connection the first time, because the models are downloaded then (MuScriptor and Basic Pitch
 > weights from their upstream hosts; MuScriptor's weights are gated on Hugging Face and need the user's own token, which stays in their
 > shell). The two checking scripts in `${CLAUDE_SKILL_DIR}/scripts/` ship with the plugin and need `mido`. **Not bundled:** the SwiftF0
-> tracker (`pitch_line.py`, `midi_theme.py`), `guitar-hear` and `score_gen.py` are the author's separate tools, not part of this plugin;
+> tracker (`pitch_line.py`, `midi_theme.py`) is the author's separate tool, not part of this plugin;
 > the sections about them describe results, and when asked to run them say they are not installed and fall back to Basic Pitch or MuScriptor.
 > Check first: `command -v uvx`.
 
@@ -31,9 +31,9 @@ material is**, not by which is "better".
 - **a band, a track, drums** → MuScriptor. It is the only one that separates
   instruments and gets the grid right.
 - **something that ships** → Basic Pitch. The NC weights bar MuScriptor from a
-  product, and only from a product: transcribing our own recording for our own
-  film is exactly the case the licence allows. (I read that bar wider than it
-  is written once and skipped the better model for no reason.)
+  product, and only from a product: transcribing your own recording for your own
+  non-commercial use is the case the licence allows. (The bar was once read wider
+  than it is written, and the better model was skipped for no reason.)
 - **one melody — a voice, a flute, a solo line** → SwiftF0. It does not guess a
   chord, it follows a line, and it is two orders of magnitude faster than the
   other two.
@@ -52,19 +52,17 @@ uvx muscriptor serve                                                # local web 
 mkdir -p bp_out
 uvx --python 3.11 --with "setuptools<81" --from basic-pitch basic-pitch bp_out mix.wav
 
-# SwiftF0 — одна линия, конвертация автора; тулы НЕ входят в плагин
-python3 scripts/pitch_line.py solo.wav --notes            # ноты с временем
-python3 scripts/pitch_line.py solo.wav --theme            # строка --chords
-python3 scripts/midi_theme.py out.mid --windows 8         # то же из любого MIDI
+# SwiftF0: not bundled (the author's own tools); shown for the contract below
+python3 scripts/pitch_line.py solo.wav --notes            # notes with timing
+python3 scripts/pitch_line.py solo.wav --theme            # a --chords string
+python3 scripts/midi_theme.py out.mid --windows 8         # the same from any MIDI
 ```
 
-`pitch_line.py` несёт **контракт препроцессинга** SwiftF0: ONNX-граф содержит
-STFT-узел, который не берёт ни один конвертер, поэтому модель разрезана и STFT
-считаем сами — 16 кГц моно, 384 нуля паддинга с обеих сторон (constant, не
-reflect), кадр 1024 / хоп 256, асимметричный ханн, бины rFFT 3..135,
-`log(x + 1e-8)`. Отклонение в любом из этих пунктов **не ломает запуск**, а
-тихо портит высоту. Декодер уже внутри модели: она отдаёт `pitch_hz` и
-`confidence`, декодировать softmax поверх них не надо.
+`pitch_line.py` carries SwiftF0's **preprocessing contract**: the ONNX graph contains an STFT node that no converter
+accepts, so the model is cut open and the STFT is computed outside: 16 kHz mono, 384 zeros of padding on both sides
+(constant, not reflect), frame 1024 / hop 256, asymmetric Hann, rFFT bins 3..135, `log(x + 1e-8)`. A deviation in any of
+these **does not break the run**; it quietly spoils the pitch. The decoder is already inside the model: it returns `pitch_hz`
+and `confidence`, so do not decode a softmax on top of them.
 
 Four traps, each one cost a run:
 
@@ -139,60 +137,36 @@ so expect roughly this on rhythmic material and worse on anything loose.
 Also from their docs: rubato recordings notate significantly worse. Beat-driven
 references transcribe well, ambient is not worth the run.
 
-## Одна запись, три модели — и что из этого можно утверждать
+## One recording, three models: what can be claimed
 
-*Measured here, 23 Sep 2026.* Уличное пианино, снятое микрофоном DJI посреди
-Navy Pier: ветер, машины, голоса. 3:12 звука, три модели независимо:
+*Measured here, 23 Sep 2026.* A street piano recorded with a DJI mic in the middle of Navy Pier: wind, cars, voices. 3:12 of audio,
+three models run independently:
 
-| | нот | время | аккорды по восьми окнам |
+| | notes | time | chords over eight windows |
 |---|---|---|---|
-| SwiftF0 | 325 (82% уверенных кадров) | **1 с** | `Am Am Cm Dm Bm Dm Am E` |
-| Basic Pitch | 547 | 35 с | `Am Am C Dm F Dm Bm Em` |
-| MuScriptor | 376, дорожка `acoustic piano` | 52 с | `Am Bm Dm Bm Am C F` |
+| SwiftF0 | 325 (82% confident frames) | **1 s** | `Am Am Cm Dm Bm Dm Am E` |
+| Basic Pitch | 547 | 35 s | `Am Am C Dm F Dm Bm Em` |
+| MuScriptor | 376, track `acoustic piano` | 52 s | `Am Bm Dm Bm Am C F` |
 
-**Все три сходятся на Am.** Начало и четвёртое окно совпадают у двух из трёх.
-Середина у всех своя — значит про середину и не надо ничего утверждать.
+**All three agree on Am.** The start and the fourth window match in two of three. Each has its own middle, so claim nothing about the middle.
 
-Отсюда практическое правило для шумной записи: **гармония восстанавливается,
-мотив — нет.** Гистограмма ступеней, взвешенная длительностью, усредняет
-ложные ноты и даёт устойчивый ответ; последовательность нот на таком
-материале не воспроизводима (у Basic Pitch самая частая «фигура» верхнего
-голоса — одна нота трижды подряд, а диапазон 36…95 включает октавные прыжки,
-которых человек не играл). Наследовать такую тему надо как тональность и ход
-аккордов, а не как мелодию.
+The practical rule for a noisy recording: **harmony is recoverable, the motif is not.** A pitch-class histogram weighted by duration
+averages out the false notes and gives a stable answer; the note sequence on such material is not reproducible (Basic Pitch's most
+frequent upper-voice "figure" is one note three times in a row, and its range 36..95 includes octave jumps nobody played).
+Inherit such a theme as a key and a chord progression, not as a melody.
 
-## Контроль, без которого тихо врёт
+## The control without which it lies quietly
 
-**Синус 440 Гц прогоняется первым, до любого материала.** Ответ известен
-заранее, и только поэтому видно, что прибор работает.
+**Run a 440 Hz sine first, before any material.** The answer is known in advance, and only that shows the instrument works.
 
-Написание `pitch_line.py` дало два дефекта, ни один не был виден в выводе:
-декодирование softmax поверх уже готовых герц (модель декодирует внутри) и
-закрытие ноты только на смене высоты — ровный тон не давал ни одной ноты
-вовсе. Оба раза инструмент отвечал «уверенной высоты не нашлось», и без
-контроля отчёт был бы «уличное пианино слишком шумное для монофонического
-трекера» — уверенное враньё про материал.
+Writing `pitch_line.py` produced two defects, neither visible in the output: decoding a softmax on top of values that were already
+hertz (the model decodes internally), and closing a note only on a pitch change (a steady tone produced no note at all). Both times the
+tool answered "no confident pitch found", and without the control the report would have been "the street piano is too noisy for a
+monophonic tracker", a confident lie about the material.
 
-Как выглядит здоровый ответ: `# 3.0s · нот 1 · уверенных кадров 100%`,
-`0.00  A4  2.99s`, 437.5 Гц против 440 — один логарифмический бин.
+A healthy answer looks like: `# 3.0s . notes 1 . confident frames 100%`, `0.00  A4  2.99s`, 437.5 Hz against 440, one logarithmic bin.
 
-То же правило для любой из трёх моделей: **не верь нулю от прибора, которого
-не видел отдающим не-ноль.**
-
-## В киномузыку, а не только в инструменты
-
-Тема фильма может быть выведена из того, что человек реально сыграл в кадре:
-
-```bash
-python3 scripts/pitch_line.py piano.wav --theme      # → --chords "Am,Am,Cm,..."
-python3 scripts/score_gen.py --plan film.otio --out score/ \
-    --key A --chords "Am,Am,Cm,Dm,Bm,Dm,Am,E" --bpm 92,104,96 \
-    --silence "1.0-3.6"          # там, где играет живое, партитуры нет
-```
-
-`--silence` делает **дырку** в партитуре, а не убавляет громкость: внутри окна
-−91 дБ против −13.6 в полную силу. Приседающая под живой инструмент музыка
-слышна, дырка — нет.
+The same rule holds for any of the three models: **do not trust a zero from an instrument you have not seen return a non-zero.**
 
 ## Into our instruments
 

@@ -1,16 +1,18 @@
 # verify — a mix change stays only if two independent instruments agree
 
+> `sdsp-chain verify` is the Rust port of `mixverify.py` (same questions, thresholds and verdicts, same exit codes; `--json` for agents). If `sdsp-chain verify --help` fails (an older install), run `python3 mixverify.py` with the same arguments (`references/mixverify-source.md`).
+
 **One instrument is not an argument.** The bus (`mix_masking`) listens to the live session:
 it lags 50–100 ms and sees mutes, loops and whatever else the DAW is doing. The offline
 render (`sdsp-chain` → `mixcheck.profile`) is deterministic and sees nothing the DAW adds.
-Each has a blind spot the other does not, so `mixverify.py` reads both and keeps a
+Each has a blind spot the other does not, so `sdsp-chain verify` reads both and keeps a
 change only when they move the same way on the question asked. One number is a reason to look, never to keep.
 
 ## The command
 
 ```bash
-python3 mixverify.py before.toml after.toml --question masking --labels before,after
-python3 mixverify.py before.toml after.toml --question balance --track "chord" \
+sdsp-chain verify before.toml after.toml --question masking --labels before,after
+sdsp-chain verify before.toml after.toml --question balance --track "chord" \
         --labels pre,post --section 62 78 --ref ref.wav --ref-start 55 --ref-end 71 --json
 ```
 

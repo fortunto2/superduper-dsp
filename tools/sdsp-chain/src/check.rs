@@ -62,7 +62,7 @@ fn rms(s: &[f64]) -> f64 {
     (s.iter().map(|v| v * v).sum::<f64>() / s.len().max(1) as f64).sqrt()
 }
 
-fn hann(n: usize) -> Vec<f64> {
+pub fn hann(n: usize) -> Vec<f64> {
     (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos()).collect()
 }
 

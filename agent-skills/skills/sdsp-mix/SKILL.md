@@ -603,7 +603,7 @@ mixcheck numbers to compare per question. Audio stays local
 section, gain-matched: `mixcheck.py mix.wav --start A --end B --ref ref.wav
 --ref-start C --ref-end D`; `--json` writes a section's profile.
 
-**Keeping a change honestly**: `references/verify.md` — `mixverify.py
+**Keeping a change honestly**: `references/verify.md` — `sdsp-chain verify
 before.toml after.toml --question masking` keeps a move only when the live bus
 and the offline render agree on it; one instrument is a reason to look, never
 to keep. **Searching for the numbers**: `references/optimize.md` —

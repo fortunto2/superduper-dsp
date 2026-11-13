@@ -111,6 +111,9 @@ def check(out) -> dict:
     motif = [p for p in sc["phrases"] if p["texture"] in LEAD_TEXTURES and p["lead"] in stems]
     lead_acc: dict[str, list[float]] = {}
     for p in motif:
+        raw = window(stems[p["lead"]], p["start"], p["end"])
+        if raw is None or raw <= SILENT:
+            continue  # speech cut the lead out of this phrase: nothing to balance, a lift would run away
         lead = level([p["lead"]], p["start"], p["end"])
         accs = [level(by_role.get(r, []), p["start"], p["end"]) for r in ("pad", "arp", "ostinato")]
         accs = [x for x in accs if x is not None and x > SILENT]

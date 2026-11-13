@@ -55,6 +55,22 @@ def test_check_reads_the_level_difference_in_lufs(render):
     assert res["sections"][0]["lufs"] > res["sections"][1]["lufs"] + 30
 
 
+def test_check_skips_a_motif_phrase_whose_lead_speech_cut_out(render):
+    """Under a talking film the engine cuts every lead note in a phrase; the pad goes on.
+    Counting that phrase read the lead 100 dB under the pad and fit raised it +12 dB a pass,
+    six passes (a talking-film score, 5 Nov 2026: kubyz at +40.8 dB, the limiter crushed the mix to -7 LUFS)."""
+    write_wav(render / "stem_pad-pad9.wav", tone(660, 40, -32))
+    tail = tone(880, 40, -95)  # what is left of a cut lead: reverb tails, 0.1 s slivers
+    tail[: 15 * SR] = tone(880, 15, -20)
+    write_wav(render / "stem_lead-wave14.wav", tail)
+    sc = json.loads((render / "score.json").read_text())
+    sc["phrases"].append({"start": 15, "end": 40, "texture": "motif", "lead": "lead-wave14", "kind": "outro"})
+    (render / "score.json").write_text(json.dumps(sc))
+    d = ck.check(render)["lead_vs_acc"]["lead-wave14"]
+    assert d["phrases"] == 1, d
+    assert 11.0 < d["worst"] < 13.5, d
+
+
 def test_check_adds_the_mix_gain_of_each_stem(render):
     MixSpec({"lead-wave14": -6.0, "pad-pad9": 0.0}).save(render / "mix.json")
     d = ck.check(render)["lead_vs_acc"]["lead-wave14"]

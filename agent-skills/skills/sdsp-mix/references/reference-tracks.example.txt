@@ -13,7 +13,7 @@
 #
 # Loop for one genre (mixcheck reads whole files, so cut the section first):
 #   ffmpeg -ss <start> -to <end> -i <file> -c:a pcm_s24le /tmp/ref.wav
-#   python3 scripts/mixcheck.py mix_chorus.wav --ref /tmp/ref.wav
+#   python3 mixcheck.py mix_chorus.wav --ref /tmp/ref.wav
 
 [defaults]
 root = "~/Music/references"

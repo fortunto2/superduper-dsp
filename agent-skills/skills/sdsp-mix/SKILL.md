@@ -5,14 +5,18 @@ description: "Mix and master a track with the SuperDuper plugins the way a profe
 
 # sdsp-mix — mixing and mastering that is measured, not guessed
 
-> **Needs** (the plugin ships the Python scripts in this skill's `scripts/` folder, not the audio tools):
+> **Needs** (the plugin ships the Python scripts as Markdown source in `references/*-source.md`, not the audio tools):
 > Python 3.11+ (`mixcheck.py` basics use the standard library; band, mono and optimiser steps also need `numpy` and `scipy`);
 > the SuperDuper DSP plugins plus the `sdsp-bus` and `sdsp-chain` command-line tools for the live-bus and
 > render steps (macOS: the `.pkg` from the repository's GitHub releases page
 > installs both; elsewhere `cargo install --path tools/sdsp-bus` and `tools/sdsp-chain` from a checkout).
 > Check first: `command -v sdsp-bus sdsp-chain` and `python3 -c "import numpy, scipy"`. If something is
 > missing, say which step cannot run and offer the measurement-only path (`mixcheck.py` on a WAV needs no plugins).
-> Other files named `scripts/…` below are relative to this skill folder.
+> **Scripts** (`mixcheck.py`, `mixverify.py`, `mixopt.py`, `mixmap.py`): the plugin cannot carry `.py` files, so each is a fenced
+> python block in `references/<name>-source.md`. Before running one, look for it already installed: a `superduper-dsp` checkout
+> (`tools/<name>.py`, `tools/sdsp-bus/mixmap.py`) or the installed SuperDuper DSP tools; prefer that copy. Otherwise save the block to a
+> file named `<name>.py` in the user's working folder (`mixverify.py` and `mixopt.py` import `mixcheck`, so save `mixcheck.py` next to
+> them) and run it as shown below. Commands below assume the scripts are in the current folder.
 
 
 Every mix fault on this project was invisible until measured, and obvious after.
@@ -26,8 +30,8 @@ Not "listen and tweak".
 ## Measure first
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/mixcheck.py mix.wav --ref /path/to/reference-track.wav
-python3 ${CLAUDE_SKILL_DIR}/scripts/mixcheck.py mix.wav --bpm 140 --bars 8,16,32,40,56,64,76,80
+python3 mixcheck.py mix.wav --ref /path/to/reference-track.wav
+python3 mixcheck.py mix.wav --bpm 140 --bars 8,16,32,40,56,64,76,80
 ```
 
 What the numbers mean:
@@ -61,7 +65,7 @@ seen while the song plays, without bouncing stems.
 
 ```bash
 sdsp-bus                                              # table: track, plugin, level, spectrum strip
-uv run ${CLAUDE_SKILL_DIR}/scripts/mixmap.py -s 30 -o mixmap.png   # record 30 s of playback → picture
+uv run mixmap.py -s 30 -o mixmap.png   # record 30 s of playback → picture
 ```
 
 Then **look at the PNG** (Read it). Three panels:
@@ -597,11 +601,11 @@ mixcheck numbers to compare per question. Audio stays local
 section, gain-matched: `mixcheck.py mix.wav --start A --end B --ref ref.wav
 --ref-start C --ref-end D`; `--json` writes a section's profile.
 
-**Keeping a change honestly**: `references/verify.md` — `scripts/mixverify.py
+**Keeping a change honestly**: `references/verify.md` — `mixverify.py
 before.toml after.toml --question masking` keeps a move only when the live bus
 and the offline render agree on it; one instrument is a reason to look, never
 to keep. **Searching for the numbers**: `references/optimize.md` —
-`${CLAUDE_SKILL_DIR}/scripts/mixopt.py base.toml --vary "gtr.eq.Mid Gain:-12:0" --loss
+`python3 mixopt.py base.toml --vary "gtr.eq.Mid Gain:-12:0" --loss
 "ref:ref.wav,masking"` runs a bounded Nelder–Mead over a whitelist of chain
 params (0.14 s per evaluation, every step logged); the EQ step after register
 and timing are settled, never taste.
@@ -653,5 +657,5 @@ multitracks, ≈550 short "Edited Excerpt" ones, usually the biggest chorus):
 
 Use it as the benchmark for agent mixing: load an excerpt, put a SuperDuper
 plugin on every track, run the measure → change → compare loop, then measure
-our render against the preview mix (`${CLAUDE_SKILL_DIR}/scripts/mixcheck.py`). An improvement is a
+our render against the preview mix (`mixcheck.py`). An improvement is a
 number, not a feeling.

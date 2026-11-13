@@ -1,4 +1,4 @@
-"""Known-answer controls for mixverify.py: `python3 -m pytest scripts/test_mixverify.py`.
+"""Known-answer controls for mixverify.py: `python3 -m pytest tools/test_mixverify.py`.
 
 The fixture is a two-track mix with a planted clash: a bass at 55 Hz whose
 5th and 6th harmonics (275, 330 Hz) sit in the same band as a chord

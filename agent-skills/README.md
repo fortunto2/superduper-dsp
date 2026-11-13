@@ -51,7 +51,7 @@ Each skill starts with a "Needs" note and checks for what it needs before runnin
 
 - **Reads:** audio files and TOML configs you point the agent at, and nothing else on disk. **Writes:** renders, PNGs and logs in the working
   folder you choose; the bus tools keep a small log at `~/.superduper-dsp/mix-log.jsonl`.
-- **Runs locally:** the bundled Python scripts in `skills/*/scripts/` (analysis and optimisation of local WAV files), plus the `sdsp-chain`, `sdsp-bus`
+- **Runs locally:** Python scripts that the skills print as Markdown source (`skills/*/references/*-source.md`) for the agent to save and run in your working folder (analysis and optimisation of local WAV files); the plugin itself contains no executable files, plus the `sdsp-chain`, `sdsp-bus`
   and `sdsp-mash` programs you installed or built. The scripts make no network calls; they call `sdsp-chain` and `sdsp-bus` as subprocesses.
 - **Fetches, only if you run those steps:** the skills tell the agent to run `uvx` / `uv run` for `muscriptor`, `basic-pitch` and `demucs` and
   to install `numpy` / `matplotlib` into a throwaway environment. That downloads packages from PyPI and model weights from their upstream hosts

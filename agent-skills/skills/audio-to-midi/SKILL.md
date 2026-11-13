@@ -7,7 +7,7 @@ description: "Turn a recording into MIDI: pick the right local transcription mod
 
 > **Needs** `uv` (for `uvx`) and an internet connection the first time, because the models are downloaded then (MuScriptor and Basic Pitch
 > weights from their upstream hosts; MuScriptor's weights are gated on Hugging Face and need the user's own token, which stays in their
-> shell). The two checking scripts in `${CLAUDE_SKILL_DIR}/scripts/` ship with the plugin and need `mido`. **Not bundled:** the SwiftF0
+> shell). The two checking scripts (`midinspect.py`, `gridcheck.py`, need `mido`) ship as Markdown source in `references/*-source.md`: save the python block to a file of that name in the working folder first (or use a `superduper-dsp` checkout's `tools/skill-scripts/audio-to-midi/`). **Not bundled:** the SwiftF0
 > tracker (`pitch_line.py`, `midi_theme.py`) and `guitar-hear` are the author's separate tools, not part of this plugin;
 > the sections about them describe results, and when asked to run them say they are not installed and fall back to Basic Pitch or MuScriptor.
 > Check first: `command -v uvx`.
@@ -231,8 +231,8 @@ avoids inlining thousands of notes into tool arguments is better than many small
 ## Check before you trust
 
 ```bash
-uvx --with mido python ${CLAUDE_SKILL_DIR}/scripts/midinspect.py out.mid
-uvx --with mido python ${CLAUDE_SKILL_DIR}/scripts/gridcheck.py out.mid drums 36
+uvx --with mido python midinspect.py out.mid
+uvx --with mido python gridcheck.py out.mid drums 36
 ```
 
 `midinspect` prints per-track note counts, ranges, pitch-class histograms and

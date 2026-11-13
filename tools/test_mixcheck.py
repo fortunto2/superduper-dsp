@@ -1,4 +1,4 @@
-"""Known-answer checks for mixcheck.py: `python3 -m pytest scripts/test_mixcheck.py`
+"""Known-answer checks for mixcheck.py: `python3 -m pytest tools/test_mixcheck.py`
 (or run the file). Every meter here was fed a signal whose answer is known
 before its zeros were trusted."""
 import math

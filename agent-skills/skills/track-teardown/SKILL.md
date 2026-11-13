@@ -32,12 +32,12 @@ uvx --with numpy --from demucs demucs -n htdemucs -o stems "<track>"   # ~3 min
 
 ## The pipeline
 
-Scripts live in `${CLAUDE_SKILL_DIR}/scripts/` and write their PNGs to `./ref/` in the current directory.
+The scripts ship as Markdown source in `references/analyze-source.md` and `references/zoom-source.md` (the plugin cannot carry `.py` files): save each python block to a file of that name in the working folder (or use a `superduper-dsp` checkout's `tools/skill-scripts/track-teardown/`). They write their PNGs to `./ref/` in the current directory. `mixcheck.py` is in the `sdsp-mix` skill (`references/mixcheck-source.md`) or a checkout's `tools/`.
 
 ```bash
-.venv/bin/python ${CLAUDE_SKILL_DIR}/scripts/analyze.py "<track>"               # tempo, key, spectrogram, bands -> ./ref
-.venv/bin/python ${CLAUDE_SKILL_DIR}/scripts/zoom.py "<file>" name 74.5 4 103   # 4-bar close-up + waveform (start s, bars, bpm)
-python3 ${CLAUDE_SKILL_DIR}/../sdsp-mix/scripts/mixcheck.py ref.wav             # band balance, crest, correlation
+.venv/bin/python analyze.py "<track>"               # tempo, key, spectrogram, bands -> ./ref
+.venv/bin/python zoom.py "<file>" name 74.5 4 103   # 4-bar close-up + waveform (start s, bars, bpm)
+python3 mixcheck.py ref.wav             # band balance, crest, correlation
 ```
 
 Tempo fitting, per-4-bar arrangement energy, the kick/bass groove grid and the gain solver were

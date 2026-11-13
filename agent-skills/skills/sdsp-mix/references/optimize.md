@@ -1,4 +1,4 @@
-# Optimising chain parameters against a measured loss (`scripts/mixopt.py`)
+# Optimising chain parameters against a measured loss (`mixopt.py`)
 
 The renderer is deterministic and a render costs ~0.1 s, so a mix is a function
 and a bounded Nelder–Mead over three or four parameters beats guessing: each
@@ -27,7 +27,7 @@ a Mode, or a parameter on a plugin the recipe did not place; never a wide range
 ## Command
 
 ```
-python3 scripts/mixopt.py mix.toml \
+python3 mixopt.py mix.toml \
   --vary "gtr.eq.Mid Gain:-12:0" "gtr.eq.Mid Freq:150:600" "gtr.eq.Mid Q:0.5:3" \
   --loss "ref:ref.wav,masking,loudness,level" --iters 60 --out best.toml
 ```
@@ -49,7 +49,7 @@ the master chain. Output: `best.toml` (comments are not kept; diff it against
 the base), its render `best.wav`, and `best.jsonl`, one line per evaluation
 with the parameter diff and every term.
 
-## Known-answer controls (`scripts/test_mixopt.py`)
+## Known-answer controls (`test_mixopt.py`)
 
 They skip, saying so, when `sdsp-chain` is not built. Pinned: identity (the
 base against its own render) has loss 0 and twenty evaluations leave the

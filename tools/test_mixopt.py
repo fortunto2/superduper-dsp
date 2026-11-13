@@ -1,4 +1,4 @@
-"""Known-answer checks for mixopt.py: `python3 -m pytest scripts/test_mixopt.py -s`.
+"""Known-answer checks for mixopt.py: `python3 -m pytest tools/test_mixopt.py -s`.
 
 Every meter is fed a signal whose answer is known before its zeros are trusted.
 The three controls from the brief need the renderer and skip, saying so, when

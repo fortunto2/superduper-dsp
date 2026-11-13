@@ -1,3 +1,10 @@
+# analyze.py (source)
+
+Write tempo, key, spectrogram and band PNGs for a track to ./ref so an agent can read them as images. Dependencies: `numpy`, `librosa`, `matplotlib`.
+
+To use it: save the block below as `analyze.py` in your working folder, then run it with the command shown in the skill. If a repository checkout or the installed SuperDuper DSP tools already provide it, run that copy instead.
+
+````python
 """Look at a track the way you would listen to it: structure first, then detail.
 
 Numbers alone lie about music. A tempo of 100.2 BPM tells you nothing about
@@ -129,3 +136,4 @@ def main(src, tag):
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])
+````

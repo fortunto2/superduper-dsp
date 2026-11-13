@@ -1,3 +1,10 @@
+# mixopt.py (source)
+
+Bounded Nelder-Mead optimiser over a whitelist of chain parameters against a measured loss. Imports `mixcheck`; save both in one folder. Dependencies: Python 3.11+, `numpy`, `scipy`; the `sdsp-chain` binary.
+
+To use it: save the block below as `mixopt.py` in your working folder, then run it with the command shown in the skill. If a repository checkout or the installed SuperDuper DSP tools already provide it, run that copy instead.
+
+````python
 """mixopt — move a few whitelisted plugin parameters until a measured loss stops falling.
 
 The renderer (sdsp-chain) is deterministic and a render costs ~0.1 s, so the
@@ -25,7 +32,7 @@ the recipe allows, each step measured, every evaluation logged.
          the best point in the JSONL log.  Every evaluation is one line of
          <out>.jsonl: the parameter diff against the base and every loss term.
 
-Runs by path: `python3 scripts/mixopt.py …` (from the sdsp-mix skill folder).
+Runs by path: `python3 tools/mixopt.py …`.
 """
 # AI-NOTE: masking mirrors synth-core/src/mixmap.rs + gui.rs::scope_spectrum (Hann 4096,
 # 16/(3N²) Parseval, 32 log bands); stems render one TOML per track, inputs absolutised
@@ -725,3 +732,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+````

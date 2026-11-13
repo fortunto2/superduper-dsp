@@ -20,7 +20,7 @@ Tags: **low** (sub, kick/bass relationship, mono low end) · **vocal** (level, p
    Never rip a stream: lossy codecs cut the top band and smear transients, which is exactly what
    the `top`, `air` and crest readings measure. A bad reference is worse than none.
 2. **Store them outside every repo**: `~/Music/references/<genre>/Artist - Title.flac`.
-   Never commit audio. The manifest (`reference-tracks.example.toml`, copy it to
+   Never commit audio. The manifest (`reference-tracks.example.txt`, copy it to
    `~/Music/references/references.toml`) holds the paths and the section times.
 3. **Compare the same section.** Chorus against chorus, drop against drop. A verse has a different
    band balance and loudness, and the comparison means nothing. `mixcheck` cuts both sides:
@@ -211,7 +211,7 @@ uvx --with numpy --from demucs demucs --two-stems=vocals -o stems ref_chorus.wav
 R=stems/htdemucs/ref_chorus; M=stems/htdemucs/mix_chorus
 
 # 2. vocal EQ: the 8-band curve of the vocal alone, ours against theirs
-python3 scripts/mixcheck.py $M/vocals.wav --ref $R/vocals.wav
+python3 mixcheck.py $M/vocals.wav --ref $R/vocals.wav
 
 # 3. vocal level against the music (LU): run on vocals.wav and no_vocals.wav of each side
 ffmpeg -hide_banner -nostats -i $R/vocals.wav -af ebur128 -f null - 2>&1 | grep -m1 'I:'

@@ -3,14 +3,14 @@
 **One instrument is not an argument.** The bus (`mix_masking`) listens to the live session:
 it lags 50–100 ms and sees mutes, loops and whatever else the DAW is doing. The offline
 render (`sdsp-chain` → `mixcheck.profile`) is deterministic and sees nothing the DAW adds.
-Each has a blind spot the other does not, so `scripts/mixverify.py` reads both and keeps a
+Each has a blind spot the other does not, so `mixverify.py` reads both and keeps a
 change only when they move the same way on the question asked. One number is a reason to look, never to keep.
 
 ## The command
 
 ```bash
-python3 scripts/mixverify.py before.toml after.toml --question masking --labels before,after
-python3 scripts/mixverify.py before.toml after.toml --question balance --track "chord" \
+python3 mixverify.py before.toml after.toml --question masking --labels before,after
+python3 mixverify.py before.toml after.toml --question balance --track "chord" \
         --labels pre,post --section 62 78 --ref ref.wav --ref-start 55 --ref-end 71 --json
 ```
 
@@ -46,7 +46,7 @@ Exit code 0 KEEP, 1 UNDO, 2 UNKNOWN. What each question reads, per instrument:
   appeared by ≥ 10 points, or (`balance`) a track you did not touch moved > 1 dB on the bus.
 - **UNKNOWN**: an instrument is missing (no `--labels`, no log entry, no stem, no binary) or neither saw a change. Never KEEP on one.
 
-## The three known-answer controls (`python3 -m pytest scripts/test_mixverify.py`)
+## The three known-answer controls (`python3 -m pytest tools/test_ (in the repository checkout) mixverify.py`)
 
 Fixture: a 55 Hz bass with harmonics (its 5th and 6th sit at 275 and 330 Hz) and a chord
 cluster whose lowest tone, 300 Hz, is planted within 6 dB of them. The bus side is a fake log;

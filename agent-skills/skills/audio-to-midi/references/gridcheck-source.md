@@ -1,3 +1,10 @@
+# gridcheck.py (source)
+
+Check whether MIDI onsets sit on the beat grid, with deviation in ms and every missed beat. Dependencies: `mido` (for example `uvx --with mido python gridcheck.py ...`).
+
+To use it: save the block below as `gridcheck.py` in your working folder, then run it with the command shown in the skill. If a repository checkout or the installed SuperDuper DSP tools already provide it, run that copy instead.
+
+````python
 """How well do a MIDI track's onsets sit on the beat grid?
 
     uvx --with mido python gridcheck.py file.mid [track_name] [note]
@@ -47,3 +54,4 @@ print(f"beats covered {covered}/{span}, missing {len(missing)}: {missing[:30]}")
 if len(hits) > covered:
     print(f"note: {len(hits) - covered} extra hit(s) — doubles, or onsets off by "
           f"more than half a beat")
+````

@@ -54,4 +54,6 @@ clack-extensions = { version = "0.1", features = ["params", "audio-ports", "late
 clack-plugin = "0.1"
 clack-common = "0.1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+realfft = "3.5"
 toml = "0.8"

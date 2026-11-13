@@ -733,7 +733,7 @@ timed its own buffer checks and different random events, 8–65× on a
   synthetic suite with known f0 (accuracy in cents, octave-error rate, CPU);
   a WAV = agreement between them plus the timestamps where they disagree by an
   octave. This is how the `Model` choice in Tune is meant to be settled.
-- **`tools/mixcheck.py`** — measure a finished mix: integrated / loudest-3 s
+- **`sdsp-chain check`** (Rust, `tools/sdsp-chain/src/check.rs`; tools/mixcheck.py is the original, kept until the next release ships)  — measure a finished mix: integrated / loudest-3 s
   LUFS (BS.1770; the reference's LU gap printed, gain-match before judging),
   band balance against a commercial reference, crest factor, correlation,
   per-band mono loss, side/mid under 120 Hz, per-section RMS arc;

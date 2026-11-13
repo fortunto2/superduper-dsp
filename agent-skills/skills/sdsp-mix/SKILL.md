@@ -10,8 +10,10 @@ description: "Mix and master a track with the SuperDuper plugins the way a profe
 > the SuperDuper DSP plugins plus the `sdsp-bus` and `sdsp-chain` command-line tools for the live-bus and
 > render steps (macOS: the `.pkg` from the repository's GitHub releases page
 > installs both; elsewhere `cargo install --path tools/sdsp-bus` and `tools/sdsp-chain` from a checkout).
-> Check first: `command -v sdsp-bus sdsp-chain` and `python3 -c "import numpy, scipy"`. If something is
-> missing, say which step cannot run and offer the measurement-only path (`mixcheck.py` on a WAV needs no plugins).
+> Check first: `command -v sdsp-bus sdsp-chain`, then `sdsp-chain check --help`. If something is
+> missing, say which step cannot run and offer the measurement-only path (`sdsp-chain check` or `mixcheck.py` on a WAV needs no plugins).
+> **`sdsp-chain check`** is the measuring command used below (same options and numbers as `mixcheck.py`; add `--json` for a machine-readable profile). If `sdsp-chain check --help` fails (an older install), use `mixcheck.py` instead: replace `sdsp-chain check` with `python3 mixcheck.py` in the commands below.
+>
 > **Scripts** (`mixcheck.py`, `mixverify.py`, `mixopt.py`, `mixmap.py`): the plugin cannot carry `.py` files, so each is a fenced
 > python block in `references/<name>-source.md`. Before running one, look for it already installed: a `superduper-dsp` checkout
 > (`tools/<name>.py`, `tools/sdsp-bus/mixmap.py`) or the installed SuperDuper DSP tools; prefer that copy. Otherwise save the block to a
@@ -30,8 +32,8 @@ Not "listen and tweak".
 ## Measure first
 
 ```bash
-python3 mixcheck.py mix.wav --ref /path/to/reference-track.wav
-python3 mixcheck.py mix.wav --bpm 140 --bars 8,16,32,40,56,64,76,80
+sdsp-chain check mix.wav --ref /path/to/reference-track.wav
+sdsp-chain check mix.wav --bpm 140 --bars 8,16,32,40,56,64,76,80
 ```
 
 What the numbers mean:

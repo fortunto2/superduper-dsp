@@ -59,6 +59,8 @@
 //! the same numbers the plugin GUI shows, not normalised 0..1. Run
 //! `--params <plugin>` to see them.
 
+mod check;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -1226,8 +1228,10 @@ fn real_main() -> Result<(), String> {
             println!("  sdsp-chain --params <plugin>");
             println!("  sdsp-chain --presets <plugin>");
             println!("  sdsp-chain --template [<name>]   ready-made chain configs");
+            println!("  sdsp-chain check <mix.wav> [--ref ref.wav] [--json] ...   measure a mix (see: sdsp-chain check --help)");
             return Ok(());
         }
+        Some("check") => return check::run(&args[1..]),
         Some("--template") => {
             // The stage ORDER encoded in these is the point; the numbers are
             // starting values. Kept in tools/sdsp-chain/templates/. The

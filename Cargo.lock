@@ -3788,7 +3788,9 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "realfft",
  "serde",
+ "serde_json",
  "superduper-ambient",
  "superduper-chorus",
  "superduper-compressor",
@@ -3876,6 +3878,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "clap-sys",
  "superduper-dsp-sdk",
  "superduper-synth-core",
 ]

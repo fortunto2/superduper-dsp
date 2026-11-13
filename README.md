@@ -14,10 +14,11 @@ theme, factory presets, sidechain ducking, automation write, MIDI CC
 · [Install instructions](INSTALL.md) · [Project notes](CLAUDE.md)
 
 **Agent skills** (mixing by measurement, songs in REAPER, audio to MIDI and more,
-[list](skills/README.md)) install as a Claude Code plugin:
+[list](agent-skills/README.md)) install as a Claude Code plugin:
 
 ```bash
-/plugin install superduper-dsp --marketplace fortunto2/superduper-dsp
+/plugin marketplace add fortunto2/superduper-dsp
+/plugin install superduper-dsp@superduper-dsp
 ```
 
 Other agents: `npx skills add fortunto2/superduper-dsp --all`.

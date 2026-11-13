@@ -1,0 +1,14 @@
+{
+  "name": "superduper-dsp",
+  "displayName": "SuperDuper DSP",
+  "version": "0.18.0",
+  "description": "Agent skills for SuperDuper DSP, an open-source CLAP plugin suite: mix and master by measurement, songs in REAPER on its instruments, headless plugin chains, audio to MIDI, mashups, reference teardowns, vocal chains, and writing new plugins.",
+  "author": {
+    "name": "Rustam Salavatov",
+    "url": "https://github.com/fortunto2"
+  },
+  "homepage": "https://rustman.org/projects/project-superduper-dsp/",
+  "repository": "https://github.com/fortunto2/superduper-dsp",
+  "license": "MIT",
+  "keywords": ["audio", "music", "mixing", "mastering", "reaper", "clap", "midi", "dsp"]
+}

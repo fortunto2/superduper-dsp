@@ -8,9 +8,9 @@
   "plugins": [
     {
       "name": "superduper-dsp",
-      "source": "./",
+      "source": "./agent-skills",
       "description": "9 skills for making music with an agent on SuperDuper DSP plugins",
-      "version": "0.17.4",
+      "version": "0.18.0",
       "author": {
         "name": "Rustam Salavatov",
         "url": "https://github.com/fortunto2"

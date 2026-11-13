@@ -7,6 +7,16 @@ analysis. The original "shell with hot-loaded dylibs" idea is shelved — REAPER
 caches param layouts per (plugin_id, slot) which makes dynamic layouts
 unworkable. Each effect = its own crate + its own CLAP id + fixed param table.
 
+## Agent skills plugin (`agent-skills/`)
+
+`agent-skills/` is the self-contained Claude Code plugin folder (what the plugin directory installs): `.claude-plugin/plugin.json`,
+`skills/`, `README.md`, `LICENSE`. Nothing a skill runs or reads may live outside it (no symlinks, every non-image file under 256 KiB,
+no absolute local paths); the bundled measurement scripts are in `agent-skills/skills/sdsp-mix/scripts/`. The repo root
+`.claude-plugin/marketplace.json` points at it (`source: ./agent-skills`). To release a new plugin version, bump `version`
+in **both** `agent-skills/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`
+(`scripts/build_plugin_bundle.sh` reads the plugin.json one as its default bundle version). Checks: `claude plugin validate ./agent-skills`
+and `python3 -m pytest agent-skills/skills/sdsp-mix/scripts`.
+
 ## Current state — 36 plugins (29 effects + 7 instruments)
 
 **Effects (audio-in, audio-out):**
@@ -646,9 +656,9 @@ because the bus hears pre-fader, `label` keeps a run), `mix_compare`,
 `get/set_song_key` — every tool annotated (readOnlyHint on the nine that measure). Protocol 2025-11-25. **Prompts** (`tools/sdsp-bus/src/guide.rs`): `mix-check`, `make-room-for-vocal`, `duck-under`, `fix-mud`, `master-to-target` — the sdsp-mix method as one command (a slash command in Claude Code); prompt arguments arrive as strings, so no numeric fields. **Resources**: `sdsp://method/mixing`, `sdsp://method/verify`, `sdsp://bus/snapshot`. `sdsp-bus setup` registers the gateway in Claude Code / Desktop, Cursor, Windsurf, Codex (the .pkg's Agent tools run it); `tests/mcp_stdio.rs` is the session a client sees. Masking math in `synth_core::mixmap`; the mix map in every
 plugin window (`[ ] mix` strip, `mix_view`) and full size in Spectrum.
 
-**MCP-first is the rule** (`skills/superduper-plugin` §1b): a feature an agent
+**MCP-first is the rule** (`agent-skills/skills/superduper-plugin` §1b): a feature an agent
 cannot reach over the bus does not exist; the same change updates
-`skills/sdsp-mix` ("Which plugin for what") and the chain registries.
+`agent-skills/skills/sdsp-mix` ("Which plugin for what") and the chain registries.
 `tools/plugin_smoke.py` renders every effect headless as the CLI gate;
 `make validate` runs the official `clap-validator` over `dist/` (and `make
 hooks` installs it as the pre-commit for touched plugin crates — a bundle
@@ -721,18 +731,18 @@ timed its own buffer checks and different random events, 8–65× on a
   synthetic suite with known f0 (accuracy in cents, octave-error rate, CPU);
   a WAV = agreement between them plus the timestamps where they disagree by an
   octave. This is how the `Model` choice in Tune is meant to be settled.
-- **`tools/mixcheck.py`** — measure a finished mix: integrated / loudest-3 s
+- **`agent-skills/skills/sdsp-mix/scripts/mixcheck.py`** — measure a finished mix: integrated / loudest-3 s
   LUFS (BS.1770; the reference's LU gap printed, gain-match before judging),
   band balance against a commercial reference, crest factor, correlation,
   per-band mono loss, side/mid under 120 Hz, per-section RMS arc;
   `--start/--end` + `--ref-start/--ref-end` compare chorus with chorus,
-  `--json` writes a section's profile. Known answers in `tools/test_mixcheck.py`.
+  `--json` writes a section's profile. Known answers in `agent-skills/skills/sdsp-mix/scripts/test_mixcheck.py`.
   See the `sdsp-mix` skill for how to act on the numbers.
-- **`tools/mixverify.py`** — a change stays only if two instruments agree:
+- **`agent-skills/skills/sdsp-mix/scripts/mixverify.py`** — a change stays only if two instruments agree:
   `before.toml after.toml --question masking` reads the offline render
   (sdsp-chain → mixcheck.profile) and the live bus log and keeps the move only
-  when both go the same way (skills/sdsp-mix/references/verify.md).
-- **`tools/mixopt.py`** — bounded Nelder–Mead over a whitelist of chain
+  when both go the same way (agent-skills/skills/sdsp-mix/references/verify.md).
+- **`agent-skills/skills/sdsp-mix/scripts/mixopt.py`** — bounded Nelder–Mead over a whitelist of chain
   params against a measured loss (ref band shape, LUFS, masking, stem level),
   0.14 s per evaluation, every step in `<out>.jsonl`, `--resume`
   (references/optimize.md). The EQ step after register and timing, never taste.
@@ -1178,7 +1188,7 @@ the release workflow read the same row.
    `OnceLock<Mutex<File>>` + `slog!`/`rlog!` macro). Not RT-safe — gate
    behind a build flag for shipping.
 
-8. **`CARGO_TARGET_DIR=/Users/rustam/.cargo-target`** is set globally on
+8. **`CARGO_TARGET_DIR=~/.cargo-target`** is set globally on
    this machine. Bundle scripts respect `${CARGO_TARGET_DIR:-./target}`.
 
 9. **fundsp Net is RT-unsafe to rebuild.** Build once in `activate()`,
@@ -1604,7 +1614,7 @@ two directories on plugin instantiation, recursively, max depth 4:
 - `~/Music/Favorite 808s/`       — already-curated 808 stash
 
 Free-WAV sources to populate those folders are listed in the
-**parent** repo doc — `/Users/rustam/Music/1music/CLAUDE.md` →
+**parent** repo doc — the `CLAUDE.md` one level up in the author's workspace →
 "Free WAV sample sources" (Goldbaby + Hyperreal Music Machines
 Roland archive). Keep the link list outside this codebase so DSP
 notes don't bloat with user-content URLs.

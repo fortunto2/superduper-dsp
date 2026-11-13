@@ -48,7 +48,7 @@ cargo build --release -p sdsp-chain 2>&1 | tail -1
 mkdir -p "$OUT/agent/bin" "$OUT/agent/skills"
 cp "$T/release/sdsp-bus" "$T/release/sdsp-chain" "$OUT/agent/bin/"
 for b in "$OUT"/agent/bin/*; do codesign --force --sign - "$b" 2>/dev/null || true; done
-for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto skills/$s "$OUT/agent/skills/$s"; done
+for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto agent-skills/skills/$s "$OUT/agent/skills/$s"; done
 SDSP_PKG_DIST="$OUT" bash installer/macos/build_pkg.sh "$V" | tail -1
 cp "$OUT/SuperDuperDSP-${V}-macos-arm64.pkg" "$OUT/SuperDuperDSP-macos-arm64.pkg"   # stable name for releases/latest/download
 (cd "$OUT" && shasum -a 256 *.pkg >> SHA256SUMS-macos.txt)

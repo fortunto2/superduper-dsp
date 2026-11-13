@@ -165,7 +165,7 @@ jobs:
           mkdir -p dist/agent/bin dist/agent/skills
           cp target/release/sdsp-bus target/release/sdsp-chain dist/agent/bin/
           for b in dist/agent/bin/*; do codesign --force --sign - "$b" || true; done
-          for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto "skills/$s" "dist/agent/skills/$s"; done
+          for s in sdsp-mix superduper-song sdsp-chain audio-to-midi; do ditto "agent-skills/skills/$s" "dist/agent/skills/$s"; done
           bash installer/macos/build_pkg.sh "$V"
           cp "dist/SuperDuperDSP-${V}-macos-arm64.pkg" dist/SuperDuperDSP-macos-arm64.pkg
           (cd dist && shasum -a 256 *.pkg >> SHA256SUMS-macos.txt)

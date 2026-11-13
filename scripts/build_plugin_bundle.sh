@@ -10,7 +10,7 @@
 #   --no-build        package what target/release already holds (cargo ran before)
 #   --no-install      leave ~/Library/Audio/Plug-Ins/CLAP alone
 #   --out DIR         where the .clap bundles go (default: dist)
-#   --version V       CFBundle(Short)Version (default: .claude-plugin/plugin.json)
+#   --version V       CFBundle(Short)Version (default: agent-skills/.claude-plugin/plugin.json)
 #
 # Replaces 36 near-copies of build_<name>_bundle.sh (2026-10-27). Their
 # Info.plist differed only in the display name and a stale 0.1.0/0.2.0;
@@ -35,7 +35,7 @@ while (($#)); do
     shift
 done
 ((${#WANT[@]})) || { echo "usage: $0 <plugin>... | --all  (see --help)" >&2; exit 2; }
-[[ -n "$VERSION" ]] || VERSION="$(sed -nE 's/.*"version": *"([^"]+)".*/\1/p' .claude-plugin/plugin.json | head -1)"
+[[ -n "$VERSION" ]] || VERSION="$(sed -nE 's/.*"version": *"([^"]+)".*/\1/p' agent-skills/.claude-plugin/plugin.json | head -1)"
 
 # crate|name|clap id|bundle id prefix|aux type|sub code
 ROWS=()

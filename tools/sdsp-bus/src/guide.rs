@@ -15,8 +15,8 @@ use serde::Deserialize;
 
 use crate::serve::BusServer;
 
-const METHOD: &str = include_str!("../../../skills/sdsp-mix/references/mixing-method.md");
-const VERIFY: &str = include_str!("../../../skills/sdsp-mix/references/verify.md");
+const METHOD: &str = include_str!("../../../agent-skills/skills/sdsp-mix/references/mixing-method.md");
+const VERIFY: &str = include_str!("../../../agent-skills/skills/sdsp-mix/references/verify.md");
 
 /// Shared rules every mixing prompt ends with.
 const RULES: &str = "Rules: measure with the song playing (the bus hears only what plays). Read plugin_params before any plugin_set_params and keep the old values: that is the undo. Change one thing, measure again, keep it only if the numbers moved the right way, otherwise put the old values back. Say what you changed and the before/after numbers.";
@@ -117,7 +117,7 @@ impl BusServer {
              1. bus_list: the plugins on the master track (expect Compressor and Limiter, ideally Spectrum for LUFS). If there is no Limiter, tell me to add \"CLAP: SuperDuper Limiter\" last on the master and stop.\n\
              2. plugin_params on the master's Limiter and Compressor; note the values.\n\
              3. Glue first, gently: Compressor ratio ≤ 2, gain reduction 1-3 dB on the loudest part. Then raise the Limiter input toward the target with the ceiling at -1 dBTP.\n\
-             4. Loudness is not on the bus: ask me to play the loudest section and read the SuperDuper Spectrum meter (or render and run tools/mixcheck.py), and stop pushing when crest falls under 8 dB — a louder master that lost its punch is worse.\n\
+             4. Loudness is not on the bus: ask me to play the loudest section and read the SuperDuper Spectrum meter (or render and run mixcheck.py from the sdsp-mix skill), and stop pushing when crest falls under 8 dB — a louder master that lost its punch is worse.\n\
              {RULES}"
         ))
     }

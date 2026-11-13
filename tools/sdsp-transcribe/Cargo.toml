@@ -1,0 +1,12 @@
+[package]
+name = "sdsp-transcribe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Audio to MIDI: any pitched instrument, or guitar with string and fret (Basic Pitch on tract)"
+
+[dependencies]
+superduper-transcribe = { path = "../../transcribe" }
+hound = "3.5"
+serde_json = "1"
+anyhow = "1"

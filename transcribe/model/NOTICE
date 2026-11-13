@@ -1,0 +1,9 @@
+nmp.onnx is the Basic Pitch ICASSP 2022 model by Spotify (https://github.com/spotify/basic-pitch),
+licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+The ONNX file is the one shipped in the `basic-pitch` Python package, unmodified.
+The note-creation and windowing logic in src/basic_pitch.rs and src/model.rs is a Rust port of
+basic_pitch/note_creation.py and basic_pitch/inference.py (same license).
+
+Bittner, R. M., Bosch, J. J., Rubinstein, D., Meseguer-Brocal, G., Ewert, S.
+"A Lightweight Instrument-Agnostic Model for Polyphonic Note Transcription and Multipitch
+Estimation", ICASSP 2022.

@@ -1,0 +1,19 @@
+[package]
+name = "superduper-transcribe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Audio to MIDI for any pitched instrument (Basic Pitch via tract, pure Rust) plus a guitar decoder that names the string and fret"
+
+[lib]
+name = "superduper_transcribe"
+
+[dependencies]
+# Pure Rust ONNX runtime: no onnxruntime dylib inside a DAW process. Kept out of synth-core
+# on purpose (every plugin links synth-core).
+tract-onnx = "0.21"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+hound = "3.5"

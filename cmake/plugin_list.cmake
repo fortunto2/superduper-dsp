@@ -54,4 +54,5 @@ set(SDSP_WRAPPER_PLUGINS
     "superduper-double|SuperDuperDouble|co.superduperai.double|co.superduperai.wrappers.double|aufx|sdDb"
     "superduper-denoise|SuperDuperDenoise|co.superduperai.denoise|co.superduperai.wrappers.denoise|aufx|sdDn"
     "superduper-morph|SuperDuperMorph|co.superduperai.morph|co.superduperai.wrappers.morph|aufx|sdMo"
+    "superduper-audio2midi|SuperDuperAudio2MIDI|co.superduperai.audio2midi|co.superduperai.wrappers.audio2midi|aufx|sdA2"
 )

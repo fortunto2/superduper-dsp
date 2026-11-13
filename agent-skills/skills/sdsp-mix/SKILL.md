@@ -240,7 +240,13 @@ the faders — REAPER MCP `run_lua` with
 `local o={} for i=0,reaper.CountTracks(0)-1 do local t=reaper.GetTrack(0,i) local _,n=reaper.GetTrackName(t) o[n]=20*math.log(reaper.GetMediaTrackInfo_Value(t,"D_VOL"),10) end return o`
 — and supply the map as `fader_db`. Same map for runs you compare. Track names in
 `prefer` and `fader_db` match like everywhere else: exact, case-insensitive,
-or containment either way (the bus cuts names at 64 bytes).
+or containment either way (the bus cuts names at 64 bytes). **Check that a map
+entry took:** change a fader's entry between two runs and see the track's
+reported level move. A key that silently matched nothing reported one track
+pre-fader, and a groove read 15 dB too loud got cut 8 dB it did not need
+(2026-10-30). Two open project tabs with the same track names also put two
+instances on the bus: `plugin_get` then answers "2 instances match" — close the
+other tab or address the plugin from the DAW.
 
 **Name effect returns so the map knows them.** A reverb or delay return holds
 its source's signal and clashes with it in every band; the bus cannot see
@@ -306,6 +312,13 @@ Any stage can key off any earlier track with `sidechain = "track:<name>"` —
 In REAPER, the routing is: target track to 4 channels, a send from the drums to
 its channels 3/4, compressor last in the chain, plugin input pins 2/3 mapped to
 channels 3/4. Script it over the REAPER bridge (it is safe to re-run) rather than clicking.
+"Last in the chain" has one exception: **SuperDuper Space writes every output
+channel**, so on a 4-channel track it overwrites the key on 3/4 — a keyed
+compressor must sit *before* Space. Set its Threshold above the target's own
+peaks (−14 dB for an 808 peaking at −17…−20) so only the key can trigger it; the
+depth is then Range. The same key can duck several parts at different depths:
+808 5 dB, synth lead 4, synth pad and chord pad 3 (slower release, it breathes),
+a doubling layer 2 — and leave the part the song stands on unducked.
 
 Compressor settings for ducking (not for compressing) — **depth comes from
 `Range`, not from threshold arithmetic**:
@@ -507,6 +520,41 @@ then render — one "ceiling broken?" scare was exactly this), and a +2.5 dB
 master shelf at 12 kHz moved the 6–16 kHz band by 0.1 dB — air lives in
 sources (hats, sparkle layers), the master EQ cannot invent it.
 
+**The low-end share is what a DJ waveform shows, not the loudness.** DJ apps
+(djay and the like) level-match tracks, so the red mass of a waveform is the
+share of energy under ~120 Hz. Measured 2026-10-30: a classic hip-hop single at
+−15.4 LUFS with 58 % of its chorus energy in 30–120 Hz looked bigger than the
+author's render at −8.6 LUFS with 20 %. Reference points: an AI demo of the same song
+52 %, that single 58 %, a current trap hit 65 %. Measure the share (chorus,
+30–120 Hz energy over total) before reaching for loudness. What had cut it, in
+order of size, and what brought it back (20 → 43 → 53 → 65 %):
+- **limiter Input +8 dB** (LRA 2.6) shaving every kick and bass peak → back to
+  +5…+9.5;
+- **a formant bass** (a kubyz voice: fundamental 28 dB under its 320 Hz formant)
+  → a sub layer on the same notes (pooled MIDI copy), Wave "808 Sub", Saturator
+  Tape (Drive 9, Mix 0.6) *before* an LP at 200 Hz so its 2nd-3rd harmonics stay
+  audible on small speakers, ducked only 3 dB / 100 ms by the kick so it fills
+  the space between hits;
+- **a 0.5 s attack on the bass voice**: no bass under the kick → 0.01 s;
+- for weight on top: a second, low-only kick under the punchy one (in key,
+  40-100 Hz body, 250-450 ms decay, HP 30 / LP 150, no side-chain sends).
+
+**Two masters, two numbers.** Streaming ≈ −11 LUFS (LRA ~9, crest ~11 dB).
+Club ≈ −9 LUFS: glue → Saturator `Type`=Inflate (`Drive` 6 = unity input,
+`Curve` 0) → Limiter Input ~9.5. Beyond that the limiter returned +0.2 LUFS per
++1 dB of input: the rest of a commercial −6 LUFS is clipping (that trap hit
+reads +2.3 dBTP — a clipped master), and the song's dynamics pay for it. For an
+**mp3 delivery pad the ceiling**: −1.0 read +0.1 dBTP after the encoder,
+−1.5 read −0.9.
+
+**Compare shapes with the reference, not levels.** Average the master's bus
+spectrum over the chorus (the first master plugin, or the one after the tone EQ),
+take the same section of the reference, normalise each to its own total and
+compare grouped bands (sub / low / low-mid / mid / presence / 5-10 kHz /
+10-20 kHz). Measured: low-mid +5.5 dB, 5-10 kHz −4.7, 10-20 kHz −6.0. The top
+came back only with a bright hat layer: jaw-harp and kubyz sounds carry almost
+nothing above 5 kHz, so they can never be the hats.
+
 ## Symptom → measurement → fix
 
 | It sounds… | Measure | Usually |
@@ -519,6 +567,8 @@ sources (hats, sparkle layers), the master EQ cannot invent it.
 | kick and bass fight | peak vs rms in the low band | no sidechain — see move 1 |
 | flat, no journey | section arc | every section at one level; automate arrangement density, not just gain |
 | harsh | presence delta, soothe meter | resonance, not overall brightness |
+| bass looks small next to commercial tracks in a DJ app | 30–120 Hz share of the chorus | limiter crushing the low peaks; a formant bass with no sub; slow bass attack — see "low-end share" above |
+| no "blue" (top) in a DJ waveform | 5–10 and 10–20 kHz vs the reference | no bright hat source; kubyz and voice layers stop around 5 kHz |
 
 ## Rules of thumb worth keeping
 

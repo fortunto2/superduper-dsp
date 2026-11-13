@@ -1,6 +1,6 @@
 ---
 name: audio-to-midi
-description: "Turn a recording into MIDI: pick the right local transcription model, run it, and check the result before trusting it. Use when the user says \"audio to MIDI\", \"get the notes out of this track\", \"transcribe this melody\", \"what notes are being played\", \"replay this with the SuperDuper instruments\", or drops audio expecting notes rather than a mix. Covers MuScriptor (full-mix, multi-instrument), Basic Pitch (fast, velocity), and SwiftF0 (monophonic line), with measured speed and accuracy on Apple Silicon, what each gets wrong, a known-answer control that catches a silently broken run, and how the MIDI lands in the SuperDuper instruments. Do NOT use for stem separation or for analysing a reference's mix (track-teardown)."
+description: "Turn a recording into MIDI: pick the right local transcription model, run it, and check the result before trusting it. Use when the user says \"audio to MIDI\", \"get the notes out of this track\", \"transcribe this melody\", \"what notes are being played\", \"which strings and frets\", \"replay this with the SuperDuper instruments\", or drops audio expecting notes rather than a mix. Covers MuScriptor (full-mix, multi-instrument), Basic Pitch (fast, velocity), SwiftF0 (monophonic line) and guitar-hear (string and fret on top of Basic Pitch), with measured speed and accuracy on Apple Silicon, what each gets wrong, a known-answer control that catches a silently broken run, and how the MIDI lands in the SuperDuper instruments. Do NOT use for stem separation or for analysing a reference's mix (track-teardown)."
 ---
 
 # audio-to-midi — from a recording to notes you can re-play
@@ -8,7 +8,7 @@ description: "Turn a recording into MIDI: pick the right local transcription mod
 > **Needs** `uv` (for `uvx`) and an internet connection the first time, because the models are downloaded then (MuScriptor and Basic Pitch
 > weights from their upstream hosts; MuScriptor's weights are gated on Hugging Face and need the user's own token, which stays in their
 > shell). The two checking scripts in `${CLAUDE_SKILL_DIR}/scripts/` ship with the plugin and need `mido`. **Not bundled:** the SwiftF0
-> tracker (`pitch_line.py`, `midi_theme.py`) is the author's separate tool, not part of this plugin;
+> tracker (`pitch_line.py`, `midi_theme.py`) and `guitar-hear` are the author's separate tools, not part of this plugin;
 > the sections about them describe results, and when asked to run them say they are not installed and fall back to Basic Pitch or MuScriptor.
 > Check first: `command -v uvx`.
 
@@ -37,6 +37,55 @@ material is**, not by which is "better".
 - **one melody — a voice, a flute, a solo line** → SwiftF0. It does not guess a
   chord, it follows a line, and it is two orders of magnitude faster than the
   other two.
+- **a solo guitar, and the question is the hand** (which string, which fret,
+  how long the picking circle is) → the guitar decoder described below
+  (results and method only; the tool is not bundled). The other three give
+  notes; none of them gives the string.
+
+## Guitar: which string, which fret (guitar-hear, not bundled)
+
+A decoder on top of Basic Pitch's own posteriors (the same `nmp.onnx`,
+Apache-2.0): six strings, one note per string,
+every note placed where the tuning and capo allow, the cheapest hand path,
+re-plucks of a still-ringing string read from the onset head.
+
+**guitar-hear is the author's separate tool and is not part of this plugin;** it has no public repository. This section
+gives its measured results and the method, so the approach can be rebuilt. If asked to run it, say it is not installed and
+offer Basic Pitch or MuScriptor for the notes. Its commands, for reference (`<guitar-hear checkout>` is wherever the tool lives):
+
+```bash
+cd <guitar-hear checkout>
+./run.sh gh.py dec take.wav --capo 1 --maxfret 5   # cache/take.gh.json + take.gh.mid (MIDI channel = string)
+./run.sh bench.py --set SS_comp --players 04,05    # GuitarSet check on held-out players
+```
+
+Measured on GuitarSet (mono mic, onset F1 at 50 ms, tuned on players 00-03,
+scored on 04-05):
+
+| set | Basic Pitch F1 | guitar-hear F1 | re-pluck recall BP / ours | string right |
+|---|---|---|---|---|
+| singer-songwriter comping | 0.624 | 0.630 | 0.824 / 0.850 | 79 % |
+| bossa nova comping | 0.761 | 0.775 | 0.775 / 0.816 | 55 % |
+
+Same notes as Basic Pitch, plus strings and frets. On a real solo take
+(acoustic, capo 1, 66 s) it found the whole pattern: thumb on the 6th string
+(frets 3/2/0), fingers `[bass + Ab3 + C4] Eb3 Ab3 Eb3` per beat, a three-bar
+circle. Replayed against the recording (log-CQT cosine / onset correlation):
+guitar-hear 0.760 / 0.497, Basic Pitch 0.751 / 0.492, MuScriptor 0.655 / −0.126.
+
+- **Read Basic Pitch's frames with its windowing.** It runs 2 s windows of 172
+  frames and each starts 10.24 ms early, so frame `f` is at
+  `f*256/22050 − 0.01024*(f//172)`. The naive `f*256/22050` drifts 0.3 s a
+  minute and made a good decode look like noise (precision 0.14 → 0.30 from
+  this fix alone).
+- **Frets above the 5th are guesses.** The hand model is naive: 55 % strings
+  on bossa nova, where the chords move up the neck. Fine for open-position
+  picking, check anything higher by ear.
+
+**Rust, for a plugin:** `tract-onnx` 0.21 runs `nmp.onnx` with the same output
+as onnxruntime (max difference 8·10⁻⁷ on all three heads), 80 ms per 2 s window
+on an M1, 93 ms to load. Pure Rust, so no onnxruntime dylib inside a host.
+The probe lives in the same unpublished tool; the numbers above are what to expect.
 
 ## The commands
 

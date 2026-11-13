@@ -35,7 +35,7 @@ pub mod params;
 pub mod probes;
 pub mod signals;
 
-pub use host::{render_effect, render_instrument, PluginUnderTest};
+pub use host::{render_effect, render_instrument, render_session, OutNote, PluginUnderTest, TransportSpec};
 
 /// A set of named measurements compared against a stored snapshot.
 pub struct Suite {

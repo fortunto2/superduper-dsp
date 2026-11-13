@@ -1,45 +1,45 @@
-# Example mashup — House of Pain "Jump Around" beat under Oxxxymiron "Агент"
-# vocal. Both were split into stems with demucs (htdemucs). Run:
+# Example mashup: the stems of one song's beat under another song's vocal.
+# Split both songs into stems first (demucs, model htdemucs), then point
+# every `path` below at your own files (paths are resolved from the folder you
+# run the command in). Run:
 #
 #   cargo run --release -p sdsp-mash -- tools/sdsp-mash/example.toml out.wav
 #
-# The stems live in the session scratchpad; point `path` at your own demucs
-# output to remix. v0 has no time-stretch, so the two sources must share a
-# tempo — 105.5 BPM here (Jump Around's grid, which the Агент a-cappella
-# happens to sit on).
+# This example needs no time-stretch, so both sources must already share a
+# tempo; set `bpm` to the beat's tempo (`sdsp-mash analyze <wav>` measures it).
 
 bpm = 105.5
 
-# ── Beat: House of Pain "Jump Around" (drums + bass + other) ──────────────
+# ── Beat: drums + bass + other stems of the beat song ─────────────────────
 # Trimmed to 60 s so the example renders quickly; drop `len_sec` for the
 # full track.
 
 [[track]]
-path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/drums.wav"
+path = "stems/beat/drums.wav"
 role = "beat-drums"
 gain_db = 0.0
 len_sec = 60.0
 
 [[track]]
-path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/bass.wav"
+path = "stems/beat/bass.wav"
 role = "beat-bass"
 gain_db = 1.0
 len_sec = 60.0
 
 [[track]]
-path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/House of Pain - Jump Around (30 Years Remaster)/other.wav"
+path = "stems/beat/other.wav"
 role = "beat-other"
 gain_db = -1.0
 len_sec = 60.0
 
-# ── Vocal: Oxxxymiron "Агент" ─────────────────────────────────────────────
+# ── Vocal: the vocals stem of the other song ─────────────────────────────
 # Skip the 10.4 s intro of the a-cappella, then drop the first verse in near
 # bar 8 of the grid (8 bars × 4 beats = 32 beats). `auto_align` snaps it onto
 # the drums (±half-bar). High-pass clears rumble/plosives; the compressor
 # evens out the rap delivery.
 
 [[track]]
-path = "/private/tmp/claude-501/-Users-rustam-Music-1music/393ad8d2-47d0-4106-9e37-cd08541e3195/scratchpad/mash/htdemucs/Oxxxymiron - Агент/vocals.wav"
+path = "stems/vocal/vocals.wav"
 role = "vocal"
 gain_db = -1.0
 start_sec = 10.4

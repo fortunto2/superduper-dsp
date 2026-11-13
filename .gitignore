@@ -28,3 +28,12 @@ tools/nam-reference/
 # Python bytecode (tools/mix-judge)
 __pycache__/
 *.pyc
+
+# Local scratch (submission drafts, patches)
+_work/
+
+# sdsp-mash: personal session configs (absolute local paths, commercial track names) stay on disk, untracked.
+# Only example.toml is the shared, placeholder-path example.
+tools/sdsp-mash/*.toml
+!tools/sdsp-mash/example.toml
+!tools/sdsp-mash/Cargo.toml

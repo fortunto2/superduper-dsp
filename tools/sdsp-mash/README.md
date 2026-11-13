@@ -14,7 +14,7 @@ plugin machinery.
 ## Usage
 
 ```bash
-cd /Users/rustam/Music/1music/superduper-dsp
+cd <your superduper-dsp checkout>
 
 # Render a mashup:
 cargo run --release -p sdsp-mash -- <mash.toml> <output.wav>
@@ -24,10 +24,9 @@ cargo run --release -p sdsp-mash -- analyze <wav>…
 ```
 
 Stems are named inside the config (unlike sdsp-chain, which takes an input WAV
-on the command line). Two worked configs with real paths ship here:
-[`example.toml`](example.toml) (Jump Around × Агент, matched tempo) and
-[`example2.toml`](example2.toml) (Firestarter × Организация, beat stretched to
-a 145 grid).
+on the command line). [`example.toml`](example.toml) is a worked config with
+placeholder paths: split two songs with demucs, point the `path` lines at the
+stems, and render.
 
 ```bash
 cargo run --release -p sdsp-mash -- tools/sdsp-mash/example.toml out.wav
@@ -165,7 +164,7 @@ Omit `[[master]]` entirely to render the raw pre-master bus.
 
 Beyond the flat `[[track]]` list, a megamix is authored as `[[section]]`s — each
 its own **tempo island** joined by a `transition`, plus timeline `[[fx]]`. See
-[`megamix.toml`](megamix.toml) for a full worked example.
+[`example.toml`](example.toml) for the flat form; a section-based config follows the keys listed here.
 
 ```toml
 [[section]]

@@ -60,10 +60,16 @@
 //! `--params <plugin>` to see them.
 
 mod check;
+mod nelder_mead;
+mod opt;
+mod opt_dsp;
+mod opt_spec;
 mod verify;
 mod verify_print;
 #[cfg(test)]
 mod verify_e2e;
+#[cfg(test)]
+mod opt_e2e;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1233,11 +1239,13 @@ fn real_main() -> Result<(), String> {
             println!("  sdsp-chain --presets <plugin>");
             println!("  sdsp-chain --template [<name>]   ready-made chain configs");
             println!("  sdsp-chain verify <before.toml> <after.toml> [--question masking|balance|loudness|mono] [--labels a,b] [--json]   keep a mix change only if render and bus agree");
+            println!("  sdsp-chain opt <base.toml> --vary \"track.stage.param:lo:hi\" --loss \"ref:ref.wav,masking\" [--iters 60] [--out best.toml]   search parameters against a measured loss");
             println!("  sdsp-chain check <mix.wav> [--ref ref.wav] [--json] ...   measure a mix (see: sdsp-chain check --help)");
             return Ok(());
         }
         Some("check") => return check::run(&args[1..]),
         Some("verify") => return verify::run(&args[1..]),
+        Some("opt") => return opt::run(&args[1..]),
         Some("--template") => {
             // The stage ORDER encoded in these is the point; the numbers are
             // starting values. Kept in tools/sdsp-chain/templates/. The

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Look at a track the way you would listen to it: structure first, then detail.
 
 Numbers alone lie about music. A tempo of 100.2 BPM tells you nothing about

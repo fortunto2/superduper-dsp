@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Close-ups. The full-track view shows structure; this shows the groove.
 
 Eight bars wide, so every hit is a distinguishable vertical mark and the

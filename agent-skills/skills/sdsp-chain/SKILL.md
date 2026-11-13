@@ -5,14 +5,14 @@ description: "Render SuperDuper DSP plugin chains headlessly from the CLI — no
 
 # sdsp-chain — headless renderer for plugin chains
 
-`tools/sdsp-chain` in the [superduper-dsp repository](https://github.com/fortunto2/superduper-dsp) statically links
+`tools/sdsp-chain` in the superduper-dsp repository (fortunto2/superduper-dsp on GitHub) statically links
 **22 effects + 7 instruments** of the SuperDuper CLAP plugins and renders a whole arrangement
 from one TOML file — including playing the instruments from a notes list. Same
 DSP REAPER would load, in one process: no DAW, no plugin scan, no GUI. This is the
 engine a future GUI app is meant to sit on.
 
 > **Needs** the `sdsp-chain` command-line tool; this plugin does not include it.
-> macOS (Apple Silicon): the `.pkg` from the [releases page](https://github.com/fortunto2/superduper-dsp/releases)
+> macOS (Apple Silicon): the `.pkg` from the repository's GitHub releases page
 > puts `sdsp-chain` and `sdsp-bus` in `/usr/local/bin`. Elsewhere, from a checkout of the repo:
 > `cargo build --release -p sdsp-chain`. Check first with `command -v sdsp-chain`; if it is missing,
 > tell the user which of the two routes applies instead of running the commands below blind.
@@ -68,8 +68,8 @@ Verified working (measured 2026-09-23): pitch lands on the note (wave A3 →
 decodes its `Sample` slot headlessly.
 
 - **Preset/sample recall is main-thread work**, so the render runs a setup
-  pass first (one block with the events + the main-thread callback), then the
-  real pass where user `params` are re-sent — params always override the preset.
+  dry run first (one block with the events + the main-thread callback), then the
+  real run where user `params` are re-sent — params always override the preset.
 - **wave without `preset` plays `~/.superduper-dsp/wave/last.json`** — whatever
   was last edited in the GUI. Set `preset` for reproducible renders (the CLI
   prints a note when you don't).
@@ -180,7 +180,7 @@ output lines up with its input: `lineq` (FIR), `denoise` (2048 samples) and any 
 look-ahead plugin no longer shift a track late in a multi-track mix.
 
 **`denoise`**: `Mode` 0 = Spectral (noise floor), 1 = Dereverb (room tail, voice only),
-2 = Neural (RNNoise, voice, 48 kHz only; other rates pass through). `Reduction`/`Threshold`
+2 = Neural (RNNoise, voice, 48 kHz only; other rates are left unprocessed). `Reduction`/`Threshold`
 for Spectral, `Amount`/`RT60` for Dereverb, `Mix` on all. Learning a noise profile offline
 is automation on `Learn`: on over a noise-only passage, off before the material.
 

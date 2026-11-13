@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """How well do a MIDI track's onsets sit on the beat grid?
 
     uvx --with mido python gridcheck.py file.mid [track_name] [note]

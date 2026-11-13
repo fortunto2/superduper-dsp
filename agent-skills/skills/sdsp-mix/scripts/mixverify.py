@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """mixverify — a mix change stays only if two independent instruments agree.
 
 One instrument is not an argument. The bus (`mix_masking`, live in the DAW)

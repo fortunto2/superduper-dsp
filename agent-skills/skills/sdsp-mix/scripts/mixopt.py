@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """mixopt — move a few whitelisted plugin parameters until a measured loss stops falling.
 
 The renderer (sdsp-chain) is deterministic and a render costs ~0.1 s, so the

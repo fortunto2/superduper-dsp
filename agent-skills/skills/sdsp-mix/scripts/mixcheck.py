@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure a mix the way an engineer listens to one — and against a reference.
 
 Every mix problem hit on this project so far was invisible until measured:

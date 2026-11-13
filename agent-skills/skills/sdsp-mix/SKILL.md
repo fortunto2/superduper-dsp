@@ -5,10 +5,10 @@ description: "Mix and master a track with the SuperDuper plugins the way a profe
 
 # sdsp-mix — mixing and mastering that is measured, not guessed
 
-> **Needs** (the plugin ships the Python scripts in `${CLAUDE_SKILL_DIR}/scripts/`, not the audio tools):
+> **Needs** (the plugin ships the Python scripts in this skill's `scripts/` folder, not the audio tools):
 > Python 3.11+ (`mixcheck.py` basics use the standard library; band, mono and optimiser steps also need `numpy` and `scipy`);
 > the SuperDuper DSP plugins plus the `sdsp-bus` and `sdsp-chain` command-line tools for the live-bus and
-> render steps (macOS: the `.pkg` from the [releases page](https://github.com/fortunto2/superduper-dsp/releases)
+> render steps (macOS: the `.pkg` from the repository's GitHub releases page
 > installs both; elsewhere `cargo install --path tools/sdsp-bus` and `tools/sdsp-chain` from a checkout).
 > Check first: `command -v sdsp-bus sdsp-chain` and `python3 -c "import numpy, scipy"`. If something is
 > missing, say which step cannot run and offer the measurement-only path (`mixcheck.py` on a WAV needs no plugins).
@@ -39,7 +39,7 @@ What the numbers mean:
 | correlation | +0.4 … +1.0 | below +0.2 the sides cancel on a phone and in a club |
 | section arc | build < drop | a build louder than its drop means the drop never lands, whatever the sounds are |
 
-Absolute band targets are a myth — genres differ by 10 dB. **Always pass `--ref`**
+Absolute band targets are a myth — genres differ by 10 dB. **Always give `--ref`**
 with a commercial track in the same style (a local file of your own; nothing is uploaded).
 
 ## Measure the live session — the bus and the mix map
@@ -238,7 +238,7 @@ sits in the chain, so a fader move in the DAW is invisible to it (Sound Radix
 Pi asks to sit post-fader for the same reason). Before a mix_masking run read
 the faders — REAPER MCP `run_lua` with
 `local o={} for i=0,reaper.CountTracks(0)-1 do local t=reaper.GetTrack(0,i) local _,n=reaper.GetTrackName(t) o[n]=20*math.log(reaper.GetMediaTrackInfo_Value(t,"D_VOL"),10) end return o`
-— and pass the map as `fader_db`. Same map for runs you compare. Track names in
+— and supply the map as `fader_db`. Same map for runs you compare. Track names in
 `prefer` and `fader_db` match like everywhere else: exact, case-insensitive,
 or containment either way (the bus cuts names at 64 bytes).
 
@@ -252,7 +252,7 @@ real clash, 808 × guitar 140–173 Hz 40 %, was buried in the list.
 
 **Measuring right:** loop one section for every labelled run (otherwise the
 song moves on and every level shifts — a bass that nobody touched dropped 6 dB
-between two runs); pass `prefer={"<track>": "EQ"}` naming the last enabled
+between two runs); supply `prefer={"<track>": "EQ"}` naming the last enabled
 SuperDuper plugin in the chain, or a cut placed after the instrument is
 invisible (the track defaults to its loudest instance, the instrument before
 the cut). Track names follow the host (CLAP track-info `changed()`, since
@@ -599,7 +599,7 @@ multitracks, ≈550 short "Edited Excerpt" ones, usually the biggest chorus):
 - **educational use only, never commercial** (usage FAQ: `/ms3/mtk-faq/`) —
   fine for testing our plugins and the agent loop, not for anything released;
 - the site sits behind a Cloudflare check: `curl` gets 403, a real browser
-  (Playwright) passes after a few seconds.
+  (Playwright) succeeds after a few seconds.
 
 Use it as the benchmark for agent mixing: load an excerpt, put a SuperDuper
 plugin on every track, run the measure → change → compare loop, then measure

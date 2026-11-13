@@ -1,7 +1,7 @@
 {
   "name": "superduper-dsp",
   "displayName": "SuperDuper DSP",
-  "version": "0.18.3",
+  "version": "0.19.0",
   "description": "Agent skills for SuperDuper DSP, an open-source CLAP plugin suite: mix and master by measurement, songs in REAPER on its instruments, headless plugin chains, audio to MIDI, mashups, reference teardowns, vocal chains, and writing new plugins.",
   "author": {
     "name": "Rustam Salavatov",

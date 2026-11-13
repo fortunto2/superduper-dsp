@@ -1,4 +1,6 @@
-# Optimising chain parameters against a measured loss (`mixopt.py`)
+# Optimising chain parameters against a measured loss (`sdsp-chain opt`)
+
+> `sdsp-chain opt` is the Rust port of `mixopt.py` (same options, same loss terms, same Nelder–Mead; on the planted-boost control the 30 evaluations match the Python tool to 1e-4). `--method powell` stays Python-only. If `sdsp-chain opt --help` fails (an older install), run `python3 mixopt.py` with the same arguments (`references/mixopt-source.md`; it also needs `numpy` and `scipy`).
 
 The renderer is deterministic and a render costs ~0.1 s, so a mix is a function
 and a bounded Nelder–Mead over three or four parameters beats guessing: each
@@ -27,7 +29,7 @@ a Mode, or a parameter on a plugin the recipe did not place; never a wide range
 ## Command
 
 ```
-python3 mixopt.py mix.toml \
+sdsp-chain opt mix.toml \
   --vary "gtr.eq.Mid Gain:-12:0" "gtr.eq.Mid Freq:150:600" "gtr.eq.Mid Q:0.5:3" \
   --loss "ref:ref.wav,masking,loudness,level" --iters 60 --out best.toml
 ```
@@ -49,9 +51,9 @@ the master chain. Output: `best.toml` (comments are not kept; diff it against
 the base), its render `best.wav`, and `best.jsonl`, one line per evaluation
 with the parameter diff and every term.
 
-## Known-answer controls (`test_mixopt.py`)
+## Known-answer controls (`test_mixopt.py`, and the Rust tests of `sdsp-chain opt`)
 
-They skip, saying so, when `sdsp-chain` is not built. Pinned: identity (the
+Both suites pin the same cases: identity (the
 base against its own render) has loss 0 and twenty evaluations leave the
 parameter alone; a planted +8 dB bell at 300 Hz on a chord stem against the
 un-boosted mix is undone to ≤ +2 dB within 40 evaluations with the loss down
@@ -64,7 +66,7 @@ tone as −20 dB. Measured 2026-10-21 on 4 s synthetic stems: +8 → −0.00 dB,
 ## Verify, then listen
 
 A green loss is one meter agreeing with one reference. Before keeping
-`best.toml`: run `mixverify` (or `mixcheck.py best.wav --ref ref.wav`) so a
+`best.toml`: run `sdsp-chain verify` (or `sdsp-chain check best.wav --ref ref.wav`) so a
 meter that did not drive the search reads balance, crest and mono, and listen
 to `best.wav` against the base. Masking is a threshold rule, flat until a
 boundary is crossed: pair it with `ref:` or `level`, or widen `--step`.

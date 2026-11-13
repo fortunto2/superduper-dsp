@@ -14,7 +14,7 @@ scripts. Two skills also need REAPER and a REAPER MCP server. Each skill checks 
 
 | Skill | What it does |
 |---|---|
-| `sdsp-mix` | Mix and master by measurement: band balance against a reference, sidechain ducking, mono low end, loudness targets. Ships `mixcheck.py`, `mixverify.py`, `mixopt.py`, `mixmap.py`. |
+| `sdsp-mix` | Mix and master by measurement: band balance against a reference, sidechain ducking, mono low end, loudness targets. Measures with `sdsp-chain check`, `verify` and `opt`; the `mixcheck.py`, `mixverify.py`, `mixopt.py` and `mixmap.py` sources ship as fallback for older installs. |
 | `sdsp-chain` | Render plugin chains headlessly from a TOML file (no DAW), with per-stage LUFS and true peak. |
 | `superduper-song` | Build songs in REAPER on the SuperDuper instruments through a REAPER MCP server: parameter maps, presets, MIDI CC. |
 | `audio-to-midi` | Turn a recording into MIDI with a local model, and check the result before trusting it. |
@@ -51,7 +51,7 @@ Each skill starts with a "Needs" note and checks for what it needs before runnin
 
 - **Reads:** audio files and TOML configs you point the agent at, and nothing else on disk. **Writes:** renders, PNGs and logs in the working
   folder you choose; the bus tools keep a small log at `~/.superduper-dsp/mix-log.jsonl`.
-- **Runs locally:** Python scripts that the skills print as Markdown source (`skills/*/references/*-source.md`) for the agent to save and run in your working folder (analysis and optimisation of local WAV files); the plugin itself contains no executable files, plus the `sdsp-chain`, `sdsp-bus`
+- **Runs locally:** Python scripts that the skills print as Markdown source (`skills/*/references/*-source.md`) for the agent to save and run in your working folder (analysis and optimisation of local WAV files); the plugin itself contains no executable files (the `mixcheck`, `mixverify` and `mixopt` sources stay only as the fallback for installs older than the `sdsp-chain check`, `verify` and `opt` subcommands), plus the `sdsp-chain`, `sdsp-bus`
   and `sdsp-mash` programs you installed or built. The scripts make no network calls; they call `sdsp-chain` and `sdsp-bus` as subprocesses.
 - **Fetches, only if you run those steps:** the skills tell the agent to run `uvx` / `uv run` for `muscriptor`, `basic-pitch` and `demucs` and
   to install `numpy` / `matplotlib` into a throwaway environment. That downloads packages from PyPI and model weights from their upstream hosts

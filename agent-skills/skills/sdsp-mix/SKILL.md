@@ -10,9 +10,9 @@ description: "Mix and master a track with the SuperDuper plugins the way a profe
 > the SuperDuper DSP plugins plus the `sdsp-bus` and `sdsp-chain` command-line tools for the live-bus and
 > render steps (macOS: the `.pkg` from the repository's GitHub releases page
 > installs both; elsewhere `cargo install --path tools/sdsp-bus` and `tools/sdsp-chain` from a checkout).
-> Check first: `command -v sdsp-bus sdsp-chain`, then `sdsp-chain check --help`. If something is
+> Check first: `command -v sdsp-bus sdsp-chain`, then `sdsp-chain check --help`, `sdsp-chain verify --help` and `sdsp-chain opt --help`. If something is
 > missing, say which step cannot run and offer the measurement-only path (`sdsp-chain check` or `mixcheck.py` on a WAV needs no plugins).
-> **`sdsp-chain check`** is the measuring command used below (same options and numbers as `mixcheck.py`; add `--json` for a machine-readable profile). If `sdsp-chain check --help` fails (an older install), use `mixcheck.py` instead: replace `sdsp-chain check` with `python3 mixcheck.py` in the commands below.
+> **`sdsp-chain check`** is the measuring command used below (same options and numbers as `mixcheck.py`; add `--json` for a machine-readable profile). If `sdsp-chain check --help` fails (an older install), use `mixcheck.py` instead: replace `sdsp-chain check` with `python3 mixcheck.py` in the commands below. The same holds for `sdsp-chain verify` (`mixverify.py`) and `sdsp-chain opt` (`mixopt.py`).
 >
 > **Scripts** (`mixcheck.py`, `mixverify.py`, `mixopt.py`, `mixmap.py`): the plugin cannot carry `.py` files, so each is a fenced
 > python block in `references/<name>-source.md`. Before running one, look for it already installed: a `superduper-dsp` checkout
@@ -607,7 +607,7 @@ section, gain-matched: `mixcheck.py mix.wav --start A --end B --ref ref.wav
 before.toml after.toml --question masking` keeps a move only when the live bus
 and the offline render agree on it; one instrument is a reason to look, never
 to keep. **Searching for the numbers**: `references/optimize.md` —
-`python3 mixopt.py base.toml --vary "gtr.eq.Mid Gain:-12:0" --loss
+`sdsp-chain opt base.toml --vary "gtr.eq.Mid Gain:-12:0" --loss
 "ref:ref.wav,masking"` runs a bounded Nelder–Mead over a whitelist of chain
 params (0.14 s per evaluation, every step logged); the EQ step after register
 and timing are settled, never taste.
